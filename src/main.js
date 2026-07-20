@@ -8,21 +8,17 @@ const EMBEDDED_RUNTIME = null;
 
 const GRAPH_VIEW = 'gib-search-graph';
 const MODEL_PROFILES = {
-  nomic: { label: 'Nomic Embed v1.5 (best quality)', indexFolder: '' },
-  mobile: { label: 'BGE Small English v1.5 (mobile)', indexFolder: 'bge-small-en-v1.5' },
+  bge: { label: 'BGE Small English v1.5', indexFolder: 'bge-small-en-v1.5' },
 };
 const MODEL_TWEAK_DEFAULTS = {
-  nomic: { topK: 10, minScore: 0.5, scoreWindow: 1, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.5, highlightSingleWordMinScore: 0.6, highlightPhraseMinScore: 0.55, highlightMaxPhrases: 5 },
-  mobile: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 },
+  bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 },
 };
-const DEFAULTS = { enabled: true, nodePath: 'node', modelsPath: '', embeddingModel: 'nomic', folderPathBoostEnabled: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.5, highlightSingleWordMinScore: 0.6, highlightPhraseMinScore: 0.55, highlightMaxPhrases: 5, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
+const DEFAULTS = { enabled: true, nodePath: 'node', modelsPath: '', folderPathBoostEnabled: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
 function activeIndexDir(plugin) {
-  const profile = MODEL_PROFILES[plugin.settings.embeddingModel] || MODEL_PROFILES.nomic;
-  return path.join(plugin.pluginDir, 'embeddings', profile.indexFolder);
+  return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
 }
 function activeTweaks(plugin) {
-  const model = MODEL_TWEAK_DEFAULTS[plugin.settings.embeddingModel] ? plugin.settings.embeddingModel : 'nomic';
-  return plugin.settings.modelTweaks[model];
+  return plugin.settings.modelTweaks.bge;
 }
 
 class SearchClient {
@@ -111,7 +107,7 @@ class Indexer {
     const pluginDir = this.plugin.pluginDir;
     const script = path.join(pluginDir, 'worker', 'embed-server.mjs');
     const modelDir = this.plugin.settings.modelsPath || path.join(pluginDir, 'worker', 'models');
-    const args = [script, '--vault', this.plugin.vaultPath, '--models', modelDir, '--index', activeIndexDir(this.plugin), '--model', this.plugin.settings.embeddingModel || 'nomic'];
+    const args = [script, '--vault', this.plugin.vaultPath, '--models', modelDir, '--index', activeIndexDir(this.plugin), '--model', 'bge'];
     try {
       this.process = spawn(this.plugin.settings.nodePath || 'node', args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
       this.lastError = ''; this.lastEvent = `Worker launched (PID ${this.process.pid})`; this.changed();
@@ -486,7 +482,6 @@ class SearchSettings extends PluginSettingTab {
     this.renderHealth();
     new Setting(this.containerEl).setName('Indexer').setHeading();
     new Setting(this.containerEl).setName('Semantic index').setDesc('Run the local embedding indexer and continuously watch the vault for note changes.').addToggle(t => t.setValue(this.plugin.settings.enabled).onChange(async value => { this.plugin.settings.enabled = value; await this.plugin.save(); value ? this.plugin.indexer.start() : this.plugin.indexer.stop(); this.refreshHealth(); }));
-    new Setting(this.containerEl).setName('Embedding model').setDesc('Nomic preserves current quality. BGE Small creates a separate mobile-ready index.').addDropdown(d => d.addOptions(Object.fromEntries(Object.entries(MODEL_PROFILES).map(([key, profile]) => [key, profile.label]))).setValue(this.plugin.settings.embeddingModel).onChange(async value => { this.plugin.indexer.stop(); this.plugin.settings.embeddingModel = value; await this.plugin.save(); this.plugin.search = new SearchClient(activeIndexDir(this.plugin)); setTimeout(() => this.plugin.indexer.start(), 500); new Notice(`Switched to ${MODEL_PROFILES[value].label}; preparing its separate index`); this.display(); }));
     new Setting(this.containerEl).setName('Worker actions').setDesc('Start, stop, or restart the local index process. Restart is useful after changing Node or model paths.').addButton(b => b.setButtonText('Start').onClick(() => { const started = this.plugin.indexer.start(); new Notice(started ? 'Gib Search worker is starting' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Stop').onClick(() => { const stopped = this.plugin.indexer.stop(); new Notice(stopped ? 'Gib Search worker is stopping' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Restart').setCta().onClick(() => { this.plugin.indexer.restart(); new Notice('Gib Search worker is restarting'); this.refreshHealth(); }));
     new Setting(this.containerEl).setName('Node executable').setDesc('Node.js command or full path used for the local index worker.').addText(t => t.setValue(this.plugin.settings.nodePath).onChange(async value => { this.plugin.settings.nodePath = value.trim() || 'node'; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Maintenance').setHeading();
@@ -494,7 +489,6 @@ class SearchSettings extends PluginSettingTab {
     new Setting(this.containerEl).setName('Rebuild semantic index').setDesc('Clear generated vectors and metadata, then re-index every note. Vault notes and the local model are untouched.').addButton(b => b.setButtonText('Rebuild').setWarning().onClick(() => { if (!window.confirm('Rebuild the entire semantic index? Generated vectors will be replaced; vault notes are not changed.')) return; this.plugin.indexer.rebuild(); new Notice('Gib Search started a full index rebuild'); this.refreshHealth(); }));
     const tweaks = activeTweaks(this.plugin);
     new Setting(this.containerEl).setName('Tweaks').setHeading();
-    new Setting(this.containerEl).setName('Applies to').setDesc('These values are saved independently for each embedding model.').addText(t => t.setValue(MODEL_PROFILES[this.plugin.settings.embeddingModel].label).setDisabled(true));
     new Setting(this.containerEl).setName('Minimum score').setDesc('Hide weak semantic matches (0–1).').addSlider(s => s.setLimits(0, 1, .01).setValue(tweaks.minScore).setDynamicTooltip().onChange(async value => { tweaks.minScore = value; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Score window').setDesc('Keep results within this distance of the strongest match. Smaller values filter ambiguous lower-ranked results.').addSlider(s => s.setLimits(.05, 1, .01).setValue(tweaks.scoreWindow).setDynamicTooltip().onChange(async value => { tweaks.scoreWindow = value; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Results').addSlider(s => s.setLimits(5, 50, 5).setValue(tweaks.topK).setDynamicTooltip().onChange(async value => { tweaks.topK = value; await this.plugin.save(); }));
@@ -544,22 +538,20 @@ module.exports = class GibSearch extends Plugin {
   async onload() {
     const loaded = await this.loadData() || {};
     this.settings = Object.assign({}, DEFAULTS, loaded); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, '.obsidian', 'plugins', this.manifest.id);
-    const legacyTweaks = Object.fromEntries(Object.keys(MODEL_TWEAK_DEFAULTS.nomic).map(key => [key, loaded[key] ?? MODEL_TWEAK_DEFAULTS.nomic[key]]));
+    const legacyTweaks = Object.fromEntries(Object.keys(MODEL_TWEAK_DEFAULTS.bge).map(key => [key, loaded[key] ?? MODEL_TWEAK_DEFAULTS.bge[key]]));
     this.settings.modelTweaks = {
-      nomic: Object.assign({}, MODEL_TWEAK_DEFAULTS.nomic, legacyTweaks, loaded.modelTweaks?.nomic || {}),
-      mobile: Object.assign({}, MODEL_TWEAK_DEFAULTS.mobile, loaded.modelTweaks?.mobile || {}),
+      bge: Object.assign({}, MODEL_TWEAK_DEFAULTS.bge, legacyTweaks, loaded.modelTweaks?.mobile || {}, loaded.modelTweaks?.bge || {}),
     };
-    const oldBge = loaded.modelTweaks?.mobile;
-    if (oldBge?.highlightResultMinScore === 0.58 && oldBge?.highlightSingleWordMinScore === 0.68 && oldBge?.highlightPhraseMinScore === 0.62 && oldBge?.highlightMaxPhrases === 4) {
-      this.settings.modelTweaks.mobile = Object.assign({}, MODEL_TWEAK_DEFAULTS.mobile);
-      await this.save();
-    }
+    delete this.settings.embeddingModel;
     if (!loaded.folderPathBoostSettingsMigrated) {
       this.settings.folderPathBoostEnabled = true;
       this.settings.folderPathBoostSettingsMigrated = true;
       await this.save();
     }
-    if (!MODEL_PROFILES[this.settings.embeddingModel]) this.settings.embeddingModel = 'nomic';
+    if (!loaded.bgeOnlySettingsMigrated) {
+      this.settings.bgeOnlySettingsMigrated = true;
+      await this.save();
+    }
     this.search = new SearchClient(activeIndexDir(this)); this.indexer = new Indexer(this); this.runtime = new RuntimeInstaller(this); this.runtime.materialize(); this.lastError = '';
     this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this));
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
