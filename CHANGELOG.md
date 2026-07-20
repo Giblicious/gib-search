@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.9
+
+- Replaced the Node.js/npm worker with one bundled WebAssembly inference engine shared by desktop and mobile.
+- Embedded the inference binary so startup no longer installs dependencies or downloads a runtime from a CDN.
+- Restored desktop models, indexes, and diagnostic logs to the Gib Search plugin directory.
+- Automatically restores data moved by 0.2.8 and removes obsolete runtime files and processes.
+- Retained live progress and added 30-second index checkpoints to the in-process indexer.
+
 ## 0.2.8
 
 - Moved desktop runtime dependencies, model files, indexes, and diagnostic logs to a device-local cache outside the vault.

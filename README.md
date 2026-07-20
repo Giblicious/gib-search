@@ -11,24 +11,19 @@ Gib Search indexes note content, headings, filenames, and optional folder-path s
 3. Enter `Giblicious/gib-search`.
 4. Enable **Gib Search** under Community plugins.
 
-Gib Search supports Obsidian on desktop and mobile.
+Gib Search supports Obsidian on desktop and mobile. Its WebAssembly inference engine is bundled with the plugin; Node.js, npm, background services, and runtime installers are not required.
 
-- **Desktop:** requires Node.js 18 or newer with npm available on the system path. The existing local worker provides faster indexing.
-- **Mobile:** runs BGE directly inside Obsidian through WebAssembly. No Node.js installation is required.
-
-Each device builds its own local index. The first mobile index can take several minutes, so keep Obsidian open until Settings reports that Gib Search is healthy.
+Each device builds its own local index. The first index can take several minutes, so keep Obsidian open until Settings reports that Gib Search is healthy.
 
 ## Privacy and network use
 
 - Notes, queries, embeddings, and indexes remain on the local device.
-- Desktop search requests are served over a loopback-only local connection (`127.0.0.1`); mobile inference runs directly inside Obsidian.
-- Desktop first-run setup connects to the npm registry for the pinned inference runtime.
-- Mobile first-run setup downloads the WebAssembly inference runtime from jsDelivr.
+- Inference runs directly inside Obsidian using the bundled WebAssembly engine.
 - BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 
-Generated indexes remain local to each device. Desktop model files are stored inside the plugin directory; mobile model files use the WebView's persistent browser cache. They are not intended to be synchronized between devices.
+On desktop, the model, index, and diagnostic logs are stored inside the Gib Search plugin directory. On mobile, platform restrictions require device-local WebView storage. Mobile-generated data is not written into the vault.
 
 ## Model
 
@@ -46,7 +41,7 @@ npm run build
 npm run check
 ```
 
-`npm run build` bundles the mobile inference runtime and embeds the audited desktop worker sources into `main.js`, allowing BRAT to install the plugin using Obsidian's standard three release assets.
+`npm run build` bundles the shared inference runtime and its compressed WebAssembly binary into `main.js`, allowing BRAT to install the plugin using Obsidian's standard three release assets.
 
 ## License
 

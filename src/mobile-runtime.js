@@ -69,7 +69,7 @@ function phraseCandidates(source, maximum = 18) {
 
 export class MobileSearchRuntime {
   constructor(plugin) {
-    this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.meta = []; this.vectors = []; this.lexical = [];
+    this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.lexical = [];
     this.pipe = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Mobile search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
     this.listeners = new Set(); this.phraseCache = new Map(); this.pending = new Map(); this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt;
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
@@ -92,14 +92,17 @@ export class MobileSearchRuntime {
     return this.database;
   }
   async databaseGet() {
+    if (!this.isMobile) return this.plugin.desktopIndexStore.get();
     const database = await this.openDatabase();
     return new Promise((resolve, reject) => { const request = database.transaction('indexes', 'readonly').objectStore('indexes').get(this.indexKey); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
   }
   async databasePut(value) {
+    if (!this.isMobile) return this.plugin.desktopIndexStore.put(value);
     const database = await this.openDatabase();
     return new Promise((resolve, reject) => { const request = database.transaction('indexes', 'readwrite').objectStore('indexes').put(value, this.indexKey); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); });
   }
   async migrateLegacyIndex() {
+    if (!this.isMobile) return;
     const metaPath = `${this.legacyIndexDir}/index.meta.json`, vectorsPath = `${this.legacyIndexDir}/index.vectors.bin`;
     if (!await this.adapter.exists(metaPath) || !await this.adapter.exists(vectorsPath)) return;
     const meta = JSON.parse(await this.adapter.read(metaPath)); const vectors = await this.adapter.readBinary(vectorsPath);
@@ -107,15 +110,24 @@ export class MobileSearchRuntime {
     try { await this.adapter.rmdir(this.legacyIndexDir, true); const parent = this.legacyIndexDir.slice(0, this.legacyIndexDir.lastIndexOf('/')); if (await this.adapter.exists(parent)) await this.adapter.rmdir(parent, false); } catch {}
   }
   async cleanupLegacyGeneratedData() {
+    if (!this.isMobile) return;
     const pluginDir = `${this.plugin.app.vault.configDir}/plugins/${this.plugin.manifest.id}`;
     for (const name of ['logs']) { const target = `${pluginDir}/${name}`; try { if (await this.adapter.exists(target)) await this.adapter.rmdir(target, true); } catch {} }
   }
   async initializeModel() {
     if (this.pipe) return;
-    this.setState('loading_model', 'Loading BGE on this device. The first run downloads and caches the model.');
-    env.allowRemoteModels = true; env.allowLocalModels = false; env.useBrowserCache = true;
-    if (env.backends?.onnx?.wasm) { env.backends.onnx.wasm.numThreads = 1; env.backends.onnx.wasm.proxy = false; }
-    this.pipe = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8', device: 'wasm' });
+    this.setState('loading_model', 'Loading BGE. The first run downloads the model into Gib Search.');
+    env.allowRemoteModels = true; env.allowLocalModels = false; env.useCustomCache = !this.isMobile; env.customCache = this.isMobile ? null : this.plugin.modelCache; env.useBrowserCache = this.isMobile; env.useFSCache = false;
+    if (env.backends?.onnx?.wasm) {
+      env.backends.onnx.wasm.numThreads = 1; env.backends.onnx.wasm.proxy = false;
+      if (!this.plugin.embeddedWasmBinary) {
+        const encoded = this.plugin.embeddedWasmGzip; const compressed = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+        const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
+        this.plugin.embeddedWasmBinary = new Uint8Array(await new Response(stream).arrayBuffer());
+      }
+      env.backends.onnx.wasm.wasmBinary = this.plugin.embeddedWasmBinary;
+    }
+    this.pipe = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8', device: 'wasm', progress_callback: progress => { if (progress.status !== 'progress') return; const percent = Number(progress.progress); if (Number.isFinite(percent)) this.setState('loading_model', `Downloading ${progress.file || 'BGE'}: ${Math.round(percent)}%`); } });
   }
   async embedBatch(texts, query = false) {
     if (!texts.length) return []; await this.initializeModel(); const results = [];
@@ -133,7 +145,7 @@ export class MobileSearchRuntime {
     try {
       let stored = await this.databaseGet(); if (!stored) { await this.migrateLegacyIndex(); stored = await this.databaseGet(); } if (!stored) return;
       this.meta = stored.meta || []; this.lastSuccessfulIndexAt = stored.lastSuccessfulIndexAt || null; const all = new Float32Array(stored.vectors);
-      if (all.length !== this.meta.length * DIMENSION) throw new Error('Mobile index dimensions do not match BGE');
+      if (all.length !== this.meta.length * DIMENSION) throw new Error('Index dimensions do not match BGE');
       this.vectors = this.meta.map((_, index) => all.slice(index * DIMENSION, (index + 1) * DIMENSION)); this.refreshLexical();
     } catch { this.meta = []; this.vectors = []; this.refreshLexical(); }
   }
@@ -149,10 +161,10 @@ export class MobileSearchRuntime {
     const indexed = new Map(this.meta.map(item => [item.file, item.mtime]));
     const changed = files.filter(file => force || indexed.get(file.path) !== file.stat.mtime); const present = new Set(files.map(file => file.path));
     const remove = new Set([...changed.map(file => file.path), ...this.meta.filter(item => !present.has(item.file)).map(item => item.file)]); this.staleFiles = changed.length;
-    this.plugin.logDiagnostic(`Mobile scan complete: ${files.length} files; ${changed.length} need indexing`);
+    this.plugin.logDiagnostic(`Scan complete: ${files.length} files; ${changed.length} need indexing`);
     this.processedFiles = Math.max(0, files.length - changed.length);
     if (!remove.size) { this.staleFiles = 0; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`); return; }
-    const meta = []; const vectors = []; for (let i = 0; i < this.meta.length; i++) if (!remove.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
+    const meta = []; const vectors = []; let checkpointAt = Date.now(); for (let i = 0; i < this.meta.length; i++) if (!remove.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
     for (let fileIndex = 0; fileIndex < changed.length; fileIndex++) {
       if (this.cancelRequested || !this.enabled) return;
       const file = changed[fileIndex]; const fileStartedAt = Date.now(); this.currentFile = file.path; this.setState('indexing', `Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
@@ -162,6 +174,7 @@ export class MobileSearchRuntime {
         this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks.length} chunks in ${Date.now() - fileStartedAt} ms`);
       } catch (error) { this.plugin.reportOnce(`Could not index ${file.path}: ${error.message}`); }
       this.processedFiles++;
+      if (Date.now() - checkpointAt >= 30000) { this.meta = meta; this.vectors = vectors; await this.saveIndex(); checkpointAt = Date.now(); this.plugin.logDiagnostic(`Saved index checkpoint: ${this.processedFiles}/${files.length} files`); }
       await yieldToUi();
     }
     if (this.cancelRequested || !this.enabled) return;
@@ -173,7 +186,7 @@ export class MobileSearchRuntime {
     this.startPromise = (async () => { try { await this.loadIndex(); await this.cleanupLegacyGeneratedData(); await this.initializeModel(); await this.updateIndex(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
     return true;
   }
-  stop() { this.cancelRequested = true; this.enabled = false; this.setState('offline', 'Mobile search is paused'); return true; }
+  stop() { this.cancelRequested = true; this.enabled = false; this.setState('offline', 'Semantic search is paused'); return true; }
   restart() { this.stop(); const resume = () => this.startPromise ? setTimeout(resume, 100) : this.start(); resume(); return true; }
   rebuild() { this.stop(); const rebuild = () => { if (this.startPromise) return setTimeout(rebuild, 100); this.meta = []; this.vectors = []; this.refreshLexical(); this.enabled = true; this.cancelRequested = false; this.startPromise = (async () => { try { await this.updateIndex(true); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); }; rebuild(); return true; }
   watch() {
