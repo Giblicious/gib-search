@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3
+
+- Bundled the browser-only ONNX loader and prevented Electron from importing Node worker modules during WASM startup.
+
 ## 0.3.2
 
 - Fixed ONNX startup inside Obsidian's Electron renderer by selecting the bundled browser inference runtime at build time.

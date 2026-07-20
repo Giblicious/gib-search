@@ -1,6 +1,7 @@
 const { Plugin, PluginSettingTab, Setting, SuggestModal, ItemView, Notice, TFile, setIcon, Platform } = require('obsidian');
 const { MobileSearchRuntime } = require('./mobile-runtime');
 const EMBEDDED_WASM_GZIP = null;
+const EMBEDDED_WASM_MODULE_GZIP = null;
 let fs, path, os, crypto;
 function loadDesktopModules() {
   if (fs) return;
@@ -604,6 +605,7 @@ module.exports = class GibSearch extends Plugin {
     }
     this.lastError = '';
     this.embeddedWasmGzip = EMBEDDED_WASM_GZIP;
+    this.embeddedWasmModuleGzip = EMBEDDED_WASM_MODULE_GZIP;
     if (!this.isMobile) {
       loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id); this.cacheRoot = desktopCacheRoot(); this.vaultCacheKey = vaultCacheKey(this.vaultPath); restoreDesktopData(this);
       this.modelDir = path.join(this.pluginDir, 'models'); this.modelCache = new FileModelCache(this.modelDir); this.desktopIndexStore = new DesktopIndexStore(activeIndexDir(this));

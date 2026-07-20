@@ -77,7 +77,7 @@ export class MobileSearchRuntime {
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
     this.legacyIndexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
     this.indexKey = `${plugin.manifest.id}:${plugin.app.vault.adapter.getBasePath?.() || plugin.app.vault.getName()}:bge-small-en-v1.5`;
-    this.database = null; this.queryCache = new Map(); this.resultCache = new Map(); this.livePending = null; this.liveRunning = false; this.modelBackend = this.isMobile ? 'wasm' : 'cpu';
+    this.database = null; this.queryCache = new Map(); this.resultCache = new Map(); this.livePending = null; this.liveRunning = false; this.modelBackend = 'wasm';
   }
   onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   changed() { for (const listener of this.listeners) listener(); }
@@ -123,6 +123,12 @@ export class MobileSearchRuntime {
     const progress_callback = progress => { if (progress.status !== 'progress') return; const percent = Number(progress.progress); if (Number.isFinite(percent)) this.setState('loading_model', `Downloading ${progress.file || 'BGE'}: ${Math.round(percent)}%`); };
     if (env.backends?.onnx?.wasm) {
       env.backends.onnx.wasm.numThreads = 1; env.backends.onnx.wasm.proxy = false;
+      if (!this.plugin.embeddedWasmModuleUrl) {
+        const encodedModule = this.plugin.embeddedWasmModuleGzip; const compressedModule = Uint8Array.from(atob(encodedModule), character => character.charCodeAt(0));
+        const moduleStream = new Blob([compressedModule]).stream().pipeThrough(new DecompressionStream('gzip')); const moduleSource = await new Response(moduleStream).text();
+        this.plugin.embeddedWasmModuleUrl = URL.createObjectURL(new Blob([moduleSource], { type: 'text/javascript' }));
+      }
+      env.backends.onnx.wasm.wasmPaths = { mjs: this.plugin.embeddedWasmModuleUrl };
       if (!this.plugin.embeddedWasmBinary) {
         const encoded = this.plugin.embeddedWasmGzip; const compressed = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
         const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
@@ -130,8 +136,12 @@ export class MobileSearchRuntime {
       }
       env.backends.onnx.wasm.wasmBinary = this.plugin.embeddedWasmBinary;
     }
-    this.pipe = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8', progress_callback });
-    await this.pipe([`${QUERY_PREFIX}warm semantic search`], { pooling: 'mean', normalize: true }); this.plugin.logDiagnostic(`Bundled semantic engine warmed with ${this.modelBackend.toUpperCase()}`);
+    try {
+      this.pipe = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8', progress_callback });
+      await this.pipe([`${QUERY_PREFIX}warm semantic search`], { pooling: 'mean', normalize: true }); this.plugin.logDiagnostic(`Bundled semantic engine warmed with ${this.modelBackend.toUpperCase()}`);
+    } finally {
+      if (this.plugin.embeddedWasmModuleUrl) { URL.revokeObjectURL(this.plugin.embeddedWasmModuleUrl); this.plugin.embeddedWasmModuleUrl = null; }
+    }
   }
   async embedBatch(texts, query = false) {
     if (!texts.length) return []; await this.initializeModel(); const results = [];
