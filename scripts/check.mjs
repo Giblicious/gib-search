@@ -20,6 +20,9 @@ const bundledBinary = zlib.gunzipSync(Buffer.from(embeddedWasm[1], 'base64'));
 const sourceBinary = fs.readFileSync(path.join(root, 'node_modules', '@huggingface', 'transformers', 'dist', 'ort-wasm-simd-threaded.jsep.wasm'));
 if (!bundledBinary.equals(sourceBinary)) throw new Error('Bundled WebAssembly runtime differs from the pinned dependency');
 if (!builtMain.includes('wasmBinary = this.plugin.embeddedWasmBinary')) throw new Error('Bundled WebAssembly runtime is not connected to inference');
+if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
+if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic search debounce is missing');
+if (!/device\s*:\s*["']webgpu["']/.test(builtMain)) throw new Error('WebGPU acceleration path is missing');
 
 const codeFiles = [
   'main.js', 'src/main.js', 'src/mobile-runtime.js', 'styles.css',

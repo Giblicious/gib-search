@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Added semantic-only live search with a short input debounce and latest-query scheduling.
+- Keeps existing results visible until the next semantic result set is ready.
+- Defers semantic phrase highlighting so it does not delay ranked results.
+- Caches recent query vectors and results and scans a packed vector index.
+- Uses WebGPU acceleration when available, with the bundled WebAssembly engine as fallback.
+
 ## 0.2.9
 
 - Replaced the Node.js/npm worker with one bundled WebAssembly inference engine shared by desktop and mobile.
