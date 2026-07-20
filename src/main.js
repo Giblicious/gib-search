@@ -1,0 +1,575 @@
+const { Plugin, PluginSettingTab, Setting, SuggestModal, ItemView, Notice, TFile, setIcon } = require('obsidian');
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+
+const EMBEDDED_RUNTIME = null;
+
+const GRAPH_VIEW = 'gib-search-graph';
+const MODEL_PROFILES = {
+  nomic: { label: 'Nomic Embed v1.5 (best quality)', indexFolder: '' },
+  mobile: { label: 'BGE Small English v1.5 (mobile)', indexFolder: 'bge-small-en-v1.5' },
+};
+const MODEL_TWEAK_DEFAULTS = {
+  nomic: { topK: 10, minScore: 0.5, scoreWindow: 1, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.5, highlightSingleWordMinScore: 0.6, highlightPhraseMinScore: 0.55, highlightMaxPhrases: 5 },
+  mobile: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 },
+};
+const DEFAULTS = { enabled: true, nodePath: 'node', modelsPath: '', embeddingModel: 'nomic', folderPathBoostEnabled: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.5, highlightSingleWordMinScore: 0.6, highlightPhraseMinScore: 0.55, highlightMaxPhrases: 5, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
+function activeIndexDir(plugin) {
+  const profile = MODEL_PROFILES[plugin.settings.embeddingModel] || MODEL_PROFILES.nomic;
+  return path.join(plugin.pluginDir, 'embeddings', profile.indexFolder);
+}
+function activeTweaks(plugin) {
+  const model = MODEL_TWEAK_DEFAULTS[plugin.settings.embeddingModel] ? plugin.settings.embeddingModel : 'nomic';
+  return plugin.settings.modelTweaks[model];
+}
+
+class SearchClient {
+  constructor(indexDir) { this.indexDir = indexDir; }
+  statusFile() { return path.join(this.indexDir, 'status.json'); }
+  workerStatus() {
+    try { return JSON.parse(fs.readFileSync(this.statusFile(), 'utf8')); } catch { return { phase: 'offline', message: 'Indexer is not running' }; }
+  }
+  port() { return Number(this.workerStatus().httpPort) || null; }
+  available() { return Boolean(this.port()); }
+  request(route, params = {}) {
+    const port = this.port();
+    if (!port) return Promise.reject(new Error('Semantic indexer is not ready yet'));
+    const qs = new URLSearchParams(params).toString();
+    return new Promise((resolve, reject) => {
+      const req = http.get(`http://127.0.0.1:${port}${route}${qs ? `?${qs}` : ''}`, { timeout: 30000 }, res => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            if (res.statusCode >= 400) reject(new Error(data.error || `HTTP ${res.statusCode}`)); else resolve(data);
+          } catch (error) { reject(error); }
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('Semantic search timed out')));
+      req.on('error', reject);
+    });
+  }
+  async search(query, topK, minScore, options = {}) {
+    const params = { q: query, top_k: topK, min_score: minScore, score_window: options.scoreWindow ?? 1, folder_boost: options.folderPathBoost ?? 0 };
+    if (options.semanticHighlights) { params.semantic_highlights = 1; params.highlight_result_min = options.resultMinScore; params.highlight_word_min = options.singleWordMinScore; params.highlight_phrase_min = options.phraseMinScore; params.highlight_max = options.maxPhrases; }
+    if (options.file) params.file = options.file;
+    return (await this.request('/search', params)).results || [];
+  }
+  async graph(k, maxEdges) { return this.request('/graph-edges', { k, max_edges: maxEdges }); }
+  async scores(query) { return (await this.request('/query-file-scores', { q: query })).scores || {}; }
+  async health() { return this.request('/status'); }
+}
+
+class RuntimeInstaller {
+  constructor(plugin) { this.plugin = plugin; this.process = null; }
+  workerDir() { return path.join(this.plugin.pluginDir, 'worker'); }
+  ready() { return fs.existsSync(path.join(this.workerDir(), 'embed-server.mjs')) && fs.existsSync(path.join(this.workerDir(), 'node_modules', '@huggingface', 'transformers')); }
+  materialize() {
+    if (!EMBEDDED_RUNTIME) return;
+    for (const [relativePath, encoded] of Object.entries(EMBEDDED_RUNTIME)) {
+      const target = path.join(this.workerDir(), relativePath); fs.mkdirSync(path.dirname(target), { recursive: true });
+      const contents = Buffer.from(encoded, 'base64');
+      if (!fs.existsSync(target) || !fs.readFileSync(target).equals(contents)) fs.writeFileSync(target, contents);
+    }
+  }
+  npmCommand() {
+    const configured = this.plugin.settings.nodePath || 'node';
+    if (path.isAbsolute(configured)) return path.join(path.dirname(configured), process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  }
+  install() {
+    this.materialize(); if (this.ready()) return Promise.resolve(true); if (this.process) return this.installPromise;
+    this.plugin.indexer.lastEvent = 'Installing the local search runtime…'; this.plugin.indexer.changed();
+    this.installPromise = new Promise((resolve, reject) => {
+      try {
+        this.process = spawn(this.npmCommand(), ['ci', '--no-audit', '--no-fund'], { cwd: this.workerDir(), stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+        this.process.stderr?.on('data', data => { const message = data.toString().trim().split(/\r?\n/).pop(); if (message) { this.plugin.indexer.lastEvent = message; this.plugin.indexer.changed(); } });
+        this.process.on('error', error => { this.process = null; this.plugin.indexer.lastError = error.message; this.plugin.indexer.lastEvent = 'Runtime installation failed'; this.plugin.indexer.changed(); reject(error); });
+        this.process.on('exit', code => { this.process = null; if (code === 0 && this.ready()) { this.plugin.indexer.lastEvent = 'Local search runtime installed'; this.plugin.indexer.changed(); resolve(true); } else reject(new Error(`Runtime installer exited with code ${code}`)); });
+      } catch (error) { this.process = null; reject(error); }
+    });
+    return this.installPromise;
+  }
+  stop() { this.process?.kill(); this.process = null; }
+}
+
+class Indexer {
+  constructor(plugin) { this.plugin = plugin; this.process = null; this.adoptedPid = null; this.lastError = ''; this.lastEvent = 'Not started in this session'; this.listeners = new Set(); }
+  onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  changed() { for (const listener of this.listeners) listener(); }
+  start() {
+    if (!this.plugin.settings.enabled) { this.lastEvent = 'Indexer is disabled'; this.changed(); return false; }
+    if (this.process) { this.lastEvent = 'Indexer is already running'; this.changed(); return false; }
+    const existing = this.plugin.search.workerStatus();
+    if (Number(existing.pid) > 0 && Number(existing.httpPort) > 0) {
+      try { process.kill(Number(existing.pid), 0); this.adoptedPid = Number(existing.pid); this.lastEvent = `Connected to worker PID ${this.adoptedPid}`; this.changed(); return false; } catch {}
+    }
+    const pluginDir = this.plugin.pluginDir;
+    const script = path.join(pluginDir, 'worker', 'embed-server.mjs');
+    const modelDir = this.plugin.settings.modelsPath || path.join(pluginDir, 'worker', 'models');
+    const args = [script, '--vault', this.plugin.vaultPath, '--models', modelDir, '--index', activeIndexDir(this.plugin), '--model', this.plugin.settings.embeddingModel || 'nomic'];
+    try {
+      this.process = spawn(this.plugin.settings.nodePath || 'node', args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+      this.lastError = ''; this.lastEvent = `Worker launched (PID ${this.process.pid})`; this.changed();
+      this.process.stderr?.on('data', data => { const message = data.toString().trim(); this.lastEvent = message.split(/\r?\n/).pop(); this.changed(); });
+      this.process.on('error', error => { this.lastError = error.message; this.lastEvent = 'Worker failed'; this.process = null; this.changed(); new Notice(`Gib Search indexer failed: ${error.message}`); });
+      this.process.on('exit', (code, signal) => { this.lastEvent = `Worker stopped (${signal || `exit ${code}`})`; this.process = null; this.changed(); });
+      return true;
+    } catch (error) { this.lastError = error.message; this.lastEvent = 'Worker failed to launch'; this.changed(); new Notice(`Gib Search indexer failed: ${error.message}`); return false; }
+  }
+  stop() {
+    if (this.process) { const pid = this.process.pid; this.process.kill(); this.lastEvent = `Stopping worker PID ${pid}…`; this.changed(); return true; }
+    const pid = this.adoptedPid || Number(this.plugin.search.workerStatus().pid);
+    if (pid > 0) { try { process.kill(pid); this.adoptedPid = null; this.lastEvent = `Stopping worker PID ${pid}…`; this.changed(); return true; } catch {} }
+    this.lastEvent = 'No plugin-owned worker is running'; this.changed(); return false;
+  }
+  restart() { this.stop(); setTimeout(() => this.start(), 500); }
+  rebuild() {
+    this.stop();
+    for (const name of ['index.meta.json', 'index.vectors.bin', 'status.json']) {
+      const target = path.join(activeIndexDir(this.plugin), name);
+      if (fs.existsSync(target)) fs.unlinkSync(target);
+    }
+    this.lastEvent = 'Generated index cleared; starting a full rebuild…'; this.changed(); setTimeout(() => this.start(), 500);
+  }
+}
+
+const SEARCH_STOP_WORDS = new Set(['about', 'after', 'again', 'also', 'and', 'are', 'because', 'been', 'before', 'being', 'between', 'but', 'can', 'could', 'does', 'for', 'from', 'have', 'into', 'more', 'not', 'that', 'the', 'their', 'then', 'there', 'these', 'they', 'this', 'those', 'through', 'was', 'were', 'what', 'when', 'where', 'which', 'while', 'who', 'with', 'would', 'your']);
+function queryTerms(query) {
+  return [...new Set(String(query).toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) || [])].filter(word => word.length > 2 && !SEARCH_STOP_WORDS.has(word));
+}
+function cleanSourceText(source) {
+  return String(source || '')
+    .replace(/^---\s*[\s\S]*?\n---\s*/, '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1')
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$2')
+    .replace(/\[\[([^\]]+)\]\]/g, '$1')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s*>\s*\[![^\]]+\][+-]?\s*/gim, '')
+    .replace(/^\s{0,3}(?:#{1,6}|>|[-*+] |\d+[.)] )\s*/gm, '')
+    .replace(/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/gm, ' ')
+    .replace(/\|/g, ' · ')
+    .replace(/(?:\*\*|__|~~|==)(.*?)(?:\*\*|__|~~|==)/g, '$1')
+    .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '$1')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function distillSnippet(source, query, semanticPhrases = [], limit = 240) {
+  const clean = cleanSourceText(source); if (!clean) return '';
+  const terms = queryTerms(query); const semantic = semanticPhrases.map(cleanSourceText).filter(Boolean); const sentences = clean.match(/[^.!?\n]+[.!?]?/g)?.map(s => s.trim()).filter(Boolean) || [clean];
+  let best = 0, bestScore = -1;
+  sentences.forEach((sentence, index) => { const lower = sentence.toLowerCase(); const lexical = terms.reduce((sum, term) => sum + (lower.includes(term) ? 1 : 0), 0); const attributed = semantic.reduce((sum, phrase) => sum + (lower.includes(phrase.toLowerCase()) || phrase.toLowerCase().includes(lower) ? 3 : 0), 0); const score = lexical + attributed; if (score > bestScore) { best = index; bestScore = score; } });
+  let excerpt = sentences[best] || clean;
+  if (excerpt.length < limit * .55 && sentences[best + 1]) excerpt += ` ${sentences[best + 1]}`;
+  if (excerpt.length < limit * .55 && best > 0) excerpt = `${sentences[best - 1]} ${excerpt}`;
+  return excerpt.length > limit ? `${excerpt.slice(0, limit).replace(/\s+\S*$/, '')}…` : excerpt;
+}
+function semanticPhrasePool(results) {
+  const phrases = [];
+  for (const hit of results) for (const field of ['filenameHighlights', 'headingHighlights', 'semanticHighlights']) for (const item of hit[field] || []) {
+    const phrase = cleanSourceText(item.phrase);
+    if (phrase && !phrases.some(existing => existing.toLowerCase() === phrase.toLowerCase())) phrases.push(phrase);
+  }
+  return phrases;
+}
+function matchingSemanticPhrases(source, phrases) {
+  const lower = String(source || '').toLowerCase();
+  return phrases.filter(phrase => lower.includes(phrase.toLowerCase()));
+}
+function mergeSemanticPhrases(...lists) {
+  const merged = [];
+  for (const phrase of lists.flat()) if (phrase && !merged.some(existing => existing.toLowerCase() === phrase.toLowerCase())) merged.push(phrase);
+  return merged;
+}
+function groupSearchResults(results, query, maxFiles) {
+  const sharedPhrases = semanticPhrasePool(results);
+  const files = new Map();
+  for (const hit of results) {
+    let group = files.get(hit.file);
+    const rankingScore = Number(hit.rankingScore ?? hit.score ?? 0);
+    if (!group) { group = { file: hit.file, score: rankingScore, semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), snippets: [], filenameHighlights: [] }; files.set(hit.file, group); }
+    if (rankingScore > group.score) { group.score = rankingScore; group.semanticScore = Number(hit.score || 0); group.filenameBoost = Number(hit.filenameBoost || 0); group.folderPathBoost = Number(hit.folderPathBoost || 0); }
+    const semanticHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.text, sharedPhrases), (hit.semanticHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean));
+    const filenameHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.file.replace(/\.md$/i, '').split('/').pop(), sharedPhrases), (hit.filenameHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean));
+    const headingHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.heading, sharedPhrases), (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean));
+    for (const phrase of filenameHighlights) if (!group.filenameHighlights.includes(phrase)) group.filenameHighlights.push(phrase);
+    const text = distillSnippet(hit.text, query, semanticHighlights);
+    if (text && !group.snippets.some(item => item.text === text) && group.snippets.length < 3) group.snippets.push({ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights });
+  }
+  // Preserve the worker's tuned rank. Map insertion order reflects the first
+  // (best-ranked) chunk for each file; sorting again by raw cosine would erase
+  // model-specific reranking such as filename relevance.
+  return [...files.values()].filter(group => group.snippets.length).slice(0, maxFiles);
+}
+function passageSearchResults(results, query, maximum) {
+  const sharedPhrases = semanticPhrasePool(results);
+  return results.slice(0, maximum).map(hit => { const semanticHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.text, sharedPhrases), (hit.semanticHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); const filename = hit.file.replace(/\.md$/i, '').split('/').pop(); const filenameHighlights = mergeSemanticPhrases(matchingSemanticPhrases(filename, sharedPhrases), (hit.filenameHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); const headingHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.heading, sharedPhrases), (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); return { file: hit.file, score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: [{ text: distillSnippet(hit.text, query, semanticHighlights), heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights }] }; }).filter(result => result.snippets[0].text);
+}
+function highlightForms(value) {
+  const word = String(value || '').trim();
+  if (!/^[\p{L}\p{N}'’.-]+$/u.test(word) || word.includes(' ')) return [word];
+  const forms = new Set([word]);
+  const lower = word.toLowerCase();
+  const irregular = { child: 'children', person: 'people', man: 'men', woman: 'women' };
+  if (irregular[lower]) forms.add(irregular[lower]);
+  if (lower.endsWith('ies') && lower.length > 4) forms.add(`${word.slice(0, -3)}y`);
+  else if (lower.endsWith('s') && !lower.endsWith('ss') && lower.length > 3) forms.add(word.slice(0, -1));
+  else if (/[^aeiou]y$/i.test(word)) forms.add(`${word.slice(0, -1)}ies`);
+  else if (/(?:s|x|z|ch|sh)$/i.test(word)) forms.add(`${word}es`);
+  else forms.add(`${word}s`);
+  if (/e$/i.test(word)) { forms.add(`${word.slice(0, -1)}ing`); forms.add(`${word}d`); }
+  else { forms.add(`${word}ing`); forms.add(`${word}ed`); }
+  return [...forms];
+}
+function renderHighlighted(parent, text, query, semanticPhrases = []) {
+  const phrases = semanticPhrases.filter(phrase => { const words = phrase.trim().split(/\s+/).length; return phrase.length >= 4 && phrase.length <= 60 && words >= 1 && words <= 3 && text.toLowerCase().includes(phrase.toLowerCase()); }).slice(0, 3);
+  const exactQuery = String(query || '').trim().replace(/\s+/g, ' ');
+  const queryWords = exactQuery.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*/gu) || [];
+  const queryPhrases = [];
+  for (let size = Math.min(3, queryWords.length); size >= 2; size--) for (let i = 0; i + size <= queryWords.length; i++) {
+    const candidate = queryWords.slice(i, i + size).join(' ');
+    if (text.toLowerCase().includes(candidate.toLowerCase())) queryPhrases.push(candidate);
+  }
+  const terms = queryTerms(query).sort((a, b) => b.length - a.length);
+  const semanticForms = new Set(phrases.flatMap(highlightForms).map(form => form.toLowerCase()));
+  const matches = [...new Set([...queryPhrases, ...phrases.flatMap(highlightForms), ...terms.flatMap(highlightForms)])].sort((a, b) => b.length - a.length);
+  if (!matches.length) { parent.setText(text); return; }
+  const escaped = matches.map(match => match.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); const regex = new RegExp(`(?<![\\p{L}\\p{N}])(${escaped.join('|')})(?![\\p{L}\\p{N}])`, 'giu'); const normalized = new Set(matches.map(match => match.toLowerCase()));
+  for (const part of text.split(regex)) { if (!part) continue; if (normalized.has(part.toLowerCase())) parent.createEl('mark', { cls: semanticForms.has(part.toLowerCase()) ? 'gib-semantic-highlight gib-semantic-highlight-phrase' : 'gib-semantic-highlight', text: part }); else parent.appendText(part); }
+}
+
+class SemanticSearchModal extends SuggestModal {
+  constructor(app, plugin, filePath = null) {
+    super(app); this.plugin = plugin; this.filePath = filePath; this.debounceTimer = null; this.lastResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null;
+    const fileName = filePath ? filePath.split('/').pop().replace(/\.md$/i, '') : '';
+    this.setPlaceholder(filePath ? `Search within ${fileName}…` : 'Search vault by meaning…');
+    this.setInstructions([{ command: 'Type', purpose: 'to search' }, { command: '↑↓', purpose: 'to navigate' }, { command: '↵', purpose: 'to open' }, { command: 'esc', purpose: 'to dismiss' }]);
+  }
+  getSuggestions(query) {
+    if (!query || query.trim().length < 2) { this.lastResults = []; return []; }
+    const trimmed = query.trim();
+    if (trimmed !== this.lastQuery) { this.lastQuery = trimmed; this.visibleLimit = activeTweaks(this.plugin).topK; this.triggerSearch(trimmed); }
+    return this.lastResults;
+  }
+  triggerSearch(query) {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(async () => {
+      try {
+        const tweaks = activeTweaks(this.plugin);
+        const requested = Math.max(this.visibleLimit || tweaks.topK, tweaks.topK);
+        const rawLimit = this.filePath ? Math.min(1000, requested + 10) : Math.min(1000, Math.max(requested * 4, 40));
+        const highlight = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, file: this.filePath };
+        const results = await this.plugin.search.search(query, this.filePath ? tweaks.topK : rawLimit, tweaks.minScore, highlight);
+        if (query === this.lastQuery) {
+          const all = this.filePath ? passageSearchResults(results, query, results.length) : groupSearchResults(results, query, Number.MAX_SAFE_INTEGER);
+          this.lastResults = all.slice(0, requested);
+          this.canLoadMore = all.length > requested || (results.length === rawLimit && rawLimit < 1000);
+          this.updateSuggestions();
+          window.setTimeout(() => this.renderShowMore(), 0);
+        }
+      } catch (error) { this.plugin.reportOnce(error.message); }
+    }, 300);
+  }
+  renderShowMore() {
+    this.modalEl.querySelector('.gib-show-more')?.remove();
+    if (!this.canLoadMore || !this.lastQuery) return;
+    const resultsEl = this.modalEl.querySelector('.suggestion-container');
+    if (!resultsEl) return;
+    const footer = resultsEl.createDiv({ cls: 'gib-show-more' });
+    const button = footer.createEl('button', { text: 'Show 10 more results' });
+    button.addEventListener('mousedown', event => event.preventDefault());
+    button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); button.disabled = true; button.textContent = 'Loading…'; this.visibleLimit += 10; this.triggerSearch(this.lastQuery); });
+  }
+  renderSuggestion(result, el) {
+    const pathParts = result.file.replace(/\.md$/i, '').split('/'); const fileName = pathParts.pop() || result.file.replace(/\.md$/i, '');
+    const container = el.createDiv({ cls: 'gib-semantic-result' });
+    const folder = container.createDiv({ cls: 'gib-semantic-result-folder' });
+    (pathParts.length ? pathParts : ['Vault']).forEach((part, index) => { if (index) folder.createSpan({ cls: 'gib-semantic-result-folder-separator', text: '/' }); folder.createSpan({ text: part }); });
+    const header = container.createDiv({ cls: 'gib-semantic-result-header' });
+    const icon = header.createSpan({ cls: 'gib-semantic-result-icon' }); setIcon(icon, 'sticky-note');
+    const fileTitle = header.createSpan({ cls: 'gib-semantic-result-file' }); renderHighlighted(fileTitle, fileName, this.lastQuery, result.filenameHighlights);
+    const score = header.createSpan({ cls: 'gib-semantic-result-score', text: `${(Number(result.score || 0) * 100).toFixed(0)}%` });
+    const semantic = Math.round(Number(result.semanticScore || 0) * 100), filename = Math.round(Number(result.filenameBoost || 0) * 100), folderBoost = Math.round(Number(result.folderPathBoost || 0) * 100);
+    score.setAttribute('title', `Total relevance: ${(Number(result.score || 0) * 100).toFixed(0)}% · Semantic: ${semantic}% · Filename: +${filename} · Folder: +${folderBoost}`);
+    const snippets = container.createDiv({ cls: 'gib-semantic-snippets' });
+    result.snippets.forEach((snippet, index) => {
+      const block = snippets.createDiv({ cls: 'gib-semantic-snippet' });
+      if (snippet.heading) { const heading = block.createDiv({ cls: 'gib-semantic-result-heading' }); renderHighlighted(heading, snippet.heading, this.lastQuery, snippet.headingHighlights); }
+      const preview = block.createDiv({ cls: 'gib-semantic-result-preview' }); renderHighlighted(preview, snippet.text, this.lastQuery, snippet.semanticHighlights);
+      if (index < result.snippets.length - 1) snippets.createDiv({ cls: 'gib-semantic-snippet-divider' });
+    });
+  }
+  async onChooseSuggestion(result) {
+    const file = this.app.vault.getAbstractFileByPath(result.file);
+    if (!(file instanceof TFile)) return;
+    const leaf = this.app.workspace.getLeaf(); await leaf.openFile(file);
+    const best = result.snippets[0];
+    if (Number(best?.lineStart) > 0) setTimeout(() => { const editor = leaf.view?.editor; if (!editor?.setCursor) return; editor.setCursor({ line: best.lineStart, ch: 0 }); editor.scrollIntoView({ from: { line: best.lineStart, ch: 0 }, to: { line: best.lineEnd || best.lineStart, ch: 0 } }, true); }, 100);
+  }
+  onOpen() {
+    super.onOpen();
+    this.navigationHandler = event => {
+      if (event.key === 'Tab') {
+        event.preventDefault(); event.stopImmediatePropagation();
+        this.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: event.shiftKey ? 'ArrowUp' : 'ArrowDown', code: event.shiftKey ? 'ArrowUp' : 'ArrowDown', bubbles: true }));
+      }
+    };
+    this.modalEl.addEventListener('keydown', this.navigationHandler, true);
+  }
+  onClose() {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    if (this.navigationHandler) this.modalEl.removeEventListener('keydown', this.navigationHandler, true);
+    super.onClose();
+  }
+}
+
+class SemanticInNoteSearch {
+  constructor(app, plugin, activeEditor) {
+    this.app = app; this.plugin = plugin; this.view = activeEditor; this.editor = activeEditor.editor; this.file = activeEditor.file; this.matches = []; this.current = -1; this.timer = null; this.queryVersion = 0; this.highlightName = 'gib-search-semantic-find';
+  }
+  open() {
+    this.plugin.activeInNoteSearch?.close(); this.plugin.activeInNoteSearch = this;
+    const container = this.view.containerEl || this.app.workspace.activeLeaf?.view?.containerEl;
+    const host = container?.querySelector('.markdown-source-view') || this.view.contentEl || container?.querySelector('.view-content') || container;
+    if (!host) { this.plugin.activeInNoteSearch = null; new Notice('Gib Search could not attach to the active editor'); return; }
+    this.host = host; this.host.addClass('gib-in-note-find-host'); this.isButter = this.host.matches('.butter-editor-view') || Boolean(this.host.querySelector('.ProseMirror'));
+    this.el = this.host.createDiv({ cls: 'gib-in-note-find' });
+    this.input = this.el.createEl('input', { type: 'search', placeholder: 'Find by meaning…', attr: { 'aria-label': 'Semantic search in note' } });
+    this.count = this.el.createSpan({ cls: 'gib-in-note-find-count', text: '0/0' });
+    const previous = this.el.createEl('button', { attr: { type: 'button', 'aria-label': 'Previous match', title: 'Previous match (Shift+Enter)' } }); setIcon(previous, 'chevron-up');
+    const next = this.el.createEl('button', { attr: { type: 'button', 'aria-label': 'Next match', title: 'Next match (Enter)' } }); setIcon(next, 'chevron-down');
+    const close = this.el.createEl('button', { attr: { type: 'button', 'aria-label': 'Close', title: 'Close (Esc)' } }); setIcon(close, 'x');
+    previous.addEventListener('click', () => this.move(-1)); next.addEventListener('click', () => this.move(1)); close.addEventListener('click', () => this.close());
+    this.input.addEventListener('input', () => { this.queryVersion++; clearTimeout(this.timer); this.timer = window.setTimeout(() => this.search(this.input.value.trim()), 250); });
+    this.input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); this.move(event.shiftKey ? -1 : 1); } else if (event.key === 'Escape') { event.preventDefault(); this.close(); } });
+    this.leafChangeRef = this.app.workspace.on('active-leaf-change', () => { if (this.app.workspace.activeEditor?.editor !== this.editor) this.close(); });
+    this.editorChangeRef = this.app.workspace.on('editor-change', editor => { if (editor !== this.editor || !this.input.value.trim()) return; clearTimeout(this.timer); this.timer = window.setTimeout(() => this.search(this.input.value.trim()), 350); });
+    this.observer = new MutationObserver(() => { clearTimeout(this.paintTimer); this.paintTimer = window.setTimeout(() => this.paintHighlights(), 40); });
+    const content = this.host.querySelector('.cm-content, .ProseMirror'); if (content) this.observer.observe(content, { childList: true, subtree: true, characterData: true });
+    this.input.focus();
+  }
+  compactPhrases(results, query, source) {
+    const candidates = [query, ...queryTerms(query), ...semanticPhrasePool(results)].map(cleanSourceText).filter(Boolean).filter(phrase => phrase.length >= 3 && phrase.length <= 60 && phrase.split(/\s+/).length <= 3);
+    const unique = [...new Set(candidates.map(phrase => phrase.toLowerCase()))].sort((a, b) => b.length - a.length); this.highlightPhrases = unique;
+    const occupied = []; const matches = [];
+    for (const phrase of unique) {
+      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); const regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
+      for (const match of source.matchAll(regex)) { const from = match.index, to = from + match[0].length; if (occupied.some(range => from < range.to && to > range.from)) continue; occupied.push({ from, to }); matches.push({ from, to, text: match[0] }); }
+    }
+    return matches.sort((a, b) => a.from - b.from);
+  }
+  async search(query) {
+    const version = ++this.queryVersion;
+    if (query.length < 2) { this.matches = []; this.current = -1; this.updateCount(); this.clearHighlights(); return; }
+    try {
+      const tweaks = activeTweaks(this.plugin);
+      const options = { scoreWindow: 1, semanticHighlights: true, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: 5, file: this.file.path };
+      const results = await this.plugin.search.search(query, 250, 0, options);
+      if (version !== this.queryVersion || !this.el?.isConnected) return;
+      const source = this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue();
+      if (version !== this.queryVersion || !this.el?.isConnected) return;
+      this.matches = this.compactPhrases(results, query, source); this.current = this.matches.length ? 0 : -1; this.paintHighlights(); this.updateCount();
+      if (this.current >= 0) this.revealCurrent();
+    } catch (error) { if (version === this.queryVersion) { this.matches = []; this.current = -1; this.updateCount(); this.plugin.reportOnce(error.message); } }
+  }
+  offsetToPos(offset) {
+    if (typeof this.editor?.offsetToPos === 'function') return this.editor.offsetToPos(offset);
+    const value = typeof this.editor?.getValue === 'function' ? this.editor.getValue() : ''; const before = value.slice(0, offset).split('\n'); return { line: before.length - 1, ch: before[before.length - 1].length };
+  }
+  move(delta) {
+    if (!this.matches.length) return;
+    this.current = (this.current + delta + this.matches.length) % this.matches.length; this.updateCount(); this.revealCurrent();
+  }
+  revealCurrent() {
+    const match = this.matches[this.current]; if (!match) return;
+    if (match.range) {
+      const element = match.range.startContainer.parentElement; element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      if (globalThis.CSS?.highlights && typeof globalThis.Highlight === 'function') CSS.highlights.set(`${this.highlightName}-current`, new Highlight(match.range));
+      return;
+    }
+    const from = this.offsetToPos(match.from), to = this.offsetToPos(match.to);
+    if (typeof this.editor?.setSelection === 'function') this.editor.setSelection(from, to);
+    if (typeof this.editor?.scrollIntoView === 'function') this.editor.scrollIntoView({ from, to }, true);
+    window.setTimeout(() => this.paintHighlights(), 60);
+  }
+  updateCount() { if (this.count) this.count.setText(this.matches.length ? `${this.current + 1}/${this.matches.length}` : '0/0'); }
+  paintHighlights() {
+    if (!globalThis.CSS?.highlights || typeof globalThis.Highlight !== 'function' || !this.el?.isConnected) return;
+    const root = this.host?.querySelector('.cm-content, .ProseMirror'); if (!root) return;
+    const phrases = this.highlightPhrases || []; const ranges = [], domMatches = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let node;
+    while ((node = walker.nextNode())) {
+      const value = node.nodeValue || ''; if (!value.trim()) continue;
+      const nodeMatches = [];
+      for (const phrase of phrases) {
+        const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); const regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
+        for (const match of value.matchAll(regex)) { const from = match.index, to = from + match[0].length; if (!nodeMatches.some(item => from < item.to && to > item.from)) nodeMatches.push({ from, to, text: match[0] }); }
+      }
+      nodeMatches.sort((a, b) => a.from - b.from);
+      for (const match of nodeMatches) { const range = new Range(); range.setStart(node, match.from); range.setEnd(node, match.to); ranges.push(range); domMatches.push({ range, text: match.text }); }
+    }
+    CSS.highlights.set(this.highlightName, new Highlight(...ranges));
+    if (this.isButter) { const previous = this.current; this.matches = domMatches; this.current = domMatches.length ? Math.max(0, Math.min(previous < 0 ? 0 : previous, domMatches.length - 1)) : -1; this.updateCount(); const current = this.matches[this.current]; if (current?.range) CSS.highlights.set(`${this.highlightName}-current`, new Highlight(current.range)); }
+  }
+  clearHighlights() { globalThis.CSS?.highlights?.delete(this.highlightName); globalThis.CSS?.highlights?.delete(`${this.highlightName}-current`); }
+  close() {
+    clearTimeout(this.timer); clearTimeout(this.paintTimer); this.queryVersion++; this.observer?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
+  }
+}
+
+class GraphView extends ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.nodes = []; this.edges = []; this.scores = null; this.resize = () => this.draw(); }
+  getViewType() { return GRAPH_VIEW; }
+  getDisplayText() { return 'Gib Search graph'; }
+  getIcon() { return 'waypoints'; }
+  async onOpen() {
+    this.contentEl.empty(); this.contentEl.addClass('gib-graph-view');
+    const toolbar = this.contentEl.createDiv({ cls: 'gib-graph-toolbar' });
+    const input = toolbar.createEl('input', { type: 'search', placeholder: 'Highlight by meaning…' });
+    const reset = toolbar.createEl('button', { text: 'Reset' });
+    const status = toolbar.createSpan({ cls: 'gib-graph-status', text: 'Loading…' });
+    this.canvas = this.contentEl.createEl('canvas', { cls: 'gib-graph-canvas' });
+    this.canvas.addEventListener('click', event => this.openAt(event));
+    let timer;
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(async () => { this.scores = input.value.trim() ? await this.plugin.search.scores(input.value.trim()) : null; this.draw(); }, 250); });
+    reset.addEventListener('click', () => { input.value = ''; this.scores = null; this.draw(); });
+    window.addEventListener('resize', this.resize);
+    try { await this.loadGraph(); status.textContent = `${this.nodes.length} notes · ${this.edges.length} connections`; this.draw(); }
+    catch (error) { status.textContent = error.message; }
+  }
+  async loadGraph() {
+    const nodeMap = new Map(); const edges = []; const hard = new Set();
+    const add = id => { if (!nodeMap.has(id)) nodeMap.set(id, { id, label: id.replace(/\.md$/i, '').split('/').pop() }); };
+    if (this.plugin.settings.showWikilinks) for (const [source, targets] of Object.entries(this.app.metadataCache.resolvedLinks || {})) for (const [target, count] of Object.entries(targets)) if (count) { add(source); add(target); const key = [source, target].sort().join('\0'); hard.add(key); edges.push({ source, target, hard: true, score: 1 }); }
+    const semantic = await this.plugin.search.graph(this.plugin.settings.graphK, this.plugin.settings.graphMaxEdges);
+    for (const edge of semantic.edges || []) { const key = [edge.source, edge.target].sort().join('\0'); if (hard.has(key)) continue; add(edge.source); add(edge.target); edges.push({ source: edge.source, target: edge.target, score: edge.score, hard: false }); }
+    this.nodes = [...nodeMap.values()]; this.edges = edges; this.layout(semantic.pcaPositions || {});
+  }
+  layout(pca) {
+    const count = Math.max(this.nodes.length, 1);
+    this.nodes.forEach((node, index) => {
+      const pos = pca[node.id];
+      if (Array.isArray(pos)) { node.x = (Number(pos[0]) + 1) / 2; node.y = (Number(pos[1]) + 1) / 2; }
+      else { const angle = index * Math.PI * (3 - Math.sqrt(5)); const radius = Math.sqrt(index / count) * .46; node.x = .5 + Math.cos(angle) * radius; node.y = .5 + Math.sin(angle) * radius; }
+    });
+    this.byId = new Map(this.nodes.map(node => [node.id, node]));
+  }
+  draw() {
+    if (!this.canvas) return; const rect = this.canvas.getBoundingClientRect(); const dpr = window.devicePixelRatio || 1;
+    this.canvas.width = Math.max(1, rect.width * dpr); this.canvas.height = Math.max(1, rect.height * dpr);
+    const ctx = this.canvas.getContext('2d'); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, rect.width, rect.height);
+    const pad = 45, w = Math.max(1, rect.width - pad * 2), h = Math.max(1, rect.height - pad * 2); const xy = n => [pad + n.x * w, pad + n.y * h];
+    ctx.lineWidth = 1;
+    for (const edge of this.edges) { const a = this.byId.get(edge.source), b = this.byId.get(edge.target); if (!a || !b) continue; const [ax, ay] = xy(a), [bx, by] = xy(b); ctx.beginPath(); if (!edge.hard) ctx.setLineDash([3, 4]); else ctx.setLineDash([]); ctx.strokeStyle = edge.hard ? 'rgba(140,150,170,.38)' : `rgba(123,97,255,${Math.max(.08, edge.score * .45)})`; ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); }
+    ctx.setLineDash([]); this.hit = [];
+    for (const node of this.nodes) { const [x, y] = xy(node); const score = this.scores ? Number(this.scores[node.id] || 0) : 1; const alpha = this.scores ? Math.max(.08, score) : 1; const radius = 4 + Math.min(7, this.edges.filter(e => e.source === node.id || e.target === node.id).length / 3); ctx.globalAlpha = alpha; ctx.fillStyle = score > .55 && this.scores ? '#ffb347' : '#7b61ff'; ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill(); if (!this.scores || score > .2) { ctx.fillStyle = getComputedStyle(this.contentEl).color; ctx.font = '11px sans-serif'; ctx.fillText(node.label, x + radius + 3, y + 4); } this.hit.push({ node, x, y, radius: radius + 8 }); }
+    ctx.globalAlpha = 1;
+  }
+  openAt(event) { const r = this.canvas.getBoundingClientRect(), x = event.clientX - r.left, y = event.clientY - r.top; const hit = this.hit?.find(h => Math.hypot(h.x - x, h.y - y) <= h.radius); if (hit) { const file = this.app.vault.getAbstractFileByPath(hit.node.id); if (file instanceof TFile) this.app.workspace.getLeaf(false).openFile(file); } }
+  async onClose() { window.removeEventListener('resize', this.resize); }
+}
+
+class SearchSettings extends PluginSettingTab {
+  constructor(app, plugin) { super(app, plugin); this.plugin = plugin; this.timer = null; this.unsubscribe = null; this.busy = false; }
+  display() {
+    this.containerEl.empty(); this.containerEl.createEl('h2', { text: 'Gib Search' });
+    new Setting(this.containerEl).setName('Status').setHeading();
+    this.renderHealth();
+    new Setting(this.containerEl).setName('Indexer').setHeading();
+    new Setting(this.containerEl).setName('Semantic index').setDesc('Run the local embedding indexer and continuously watch the vault for note changes.').addToggle(t => t.setValue(this.plugin.settings.enabled).onChange(async value => { this.plugin.settings.enabled = value; await this.plugin.save(); value ? this.plugin.indexer.start() : this.plugin.indexer.stop(); this.refreshHealth(); }));
+    new Setting(this.containerEl).setName('Embedding model').setDesc('Nomic preserves current quality. BGE Small creates a separate mobile-ready index.').addDropdown(d => d.addOptions(Object.fromEntries(Object.entries(MODEL_PROFILES).map(([key, profile]) => [key, profile.label]))).setValue(this.plugin.settings.embeddingModel).onChange(async value => { this.plugin.indexer.stop(); this.plugin.settings.embeddingModel = value; await this.plugin.save(); this.plugin.search = new SearchClient(activeIndexDir(this.plugin)); setTimeout(() => this.plugin.indexer.start(), 500); new Notice(`Switched to ${MODEL_PROFILES[value].label}; preparing its separate index`); this.display(); }));
+    new Setting(this.containerEl).setName('Worker actions').setDesc('Start, stop, or restart the local index process. Restart is useful after changing Node or model paths.').addButton(b => b.setButtonText('Start').onClick(() => { const started = this.plugin.indexer.start(); new Notice(started ? 'Gib Search worker is starting' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Stop').onClick(() => { const stopped = this.plugin.indexer.stop(); new Notice(stopped ? 'Gib Search worker is stopping' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Restart').setCta().onClick(() => { this.plugin.indexer.restart(); new Notice('Gib Search worker is restarting'); this.refreshHealth(); }));
+    new Setting(this.containerEl).setName('Node executable').setDesc('Node.js command or full path used for the local index worker.').addText(t => t.setValue(this.plugin.settings.nodePath).onChange(async value => { this.plugin.settings.nodePath = value.trim() || 'node'; await this.plugin.save(); }));
+    new Setting(this.containerEl).setName('Maintenance').setHeading();
+    new Setting(this.containerEl).setName('Diagnostics').setDesc('Refresh live health data or run a real semantic query against the index.').addButton(b => b.setButtonText('Refresh').onClick(() => this.refreshHealth(true))).addButton(b => b.setButtonText('Test search').onClick(async () => { if (this.busy) return; this.busy = true; b.setButtonText('Testing…').setDisabled(true); try { const results = await this.plugin.search.search('test', 1, 0); new Notice(`Semantic search is working (${results.length} result${results.length === 1 ? '' : 's'} returned)`); } catch (error) { new Notice(`Semantic search test failed: ${error.message}`, 8000); } finally { this.busy = false; b.setButtonText('Test search').setDisabled(false); this.refreshHealth(); } }));
+    new Setting(this.containerEl).setName('Rebuild semantic index').setDesc('Clear generated vectors and metadata, then re-index every note. Vault notes and the local model are untouched.').addButton(b => b.setButtonText('Rebuild').setWarning().onClick(() => { if (!window.confirm('Rebuild the entire semantic index? Generated vectors will be replaced; vault notes are not changed.')) return; this.plugin.indexer.rebuild(); new Notice('Gib Search started a full index rebuild'); this.refreshHealth(); }));
+    const tweaks = activeTweaks(this.plugin);
+    new Setting(this.containerEl).setName('Tweaks').setHeading();
+    new Setting(this.containerEl).setName('Applies to').setDesc('These values are saved independently for each embedding model.').addText(t => t.setValue(MODEL_PROFILES[this.plugin.settings.embeddingModel].label).setDisabled(true));
+    new Setting(this.containerEl).setName('Minimum score').setDesc('Hide weak semantic matches (0–1).').addSlider(s => s.setLimits(0, 1, .01).setValue(tweaks.minScore).setDynamicTooltip().onChange(async value => { tweaks.minScore = value; await this.plugin.save(); }));
+    new Setting(this.containerEl).setName('Score window').setDesc('Keep results within this distance of the strongest match. Smaller values filter ambiguous lower-ranked results.').addSlider(s => s.setLimits(.05, 1, .01).setValue(tweaks.scoreWindow).setDynamicTooltip().onChange(async value => { tweaks.scoreWindow = value; await this.plugin.save(); }));
+    new Setting(this.containerEl).setName('Results').addSlider(s => s.setLimits(5, 50, 5).setValue(tweaks.topK).setDynamicTooltip().onChange(async value => { tweaks.topK = value; await this.plugin.save(); }));
+    new Setting(this.containerEl).setName('Boost folder path matches').setDesc('Give notes a modest ranking boost when the query matches words in their folder path.').addToggle(t => t.setValue(this.plugin.settings.folderPathBoostEnabled).onChange(async value => { this.plugin.settings.folderPathBoostEnabled = value; await this.plugin.save(); }));
+    new Setting(this.containerEl).setName('Enable semantic highlighting').setDesc('Color compact concepts that the local model identifies as related to the query.').addToggle(t => t.setValue(tweaks.semanticHighlights).onChange(async value => { tweaks.semanticHighlights = value; await this.plugin.save(); this.display(); }));
+    if (tweaks.semanticHighlights) {
+      new Setting(this.containerEl).setName('Result confidence').setDesc('Only attribute phrases inside results at or above this similarity. Higher values reduce misleading highlights.').addSlider(s => s.setLimits(.4, .9, .01).setValue(tweaks.highlightResultMinScore).setDynamicTooltip().onChange(async value => { tweaks.highlightResultMinScore = value; await this.plugin.save(); }));
+      new Setting(this.containerEl).setName('Single-word sensitivity').setDesc('Minimum similarity for a single highlighted concept. Higher is more conservative.').addSlider(s => s.setLimits(.4, .9, .01).setValue(tweaks.highlightSingleWordMinScore).setDynamicTooltip().onChange(async value => { tweaks.highlightSingleWordMinScore = value; await this.plugin.save(); }));
+      new Setting(this.containerEl).setName('Phrase sensitivity').setDesc('Minimum similarity for highlighted two- or three-word phrases. Higher is more conservative.').addSlider(s => s.setLimits(.2, .8, .01).setValue(tweaks.highlightPhraseMinScore).setDynamicTooltip().onChange(async value => { tweaks.highlightPhraseMinScore = value; await this.plugin.save(); }));
+      new Setting(this.containerEl).setName('Concepts per passage').setDesc('Maximum semantic concepts colored in each passage.').addSlider(s => s.setLimits(1, 5, 1).setValue(tweaks.highlightMaxPhrases).setDynamicTooltip().onChange(async value => { tweaks.highlightMaxPhrases = value; await this.plugin.save(); }));
+    }
+    new Setting(this.containerEl).setName('Graph').setHeading();
+    new Setting(this.containerEl).setName('Include wikilinks in graph').addToggle(t => t.setValue(this.plugin.settings.showWikilinks).onChange(async value => { this.plugin.settings.showWikilinks = value; await this.plugin.save(); }));
+    this.unsubscribe?.(); this.unsubscribe = this.plugin.indexer.onChange(() => this.refreshHealth());
+    clearInterval(this.timer); this.timer = window.setInterval(() => this.refreshHealth(), 2000); this.refreshHealth();
+  }
+  renderHealth() {
+    const status = new Setting(this.containerEl).setName('Indexer status');
+    this.healthEl = status.settingEl; this.healthEl.addClass('gib-health-status-row');
+    this.healthMessage = status.descEl.createDiv({ text: 'Reading worker status' });
+    this.healthGrid = status.descEl.createDiv({ cls: 'gib-health-inline' });
+    this.healthProgress = status.descEl.createEl('progress', { cls: 'gib-health-progress' }); this.healthProgress.max = 100; this.healthProgress.value = 0;
+    this.healthProgress.style.display = 'none'; this.healthEvent = status.descEl.createDiv({ cls: 'gib-health-event' });
+    this.healthDot = status.controlEl.createSpan({ cls: 'gib-health-dot' }); this.healthTitle = status.controlEl.createSpan({ cls: 'gib-health-label', text: 'Checking…' });
+  }
+  field(label, value) { this.healthFields.push(`${label}: ${value ?? '—'}`); }
+  async refreshHealth(showNotice = false) {
+    if (!this.healthEl?.isConnected) return;
+    const local = this.plugin.search.workerStatus(); let remote = null; let error = '';
+    try { remote = await this.plugin.search.health(); } catch (e) { error = e.message; }
+    if (!this.healthEl?.isConnected) return;
+    const phase = String(local.phase || 'offline'); const updated = Number(local.updatedAt || 0); const age = updated ? Date.now() - updated : Infinity;
+    const stale = Number(remote?.staleFiles || 0); const healthy = Boolean(remote?.modelLoaded) && !remote?.isIndexing && stale === 0; const working = Boolean(remote?.isIndexing) || ['starting', 'loading_model', 'downloading_model', 'indexing'].includes(phase);
+    const state = healthy ? 'healthy' : working ? 'working' : 'error'; this.healthEl.dataset.state = state;
+    this.healthTitle.textContent = healthy ? 'Healthy and watching your vault' : working ? 'Indexing in progress' : this.plugin.settings.enabled ? 'Indexer needs attention' : 'Indexer disabled';
+    this.healthMessage.textContent = healthy ? 'The model is loaded, semantic queries are responding, and note changes are being watched.' : working ? (local.message || this.plugin.indexer.lastEvent) : (this.plugin.indexer.lastError || error || local.message || 'No live worker response');
+    this.healthFields = []; this.field('Phase', phase); this.field('Files', remote?.indexedFiles ?? local.indexedFiles); this.field('Chunks', remote?.totalChunks ?? local.totalChunks); this.field('Stale', remote?.staleFiles ?? 0); this.field('Model', remote?.modelLoaded ? (MODEL_PROFILES[remote.modelProfile]?.label || remote.modelId || 'Loaded') : 'Not ready'); this.field('PID', this.plugin.indexer.process?.pid ?? local.pid); this.field('Updated', updated ? `${Math.max(0, Math.round(age / 1000))}s ago` : 'Never'); this.healthGrid.textContent = this.healthFields.join(' · ');
+    const total = Number(local.totalFiles || local.vaultFiles || remote?.vaultFiles || 0), done = Number(local.indexedFiles || remote?.indexedFiles || 0);
+    if (working && total > 0) { this.healthProgress.style.display = ''; this.healthProgress.value = Math.min(100, done / total * 100); } else this.healthProgress.style.display = 'none';
+    this.healthEvent.textContent = `Latest activity: ${this.plugin.indexer.lastEvent}`;
+    if (showNotice) new Notice(healthy ? 'Gib Search is healthy' : working ? 'Gib Search is currently indexing' : `Gib Search health check failed: ${error || local.message || 'worker unavailable'}`);
+  }
+  hide() { clearInterval(this.timer); this.timer = null; this.unsubscribe?.(); this.unsubscribe = null; }
+}
+
+module.exports = class GibSearch extends Plugin {
+  async onload() {
+    const loaded = await this.loadData() || {};
+    this.settings = Object.assign({}, DEFAULTS, loaded); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, '.obsidian', 'plugins', this.manifest.id);
+    const legacyTweaks = Object.fromEntries(Object.keys(MODEL_TWEAK_DEFAULTS.nomic).map(key => [key, loaded[key] ?? MODEL_TWEAK_DEFAULTS.nomic[key]]));
+    this.settings.modelTweaks = {
+      nomic: Object.assign({}, MODEL_TWEAK_DEFAULTS.nomic, legacyTweaks, loaded.modelTweaks?.nomic || {}),
+      mobile: Object.assign({}, MODEL_TWEAK_DEFAULTS.mobile, loaded.modelTweaks?.mobile || {}),
+    };
+    const oldBge = loaded.modelTweaks?.mobile;
+    if (oldBge?.highlightResultMinScore === 0.58 && oldBge?.highlightSingleWordMinScore === 0.68 && oldBge?.highlightPhraseMinScore === 0.62 && oldBge?.highlightMaxPhrases === 4) {
+      this.settings.modelTweaks.mobile = Object.assign({}, MODEL_TWEAK_DEFAULTS.mobile);
+      await this.save();
+    }
+    if (!loaded.folderPathBoostSettingsMigrated) {
+      this.settings.folderPathBoostEnabled = true;
+      this.settings.folderPathBoostSettingsMigrated = true;
+      await this.save();
+    }
+    if (!MODEL_PROFILES[this.settings.embeddingModel]) this.settings.embeddingModel = 'nomic';
+    this.search = new SearchClient(activeIndexDir(this)); this.indexer = new Indexer(this); this.runtime = new RuntimeInstaller(this); this.runtime.materialize(); this.lastError = '';
+    this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this));
+    this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
+    this.addCommand({ id: 'semantic-search', name: 'Semantic search', callback: () => new SemanticSearchModal(this.app, this).open() });
+    this.addCommand({ id: 'semantic-graph', name: 'Open semantic graph', callback: () => this.openGraph() });
+    this.addSettingTab(new SearchSettings(this.app, this));
+    if (this.runtime.ready()) this.indexer.start(); else this.runtime.install().then(() => this.indexer.start()).catch(error => this.reportOnce(`Could not install the local search runtime: ${error.message}`));
+  }
+  async save() { await this.saveData(this.settings); }
+  reportOnce(message) { if (message !== this.lastError) { this.lastError = message; new Notice(`Gib Search: ${message}`); } }
+  async openGraph() { let leaf = this.app.workspace.getLeavesOfType(GRAPH_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: GRAPH_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); }
+  onunload() { this.runtime?.stop(); this.indexer?.stop(); }
+};

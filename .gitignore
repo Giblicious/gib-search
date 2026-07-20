@@ -1,0 +1,8 @@
+node_modules/
+worker/node_modules/
+worker/models/
+embeddings/
+data.json
+status.json
+*.log
+.DS_Store
