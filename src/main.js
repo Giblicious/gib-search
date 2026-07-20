@@ -103,12 +103,18 @@ class RuntimeInstaller {
     if (path.isAbsolute(configured)) return path.join(path.dirname(configured), process.platform === 'win32' ? 'npm.cmd' : 'npm');
     return process.platform === 'win32' ? 'npm.cmd' : 'npm';
   }
+  installCommand(args) {
+    const npm = this.npmCommand();
+    if (process.platform === 'win32') return { command: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', 'call', npm, ...args] };
+    return { command: npm, args };
+  }
   install() {
     this.materialize(); if (this.ready()) return Promise.resolve(true); if (this.process) return this.installPromise;
     this.plugin.indexer.lastEvent = 'Installing the local search runtime…'; this.plugin.indexer.changed();
     this.installPromise = new Promise((resolve, reject) => {
       try {
-        this.process = spawn(this.npmCommand(), ['ci', '--no-audit', '--no-fund'], { cwd: this.workerDir(), stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+        const install = this.installCommand(['ci', '--no-audit', '--no-fund']);
+        this.process = spawn(install.command, install.args, { cwd: this.workerDir(), stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
         this.process.stderr?.on('data', data => { const message = data.toString().trim().split(/\r?\n/).pop(); if (message) { this.plugin.indexer.lastEvent = message; this.plugin.indexer.changed(); } });
         this.process.on('error', error => { this.process = null; this.plugin.indexer.lastError = error.message; this.plugin.indexer.lastEvent = 'Runtime installation failed'; this.plugin.indexer.changed(); reject(error); });
         this.process.on('exit', code => { this.process = null; if (code === 0 && this.ready()) { this.plugin.indexer.lastEvent = 'Local search runtime installed'; this.plugin.indexer.changed(); resolve(true); } else reject(new Error(`Runtime installer exited with code ${code}`)); });

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- Fixed first-run runtime installation on Windows with Node.js 24.
+
 ## 0.2.2
 
 - Added live indexing phases, exact file progress, elapsed time, current-file feedback, and last-success timestamps.
