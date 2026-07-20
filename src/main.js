@@ -378,7 +378,6 @@ class SemanticSearchModal extends SuggestModal {
       const block = snippets.createDiv({ cls: 'gib-semantic-snippet' });
       if (snippet.heading) { const heading = block.createDiv({ cls: 'gib-semantic-result-heading' }); renderHighlighted(heading, snippet.heading, this.lastQuery, snippet.headingHighlights); }
       const content = block.createDiv({ cls: 'gib-semantic-snippet-content' });
-      const preview = content.createDiv({ cls: 'gib-semantic-result-preview' }); renderHighlighted(preview, snippet.text, this.lastQuery, snippet.semanticHighlights);
       const image = this.resolveSnippetImage(snippet.imageReferences, result.file);
       if (image) {
         const thumbnail = content.createEl('img', { cls: 'gib-semantic-snippet-thumbnail', attr: { src: image.src, alt: image.alt, loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' } });
@@ -386,6 +385,7 @@ class SemanticSearchModal extends SuggestModal {
         thumbnail.addEventListener('mousedown', event => event.stopPropagation());
         thumbnail.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); if (image.external) window.open(image.src, '_blank', 'noopener,noreferrer'); else this.app.workspace.getLeaf('tab').openFile(image.file); });
       }
+      const preview = content.createDiv({ cls: 'gib-semantic-result-preview' }); renderHighlighted(preview, snippet.text, this.lastQuery, snippet.semanticHighlights);
       if (index < result.snippets.length - 1) snippets.createDiv({ cls: 'gib-semantic-snippet-divider' });
     });
   }
