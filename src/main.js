@@ -22,6 +22,25 @@ function activeIndexDir(plugin) {
 function activeTweaks(plugin) {
   return plugin.settings.modelTweaks.bge;
 }
+function directorySize(directory) {
+  if (!directory || !fs?.existsSync(directory)) return 0;
+  let total = 0;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    try { total += entry.isDirectory() ? directorySize(target) : fs.statSync(target).size; } catch {}
+  }
+  return total;
+}
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0; if (!value) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB']; const unit = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+  return `${(value / 1024 ** unit).toFixed(unit ? 1 : 0)} ${units[unit]}`;
+}
+function formatWhen(timestamp) { return timestamp ? new Date(Number(timestamp)).toLocaleString() : 'Never'; }
+function formatElapsed(milliseconds) {
+  const seconds = Math.max(0, Math.round(Number(milliseconds) / 1000));
+  if (seconds < 60) return `${seconds}s`; const minutes = Math.floor(seconds / 60); return `${minutes}m ${seconds % 60}s`;
+}
 
 class SearchClient {
   constructor(indexDir) { this.indexDir = indexDir; }
@@ -60,10 +79,15 @@ class SearchClient {
   async graph(k, maxEdges) { return this.request('/graph-edges', { k, max_edges: maxEdges }); }
   async scores(query) { return (await this.request('/query-file-scores', { q: query })).scores || {}; }
   async health() { return this.request('/status'); }
+  storageBytes() {
+    return ['index.meta.json', 'index.vectors.bin'].reduce((total, name) => {
+      try { return total + fs.statSync(path.join(this.indexDir, name)).size; } catch { return total; }
+    }, 0);
+  }
 }
 
 class RuntimeInstaller {
-  constructor(plugin) { this.plugin = plugin; this.process = null; }
+  constructor(plugin) { this.plugin = plugin; this.process = null; this.sizeCache = { at: 0, bytes: 0 }; }
   workerDir() { return path.join(this.plugin.pluginDir, 'worker'); }
   ready() { return fs.existsSync(path.join(this.workerDir(), 'embed-server.mjs')) && fs.existsSync(path.join(this.workerDir(), 'node_modules', '@huggingface', 'transformers')); }
   materialize() {
@@ -93,6 +117,7 @@ class RuntimeInstaller {
     return this.installPromise;
   }
   stop() { this.process?.kill(); this.process = null; }
+  storageBytes() { if (Date.now() - this.sizeCache.at > 30000) this.sizeCache = { at: Date.now(), bytes: directorySize(path.join(this.workerDir(), 'models')) }; return this.sizeCache.bytes; }
 }
 
 class Indexer {
@@ -484,7 +509,7 @@ class SearchSettings extends PluginSettingTab {
     this.renderHealth();
     new Setting(this.containerEl).setName('Indexer').setHeading();
     new Setting(this.containerEl).setName('Semantic index').setDesc('Run the local embedding indexer and continuously watch the vault for note changes.').addToggle(t => t.setValue(this.plugin.settings.enabled).onChange(async value => { this.plugin.settings.enabled = value; await this.plugin.save(); value ? this.plugin.indexer.start() : this.plugin.indexer.stop(); this.refreshHealth(); }));
-    new Setting(this.containerEl).setName(this.plugin.isMobile ? 'Index actions' : 'Worker actions').setDesc(this.plugin.isMobile ? 'Start, pause, or restart local BGE indexing on this device.' : 'Start, stop, or restart the local index process. Restart is useful after changing Node or model paths.').addButton(b => b.setButtonText('Start').onClick(() => { const started = this.plugin.indexer.start(); new Notice(started ? 'Gib Search is starting' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText(this.plugin.isMobile ? 'Pause' : 'Stop').onClick(() => { const stopped = this.plugin.indexer.stop(); new Notice(stopped ? `Gib Search is ${this.plugin.isMobile ? 'paused' : 'stopping'}` : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Restart').setCta().onClick(() => { this.plugin.indexer.restart(); new Notice('Gib Search is restarting'); this.refreshHealth(); }));
+    new Setting(this.containerEl).setName('Index actions').setDesc('Start, pause, or restart local indexing. Pausing stops the current run without deleting completed work.').addButton(b => b.setButtonText('Start').onClick(() => this.retry(false))).addButton(b => b.setButtonText('Pause').onClick(() => { const stopped = this.plugin.indexer.stop(); new Notice(stopped ? 'Gib Search indexing paused' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Restart').setCta().onClick(() => this.retry(true)));
     if (!this.plugin.isMobile) new Setting(this.containerEl).setName('Node executable').setDesc('Node.js command or full path used for the local index worker.').addText(t => t.setValue(this.plugin.settings.nodePath).onChange(async value => { this.plugin.settings.nodePath = value.trim() || 'node'; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Maintenance').setHeading();
     new Setting(this.containerEl).setName('Diagnostics').setDesc('Refresh live health data or run a real semantic query against the index.').addButton(b => b.setButtonText('Refresh').onClick(() => this.refreshHealth(true))).addButton(b => b.setButtonText('Test search').onClick(async () => { if (this.busy) return; this.busy = true; b.setButtonText('Testing…').setDisabled(true); try { const results = await this.plugin.search.search('test', 1, 0); new Notice(`Semantic search is working (${results.length} result${results.length === 1 ? '' : 's'} returned)`); } catch (error) { new Notice(`Semantic search test failed: ${error.message}`, 8000); } finally { this.busy = false; b.setButtonText('Test search').setDisabled(false); this.refreshHealth(); } }));
@@ -515,6 +540,7 @@ class SearchSettings extends PluginSettingTab {
     this.healthProgress = status.descEl.createEl('progress', { cls: 'gib-health-progress' }); this.healthProgress.max = 100; this.healthProgress.value = 0;
     this.healthProgress.style.display = 'none'; this.healthEvent = status.descEl.createDiv({ cls: 'gib-health-event' });
     this.healthDot = status.controlEl.createSpan({ cls: 'gib-health-dot' }); this.healthTitle = status.controlEl.createSpan({ cls: 'gib-health-label', text: 'Checking…' });
+    status.addButton(button => { this.retryButton = button; button.setButtonText('Retry').setCta().onClick(() => this.retry(true)); button.buttonEl.addClass('gib-health-retry'); button.buttonEl.style.display = 'none'; });
   }
   field(label, value) { this.healthFields.push(`${label}: ${value ?? '—'}`); }
   async refreshHealth(showNotice = false) {
@@ -522,16 +548,30 @@ class SearchSettings extends PluginSettingTab {
     const local = this.plugin.search.workerStatus(); let remote = null; let error = '';
     try { remote = await this.plugin.search.health(); } catch (e) { error = e.message; }
     if (!this.healthEl?.isConnected) return;
-    const phase = String(local.phase || 'offline'); const updated = Number(local.updatedAt || 0); const age = updated ? Date.now() - updated : Infinity;
+    const phase = String(local.phase || 'offline');
     const stale = Number(remote?.staleFiles || 0); const healthy = Boolean(remote?.modelLoaded) && !remote?.isIndexing && stale === 0; const working = Boolean(remote?.isIndexing) || ['starting', 'loading_model', 'downloading_model', 'indexing'].includes(phase);
-    const state = healthy ? 'healthy' : working ? 'working' : 'error'; this.healthEl.dataset.state = state;
+    const state = healthy ? 'healthy' : working ? 'working' : this.plugin.settings.enabled ? 'error' : 'disabled'; this.healthEl.dataset.state = state;
     this.healthTitle.textContent = healthy ? 'Healthy and watching your vault' : working ? 'Indexing in progress' : this.plugin.settings.enabled ? 'Indexer needs attention' : 'Indexer disabled';
     this.healthMessage.textContent = healthy ? 'The model is loaded, semantic queries are responding, and note changes are being watched.' : working ? (local.message || this.plugin.indexer.lastEvent) : (this.plugin.indexer.lastError || error || local.message || 'No live worker response');
-    this.healthFields = []; this.field('Phase', phase); this.field('Files', remote?.indexedFiles ?? local.indexedFiles); this.field('Chunks', remote?.totalChunks ?? local.totalChunks); this.field('Stale', remote?.staleFiles ?? 0); this.field('Model', remote?.modelLoaded ? (MODEL_PROFILES[remote.modelProfile]?.label || remote.modelId || 'Loaded') : 'Not ready'); if (!this.plugin.isMobile) this.field('PID', this.plugin.indexer.process?.pid ?? local.pid); this.field('Updated', updated ? `${Math.max(0, Math.round(age / 1000))}s ago` : 'Never'); this.healthGrid.textContent = this.healthFields.join(' · ');
-    const total = Number(local.totalFiles || local.vaultFiles || remote?.vaultFiles || 0), done = Number(local.indexedFiles || remote?.indexedFiles || 0);
+    const total = Number(local.totalFiles || local.vaultFiles || remote?.vaultFiles || 0), done = Number(local.processedFiles ?? local.fileCount ?? local.indexedFiles ?? remote?.indexedFiles ?? 0);
+    const elapsedFrom = Number(local.phaseStartedAt || local.startedAt || 0); const indexBytes = this.plugin.search.storageBytes?.() || 0; const modelBytes = this.plugin.runtime.storageBytes?.() || 0;
+    this.healthFields = []; this.field('Phase', phase.replaceAll('_', ' ')); this.field('Progress', total ? `${done}/${total}` : 'Waiting'); this.field('Indexed', remote?.indexedFiles ?? local.indexedFiles ?? 0); this.field('Chunks', remote?.totalChunks ?? local.totalChunks ?? 0); this.field('Model', remote?.modelLoaded ? (MODEL_PROFILES[remote.modelProfile]?.label || remote.modelId || 'Loaded') : 'Not ready'); this.field('Index size', formatBytes(indexBytes)); if (!this.plugin.isMobile) this.field('Model cache', formatBytes(modelBytes)); this.field('Last success', formatWhen(local.lastSuccessfulIndexAt)); if (working && elapsedFrom) this.field('Elapsed', formatElapsed(Date.now() - elapsedFrom)); this.healthGrid.textContent = this.healthFields.join(' · ');
     if (working && total > 0) { this.healthProgress.style.display = ''; this.healthProgress.value = Math.min(100, done / total * 100); } else this.healthProgress.style.display = 'none';
-    this.healthEvent.textContent = `Latest activity: ${this.plugin.indexer.lastEvent}`;
+    this.healthEvent.textContent = local.currentFile ? `Current file: ${local.currentFile}` : `Latest activity: ${this.plugin.indexer.lastEvent}`;
+    if (this.retryButton?.buttonEl) this.retryButton.buttonEl.style.display = state === 'error' ? '' : 'none';
     if (showNotice) new Notice(healthy ? 'Gib Search is healthy' : working ? 'Gib Search is currently indexing' : `Gib Search health check failed: ${error || local.message || 'worker unavailable'}`);
+  }
+  async retry(restart) {
+    if (this.busy) return; this.busy = true;
+    try {
+      if (!this.plugin.settings.enabled) { this.plugin.settings.enabled = true; await this.plugin.save(); }
+      if (!this.plugin.isMobile && !this.plugin.runtime.ready()) await this.plugin.runtime.install();
+      restart ? this.plugin.indexer.restart() : this.plugin.indexer.start();
+      new Notice(restart ? 'Gib Search is restarting' : 'Gib Search is starting');
+    } catch (error) {
+      this.plugin.indexer.lastError = error.message; this.plugin.indexer.lastEvent = 'Could not start indexing'; this.plugin.indexer.changed();
+      new Notice(`Gib Search could not start: ${error.message}`, 8000);
+    } finally { this.busy = false; this.refreshHealth(); }
   }
   hide() { clearInterval(this.timer); this.timer = null; this.unsubscribe?.(); this.unsubscribe = null; }
 }

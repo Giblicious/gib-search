@@ -70,14 +70,15 @@ function phraseCandidates(source, maximum = 18) {
 export class MobileSearchRuntime {
   constructor(plugin) {
     this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.meta = []; this.vectors = []; this.lexical = [];
-    this.pipe = null; this.startPromise = null; this.enabled = false; this.phase = 'offline'; this.message = 'Mobile search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
-    this.listeners = new Set(); this.phraseCache = new Map(); this.pending = new Map(); this.startedAt = Date.now();
+    this.pipe = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Mobile search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
+    this.listeners = new Set(); this.phraseCache = new Map(); this.pending = new Map(); this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt;
+    this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
     this.indexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
   }
   onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   changed() { for (const listener of this.listeners) listener(); }
-  setState(phase, message) { this.phase = phase; this.message = message; this.lastEvent = message; this.lastError = phase === 'error' ? message : ''; this.changed(); }
-  workerStatus() { return { phase: this.phase, message: this.message, pid: 'mobile', updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, totalFiles: this.vaultFiles || 0 }; }
+  setState(phase, message) { if (phase !== this.phase) this.phaseStartedAt = Date.now(); this.phase = phase; this.message = message; this.lastEvent = message; this.lastError = phase === 'error' ? message : ''; this.changed(); }
+  workerStatus() { return { phase: this.phase, message: this.message, pid: 'mobile', startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }; }
   async health() { return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelLoaded: Boolean(this.pipe), modelProfile: 'bge', modelId: MODEL_ID }; }
   async ensureDirectory() {
     const embeddings = this.indexDir.slice(0, this.indexDir.lastIndexOf('/'));
@@ -118,33 +119,38 @@ export class MobileSearchRuntime {
     await this.adapter.write(`${this.indexDir}/index.meta.json`, JSON.stringify(this.meta));
     await this.adapter.writeBinary(`${this.indexDir}/index.vectors.bin`, packed.buffer); this.refreshLexical();
   }
+  storageBytes() { return this.vectors.length * DIMENSION * 4 + new TextEncoder().encode(JSON.stringify(this.meta)).length; }
   files() { return this.plugin.app.vault.getFiles().filter(file => INDEXABLE.has(file.extension.toLowerCase())); }
   async updateIndex(force = false) {
-    this.setState('indexing', 'Checking the mobile semantic index…'); const files = this.files(); this.vaultFiles = files.length;
+    this.setState('indexing', 'Checking the mobile semantic index…'); const files = this.files(); this.vaultFiles = files.length; this.totalFiles = files.length; this.currentFile = '';
     const indexed = new Map(this.meta.map(item => [item.file, item.mtime]));
     const changed = files.filter(file => force || indexed.get(file.path) !== file.stat.mtime); const present = new Set(files.map(file => file.path));
     const remove = new Set([...changed.map(file => file.path), ...this.meta.filter(item => !present.has(item.file)).map(item => item.file)]); this.staleFiles = changed.length;
-    if (!remove.size) { this.staleFiles = 0; this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`); return; }
+    this.processedFiles = Math.max(0, files.length - changed.length);
+    if (!remove.size) { this.staleFiles = 0; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`); return; }
     const meta = []; const vectors = []; for (let i = 0; i < this.meta.length; i++) if (!remove.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
     for (let fileIndex = 0; fileIndex < changed.length; fileIndex++) {
-      const file = changed[fileIndex]; this.setState('indexing', `Indexing ${fileIndex + 1} of ${changed.length}: ${file.path}`);
+      if (this.cancelRequested || !this.enabled) return;
+      const file = changed[fileIndex]; this.currentFile = file.path; this.setState('indexing', `Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
       try {
         const chunks = chunkMarkdown(await this.plugin.app.vault.cachedRead(file)); const embedded = await this.embedBatch(chunks.map(chunk => embeddingText(file.path, chunk)));
         chunks.forEach((chunk, index) => { meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime }); vectors.push(embedded[index]); });
       } catch (error) { this.plugin.reportOnce(`Could not index ${file.path}: ${error.message}`); }
+      this.processedFiles++;
       await yieldToUi();
     }
-    this.meta = meta; this.vectors = vectors; await this.saveIndex(); this.staleFiles = 0; this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`);
+    if (this.cancelRequested || !this.enabled) return;
+    this.meta = meta; this.vectors = vectors; await this.saveIndex(); this.staleFiles = 0; this.currentFile = ''; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`);
   }
   start() {
     if (!this.plugin.settings.enabled) { this.setState('offline', 'Semantic index is disabled'); return false; }
-    if (this.startPromise) return false; this.enabled = true;
+    if (this.startPromise) return false; this.enabled = true; this.cancelRequested = false;
     this.startPromise = (async () => { try { await this.ensureDirectory(); await this.loadIndex(); await this.initializeModel(); await this.updateIndex(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
     return true;
   }
-  stop() { this.enabled = false; this.setState('offline', 'Mobile search is paused'); return true; }
-  restart() { this.stop(); return this.start(); }
-  rebuild() { this.meta = []; this.vectors = []; this.refreshLexical(); this.startPromise = (async () => { try { await this.updateIndex(true); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); return true; }
+  stop() { this.cancelRequested = true; this.enabled = false; this.setState('offline', 'Mobile search is paused'); return true; }
+  restart() { this.stop(); const resume = () => this.startPromise ? setTimeout(resume, 100) : this.start(); resume(); return true; }
+  rebuild() { this.stop(); const rebuild = () => { if (this.startPromise) return setTimeout(rebuild, 100); this.meta = []; this.vectors = []; this.refreshLexical(); this.enabled = true; this.cancelRequested = false; this.startPromise = (async () => { try { await this.updateIndex(true); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); }; rebuild(); return true; }
   watch() {
     const schedule = file => { if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || '').toLowerCase())) return; clearTimeout(this.pending.get(file.path)); this.pending.set(file.path, setTimeout(() => { this.pending.delete(file.path); this.updateIndex(); }, 1800)); };
     this.plugin.registerEvent(this.plugin.app.vault.on('create', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('modify', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('delete', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('rename', schedule));
