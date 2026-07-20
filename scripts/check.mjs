@@ -18,10 +18,16 @@ if (manifest.isDesktopOnly) throw new Error('Gib Search must remain available on
 const builtMain = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const embeddedWasm = builtMain.match(/EMBEDDED_WASM_GZIP\s*=\s*["']([^"']+)["']/);
 if (!embeddedWasm) throw new Error('main.js does not contain the bundled WebAssembly runtime');
+const embeddedWasmModule = builtMain.match(/EMBEDDED_WASM_MODULE_GZIP\s*=\s*["']([^"']+)["']/);
+if (!embeddedWasmModule) throw new Error('main.js does not contain the bundled WebAssembly loader');
 const bundledBinary = zlib.gunzipSync(Buffer.from(embeddedWasm[1], 'base64'));
+const bundledModule = zlib.gunzipSync(Buffer.from(embeddedWasmModule[1], 'base64')).toString('utf8');
 const sourceBinary = fs.readFileSync(path.join(root, 'node_modules', '@huggingface', 'transformers', 'dist', 'ort-wasm-simd-threaded.jsep.wasm'));
 if (!bundledBinary.equals(sourceBinary)) throw new Error('Bundled WebAssembly runtime differs from the pinned dependency');
+if (!bundledModule.includes('n=false') || !bundledModule.includes('var isNode = false;')) throw new Error('Bundled WebAssembly loader can still select Node worker modules');
+if (!bundledModule.includes('Xa??="embedded.wasm"')) throw new Error('Bundled WebAssembly loader still depends on its module URL');
 if (!builtMain.includes('wasmBinary = this.plugin.embeddedWasmBinary')) throw new Error('Bundled WebAssembly runtime is not connected to inference');
+if (!builtMain.includes('wasmPaths = { mjs: this.plugin.embeddedWasmModuleUrl }')) throw new Error('Bundled WebAssembly loader is not connected to inference');
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic search debounce is missing');
 if (/device\s*:\s*["'](?:wasm|webgpu)["']/.test(builtMain)) throw new Error('Inference device must be selected by the host runtime');

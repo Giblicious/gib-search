@@ -7,8 +7,18 @@ import { build } from 'esbuild';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const wasm = fs.readFileSync(path.join(root, 'node_modules', '@huggingface', 'transformers', 'dist', 'ort-wasm-simd-threaded.jsep.wasm'));
 const embeddedWasm = zlib.gzipSync(wasm, { level: 9 }).toString('base64');
+const wasmModulePath = path.join(root, 'node_modules', '@huggingface', 'transformers', 'dist', 'ort-wasm-simd-threaded.jsep.mjs');
+const wasmModule = fs.readFileSync(wasmModulePath, 'utf8')
+  .replace('n="object"==typeof process&&"object"==typeof process.versions&&"string"==typeof process.versions.node&&"renderer"!=process.type', 'n=false')
+  .replace("var isNode = typeof globalThis.process?.versions?.node == 'string';\nif (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';", 'var isNode = false;')
+  .replace('Xa??=e.locateFile?e.locateFile?e.locateFile("ort-wasm-simd-threaded.jsep.wasm",v):v+"ort-wasm-simd-threaded.jsep.wasm":(new URL("ort-wasm-simd-threaded.jsep.wasm",import.meta.url)).href', 'Xa??="embedded.wasm"');
+if (!wasmModule.includes('n=false') || !wasmModule.includes('var isNode = false;') || !wasmModule.includes('Xa??="embedded.wasm"')) throw new Error('Could not prepare the browser-only WASM module');
+const embeddedWasmModule = zlib.gzipSync(wasmModule, { level: 9 }).toString('base64');
 const marker = 'const EMBEDDED_WASM_GZIP = null;';
-const source = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8').replace(marker, `const EMBEDDED_WASM_GZIP = '${embeddedWasm}';`);
+const moduleMarker = 'const EMBEDDED_WASM_MODULE_GZIP = null;';
+const source = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8')
+  .replace(marker, `const EMBEDDED_WASM_GZIP = '${embeddedWasm}';`)
+  .replace(moduleMarker, `const EMBEDDED_WASM_MODULE_GZIP = '${embeddedWasmModule}';`);
 await build({
   stdin: { contents: source, resolveDir: path.join(root, 'src'), sourcefile: 'main.js', loader: 'js' },
   outfile: path.join(root, 'main.js'), bundle: true, platform: 'browser', format: 'cjs', target: 'es2020',
