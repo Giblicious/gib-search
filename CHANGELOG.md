@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Fixed release packaging for the bundled mobile runtime.
+
 ## 0.2.0
 
 - Added native Obsidian Mobile support using local BGE inference through WebAssembly.
