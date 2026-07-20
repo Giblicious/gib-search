@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5
+
+- Added compact thumbnails for local images associated with search-result passages.
+- Added optional external image thumbnails, disabled by default for privacy and performance.
+- Chooses the image nearest the query-relevant text and opens thumbnails on click.
+
 ## 0.2.4
 
 - Detects stale or unexpectedly stopped index workers instead of showing indefinite indexing.
