@@ -1,8 +1,10 @@
-const { Plugin, PluginSettingTab, Setting, SuggestModal, ItemView, Notice, TFile, setIcon } = require('obsidian');
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const http = require('http');
+const { Plugin, PluginSettingTab, Setting, SuggestModal, ItemView, Notice, TFile, setIcon, Platform } = require('obsidian');
+const { MobileSearchRuntime } = require('./mobile-runtime');
+let spawn, fs, path, http;
+function loadDesktopModules() {
+  if (fs) return;
+  ({ spawn } = require('child_process')); fs = require('fs'); path = require('path'); http = require('http');
+}
 
 const EMBEDDED_RUNTIME = null;
 
@@ -482,8 +484,8 @@ class SearchSettings extends PluginSettingTab {
     this.renderHealth();
     new Setting(this.containerEl).setName('Indexer').setHeading();
     new Setting(this.containerEl).setName('Semantic index').setDesc('Run the local embedding indexer and continuously watch the vault for note changes.').addToggle(t => t.setValue(this.plugin.settings.enabled).onChange(async value => { this.plugin.settings.enabled = value; await this.plugin.save(); value ? this.plugin.indexer.start() : this.plugin.indexer.stop(); this.refreshHealth(); }));
-    new Setting(this.containerEl).setName('Worker actions').setDesc('Start, stop, or restart the local index process. Restart is useful after changing Node or model paths.').addButton(b => b.setButtonText('Start').onClick(() => { const started = this.plugin.indexer.start(); new Notice(started ? 'Gib Search worker is starting' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Stop').onClick(() => { const stopped = this.plugin.indexer.stop(); new Notice(stopped ? 'Gib Search worker is stopping' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Restart').setCta().onClick(() => { this.plugin.indexer.restart(); new Notice('Gib Search worker is restarting'); this.refreshHealth(); }));
-    new Setting(this.containerEl).setName('Node executable').setDesc('Node.js command or full path used for the local index worker.').addText(t => t.setValue(this.plugin.settings.nodePath).onChange(async value => { this.plugin.settings.nodePath = value.trim() || 'node'; await this.plugin.save(); }));
+    new Setting(this.containerEl).setName(this.plugin.isMobile ? 'Index actions' : 'Worker actions').setDesc(this.plugin.isMobile ? 'Start, pause, or restart local BGE indexing on this device.' : 'Start, stop, or restart the local index process. Restart is useful after changing Node or model paths.').addButton(b => b.setButtonText('Start').onClick(() => { const started = this.plugin.indexer.start(); new Notice(started ? 'Gib Search is starting' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText(this.plugin.isMobile ? 'Pause' : 'Stop').onClick(() => { const stopped = this.plugin.indexer.stop(); new Notice(stopped ? `Gib Search is ${this.plugin.isMobile ? 'paused' : 'stopping'}` : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Restart').setCta().onClick(() => { this.plugin.indexer.restart(); new Notice('Gib Search is restarting'); this.refreshHealth(); }));
+    if (!this.plugin.isMobile) new Setting(this.containerEl).setName('Node executable').setDesc('Node.js command or full path used for the local index worker.').addText(t => t.setValue(this.plugin.settings.nodePath).onChange(async value => { this.plugin.settings.nodePath = value.trim() || 'node'; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Maintenance').setHeading();
     new Setting(this.containerEl).setName('Diagnostics').setDesc('Refresh live health data or run a real semantic query against the index.').addButton(b => b.setButtonText('Refresh').onClick(() => this.refreshHealth(true))).addButton(b => b.setButtonText('Test search').onClick(async () => { if (this.busy) return; this.busy = true; b.setButtonText('Testing…').setDisabled(true); try { const results = await this.plugin.search.search('test', 1, 0); new Notice(`Semantic search is working (${results.length} result${results.length === 1 ? '' : 's'} returned)`); } catch (error) { new Notice(`Semantic search test failed: ${error.message}`, 8000); } finally { this.busy = false; b.setButtonText('Test search').setDisabled(false); this.refreshHealth(); } }));
     new Setting(this.containerEl).setName('Rebuild semantic index').setDesc('Clear generated vectors and metadata, then re-index every note. Vault notes and the local model are untouched.').addButton(b => b.setButtonText('Rebuild').setWarning().onClick(() => { if (!window.confirm('Rebuild the entire semantic index? Generated vectors will be replaced; vault notes are not changed.')) return; this.plugin.indexer.rebuild(); new Notice('Gib Search started a full index rebuild'); this.refreshHealth(); }));
@@ -525,7 +527,7 @@ class SearchSettings extends PluginSettingTab {
     const state = healthy ? 'healthy' : working ? 'working' : 'error'; this.healthEl.dataset.state = state;
     this.healthTitle.textContent = healthy ? 'Healthy and watching your vault' : working ? 'Indexing in progress' : this.plugin.settings.enabled ? 'Indexer needs attention' : 'Indexer disabled';
     this.healthMessage.textContent = healthy ? 'The model is loaded, semantic queries are responding, and note changes are being watched.' : working ? (local.message || this.plugin.indexer.lastEvent) : (this.plugin.indexer.lastError || error || local.message || 'No live worker response');
-    this.healthFields = []; this.field('Phase', phase); this.field('Files', remote?.indexedFiles ?? local.indexedFiles); this.field('Chunks', remote?.totalChunks ?? local.totalChunks); this.field('Stale', remote?.staleFiles ?? 0); this.field('Model', remote?.modelLoaded ? (MODEL_PROFILES[remote.modelProfile]?.label || remote.modelId || 'Loaded') : 'Not ready'); this.field('PID', this.plugin.indexer.process?.pid ?? local.pid); this.field('Updated', updated ? `${Math.max(0, Math.round(age / 1000))}s ago` : 'Never'); this.healthGrid.textContent = this.healthFields.join(' · ');
+    this.healthFields = []; this.field('Phase', phase); this.field('Files', remote?.indexedFiles ?? local.indexedFiles); this.field('Chunks', remote?.totalChunks ?? local.totalChunks); this.field('Stale', remote?.staleFiles ?? 0); this.field('Model', remote?.modelLoaded ? (MODEL_PROFILES[remote.modelProfile]?.label || remote.modelId || 'Loaded') : 'Not ready'); if (!this.plugin.isMobile) this.field('PID', this.plugin.indexer.process?.pid ?? local.pid); this.field('Updated', updated ? `${Math.max(0, Math.round(age / 1000))}s ago` : 'Never'); this.healthGrid.textContent = this.healthFields.join(' · ');
     const total = Number(local.totalFiles || local.vaultFiles || remote?.vaultFiles || 0), done = Number(local.indexedFiles || remote?.indexedFiles || 0);
     if (working && total > 0) { this.healthProgress.style.display = ''; this.healthProgress.value = Math.min(100, done / total * 100); } else this.healthProgress.style.display = 'none';
     this.healthEvent.textContent = `Latest activity: ${this.plugin.indexer.lastEvent}`;
@@ -537,7 +539,7 @@ class SearchSettings extends PluginSettingTab {
 module.exports = class GibSearch extends Plugin {
   async onload() {
     const loaded = await this.loadData() || {};
-    this.settings = Object.assign({}, DEFAULTS, loaded); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, '.obsidian', 'plugins', this.manifest.id);
+    this.settings = Object.assign({}, DEFAULTS, loaded); this.isMobile = Platform.isMobileApp;
     const legacyTweaks = Object.fromEntries(Object.keys(MODEL_TWEAK_DEFAULTS.bge).map(key => [key, loaded[key] ?? MODEL_TWEAK_DEFAULTS.bge[key]]));
     this.settings.modelTweaks = {
       bge: Object.assign({}, MODEL_TWEAK_DEFAULTS.bge, legacyTweaks, loaded.modelTweaks?.mobile || {}, loaded.modelTweaks?.bge || {}),
@@ -552,7 +554,13 @@ module.exports = class GibSearch extends Plugin {
       this.settings.bgeOnlySettingsMigrated = true;
       await this.save();
     }
-    this.search = new SearchClient(activeIndexDir(this)); this.indexer = new Indexer(this); this.runtime = new RuntimeInstaller(this); this.runtime.materialize(); this.lastError = '';
+    this.lastError = '';
+    if (this.isMobile) {
+      this.search = this.indexer = new MobileSearchRuntime(this); this.runtime = { ready: () => true, materialize() {}, install: async () => true, stop() {} }; this.indexer.watch();
+    } else {
+      loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id);
+      this.search = new SearchClient(activeIndexDir(this)); this.indexer = new Indexer(this); this.runtime = new RuntimeInstaller(this); this.runtime.materialize();
+    }
     this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this));
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: 'semantic-search', name: 'Semantic search', callback: () => new SemanticSearchModal(this.app, this).open() });
