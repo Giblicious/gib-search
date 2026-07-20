@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Fixed startup in Obsidian desktop by allowing the bundled inference runtime to select its supported local device.
+
 ## 0.3.0
 
 - Added semantic-only live search with a short input debounce and latest-query scheduling.

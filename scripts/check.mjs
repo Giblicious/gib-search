@@ -22,7 +22,7 @@ if (!bundledBinary.equals(sourceBinary)) throw new Error('Bundled WebAssembly ru
 if (!builtMain.includes('wasmBinary = this.plugin.embeddedWasmBinary')) throw new Error('Bundled WebAssembly runtime is not connected to inference');
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic search debounce is missing');
-if (!/device\s*:\s*["']webgpu["']/.test(builtMain)) throw new Error('WebGPU acceleration path is missing');
+if (/device\s*:\s*["'](?:wasm|webgpu)["']/.test(builtMain)) throw new Error('Inference device must be selected by the host runtime');
 
 const codeFiles = [
   'main.js', 'src/main.js', 'src/mobile-runtime.js', 'styles.css',
