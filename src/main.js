@@ -1,13 +1,11 @@
 const { Plugin, PluginSettingTab, Setting, SuggestModal, ItemView, Notice, TFile, setIcon, Platform } = require('obsidian');
 const { MobileSearchRuntime } = require('./mobile-runtime');
-let spawn, fs, path, http, os, crypto;
+const EMBEDDED_WASM_GZIP = null;
+let fs, path, os, crypto;
 function loadDesktopModules() {
   if (fs) return;
-  ({ spawn } = require('child_process')); fs = require('fs'); path = require('path'); http = require('http'); os = require('os'); crypto = require('crypto');
+  fs = require('fs'); path = require('path'); os = require('os'); crypto = require('crypto');
 }
-
-const EMBEDDED_RUNTIME = null;
-const RUNTIME_CHANNEL = 'v1';
 
 const GRAPH_VIEW = 'gib-search-graph';
 const MODEL_PROFILES = {
@@ -16,9 +14,9 @@ const MODEL_PROFILES = {
 const MODEL_TWEAK_DEFAULTS = {
   bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 },
 };
-const DEFAULTS = { enabled: true, nodePath: 'node', modelsPath: '', verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
+const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
 function activeIndexDir(plugin) {
-  return path.join(plugin.cacheRoot, 'indexes', plugin.vaultCacheKey, MODEL_PROFILES.bge.indexFolder);
+  return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
 }
 function desktopCacheRoot() {
   if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Gib Search');
@@ -56,16 +54,48 @@ function migrateDirectory(source, destination, plugin) {
     return true;
   } catch (error) { plugin.logDiagnostic(`Could not migrate ${source}: ${error.message}`, true); return false; }
 }
-function migrateDesktopData(plugin) {
-  fs.mkdirSync(plugin.cacheRoot, { recursive: true });
-  const defaultModels = path.join(plugin.cacheRoot, 'models');
-  migrateDirectory(path.join(plugin.pluginDir, 'models'), defaultModels, plugin);
-  migrateDirectory(path.join(plugin.pluginDir, 'worker', 'models'), defaultModels, plugin);
-  migrateDirectory(path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder), activeIndexDir(plugin), plugin);
-  migrateDirectory(path.join(plugin.pluginDir, 'runtime', RUNTIME_CHANNEL), path.join(plugin.cacheRoot, 'runtime', plugin.vaultCacheKey, RUNTIME_CHANNEL), plugin);
-  migrateDirectory(path.join(plugin.pluginDir, 'logs'), path.join(plugin.cacheRoot, 'logs', plugin.vaultCacheKey), plugin);
-  for (const empty of [path.join(plugin.pluginDir, 'embeddings'), path.join(plugin.pluginDir, 'runtime')]) {
-    try { if (fs.existsSync(empty) && fs.readdirSync(empty).length === 0) fs.rmdirSync(empty); } catch {}
+function removeIfEmpty(directory) { try { if (fs.existsSync(directory) && fs.readdirSync(directory).length === 0) fs.rmdirSync(directory); } catch {} }
+function restoreDesktopData(plugin) {
+  const externalIndex = path.join(plugin.cacheRoot, 'indexes', plugin.vaultCacheKey, MODEL_PROFILES.bge.indexFolder);
+  try { const status = JSON.parse(fs.readFileSync(path.join(externalIndex, 'status.json'), 'utf8')); if (Number(status.pid) > 0) process.kill(Number(status.pid)); } catch {}
+  migrateDirectory(path.join(plugin.cacheRoot, 'models'), path.join(plugin.pluginDir, 'models'), plugin);
+  if (plugin.legacyModelsPath && path.isAbsolute(plugin.legacyModelsPath)) migrateDirectory(plugin.legacyModelsPath, path.join(plugin.pluginDir, 'models'), plugin);
+  migrateDirectory(externalIndex, activeIndexDir(plugin), plugin);
+  migrateDirectory(path.join(plugin.cacheRoot, 'logs', plugin.vaultCacheKey), path.join(plugin.pluginDir, 'logs'), plugin);
+  migrateDirectory(path.join(plugin.pluginDir, 'worker', 'models'), path.join(plugin.pluginDir, 'models'), plugin);
+  for (const obsolete of [path.join(plugin.cacheRoot, 'runtime', plugin.vaultCacheKey), path.join(plugin.pluginDir, 'runtime'), path.join(plugin.pluginDir, 'worker')]) {
+    try { if (fs.existsSync(obsolete)) fs.rmSync(obsolete, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 }); } catch (error) { plugin.logDiagnostic(`Could not remove obsolete runtime ${obsolete}: ${error.message}`, true); }
+  }
+  for (const directory of [path.join(plugin.cacheRoot, 'indexes', plugin.vaultCacheKey), path.join(plugin.cacheRoot, 'indexes'), path.join(plugin.cacheRoot, 'logs'), path.join(plugin.cacheRoot, 'runtime'), plugin.cacheRoot]) removeIfEmpty(directory);
+}
+function modelCachePath(root, request) {
+  let key = typeof request === 'string' ? request : request?.url || String(request || '');
+  try { const url = new URL(key); key = decodeURIComponent(url.pathname.replace(/^\//, '').replace('/resolve/main/', '/')); } catch { key = key.replace(/^\/?models\//, '').replace(/^\//, ''); }
+  key = key.replaceAll('\\', '/').replace(/^Xenova\//, 'Xenova/');
+  const safe = key.split('/').filter(part => part && part !== '.' && part !== '..').join(path.sep);
+  const target = path.resolve(root, safe); return target.startsWith(`${path.resolve(root)}${path.sep}`) ? target : null;
+}
+class FileModelCache {
+  constructor(root) { this.root = root; }
+  async match(request) {
+    const target = modelCachePath(this.root, request); if (!target || !fs.existsSync(target)) return undefined;
+    const data = await fs.promises.readFile(target); return new Response(data, { headers: { 'Content-Length': String(data.length) } });
+  }
+  async put(request, response) {
+    const target = modelCachePath(this.root, request); if (!target) throw new Error('Invalid model cache path');
+    const data = Buffer.from(await response.arrayBuffer()); fs.mkdirSync(path.dirname(target), { recursive: true });
+    const temporary = `${target}.download`; await fs.promises.writeFile(temporary, data); await fs.promises.rename(temporary, target);
+  }
+}
+class DesktopIndexStore {
+  constructor(directory) { this.directory = directory; }
+  async get() {
+    try { const meta = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.meta.json'), 'utf8')); const data = await fs.promises.readFile(path.join(this.directory, 'index.vectors.bin')); let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.state.json'), 'utf8')); } catch {} return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), ...state }; } catch { return undefined; }
+  }
+  async put(value) {
+    fs.mkdirSync(this.directory, { recursive: true });
+    await fs.promises.writeFile(path.join(this.directory, 'index.meta.json'), JSON.stringify(value.meta)); await fs.promises.writeFile(path.join(this.directory, 'index.vectors.bin'), Buffer.from(value.vectors));
+    await fs.promises.writeFile(path.join(this.directory, 'index.state.json'), JSON.stringify({ lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null }));
   }
 }
 function activeTweaks(plugin) {
@@ -89,160 +119,6 @@ function formatWhen(timestamp) { return timestamp ? new Date(Number(timestamp)).
 function formatElapsed(milliseconds) {
   const seconds = Math.max(0, Math.round(Number(milliseconds) / 1000));
   if (seconds < 60) return `${seconds}s`; const minutes = Math.floor(seconds / 60); return `${minutes}m ${seconds % 60}s`;
-}
-
-class SearchClient {
-  constructor(indexDir) { this.indexDir = indexDir; }
-  statusFile() { return path.join(this.indexDir, 'status.json'); }
-  workerStatus() {
-    try { return JSON.parse(fs.readFileSync(this.statusFile(), 'utf8')); } catch { return { phase: 'offline', message: 'Indexer is not running' }; }
-  }
-  writeStatus(phase, message, details = {}) {
-    const previous = this.workerStatus();
-    try {
-      fs.mkdirSync(this.indexDir, { recursive: true });
-      fs.writeFileSync(this.statusFile(), JSON.stringify({ ...previous, ...details, phase, message, httpPort: null, updatedAt: Date.now() }, null, 2));
-    } catch {}
-  }
-  port() { return Number(this.workerStatus().httpPort) || null; }
-  available() { return Boolean(this.port()); }
-  request(route, params = {}) {
-    const port = this.port();
-    if (!port) return Promise.reject(new Error('Semantic indexer is not ready yet'));
-    const qs = new URLSearchParams(params).toString();
-    return new Promise((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}${route}${qs ? `?${qs}` : ''}`, { timeout: 30000 }, res => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', chunk => body += chunk);
-        res.on('end', () => {
-          try {
-            const data = JSON.parse(body);
-            if (res.statusCode >= 400) reject(new Error(data.error || `HTTP ${res.statusCode}`)); else resolve(data);
-          } catch (error) { reject(error); }
-        });
-      });
-      req.on('timeout', () => req.destroy(new Error('Semantic search timed out')));
-      req.on('error', reject);
-    });
-  }
-  async search(query, topK, minScore, options = {}) {
-    const params = { q: query, top_k: topK, min_score: minScore, score_window: options.scoreWindow ?? 1, folder_boost: options.folderPathBoost ?? 0 };
-    if (options.semanticHighlights) { params.semantic_highlights = 1; params.highlight_result_min = options.resultMinScore; params.highlight_word_min = options.singleWordMinScore; params.highlight_phrase_min = options.phraseMinScore; params.highlight_max = options.maxPhrases; }
-    if (options.file) params.file = options.file;
-    return (await this.request('/search', params)).results || [];
-  }
-  async graph(k, maxEdges) { return this.request('/graph-edges', { k, max_edges: maxEdges }); }
-  async scores(query) { return (await this.request('/query-file-scores', { q: query })).scores || {}; }
-  async health() { return this.request('/status'); }
-  storageBytes() {
-    return ['index.meta.json', 'index.vectors.bin'].reduce((total, name) => {
-      try { return total + fs.statSync(path.join(this.indexDir, name)).size; } catch { return total; }
-    }, 0);
-  }
-}
-
-class RuntimeInstaller {
-  constructor(plugin) { this.plugin = plugin; this.process = null; this.sizeCache = { at: 0, bytes: 0 }; this.installErrors = []; }
-  workerDir() { return path.join(this.plugin.cacheRoot, 'runtime', this.plugin.vaultCacheKey, RUNTIME_CHANNEL); }
-  modelDir() { return this.plugin.settings.modelsPath || path.join(this.plugin.cacheRoot, 'models'); }
-  ready() { return fs.existsSync(path.join(this.workerDir(), 'embed-server.mjs')) && fs.existsSync(path.join(this.workerDir(), 'node_modules', '@huggingface', 'transformers')); }
-  materialize() {
-    if (!EMBEDDED_RUNTIME) return;
-    for (const [relativePath, encoded] of Object.entries(EMBEDDED_RUNTIME)) {
-      const target = path.join(this.workerDir(), relativePath); fs.mkdirSync(path.dirname(target), { recursive: true });
-      const contents = Buffer.from(encoded, 'base64');
-      if (!fs.existsSync(target) || !fs.readFileSync(target).equals(contents)) fs.writeFileSync(target, contents);
-    }
-  }
-  npmCommand() {
-    const configured = this.plugin.settings.nodePath || 'node';
-    if (path.isAbsolute(configured)) return path.join(path.dirname(configured), process.platform === 'win32' ? 'npm.cmd' : 'npm');
-    return process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  }
-  installCommand(args) {
-    const npm = this.npmCommand();
-    if (process.platform === 'win32') return { command: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', 'call', npm, ...args] };
-    return { command: npm, args };
-  }
-  install() {
-    this.materialize(); if (this.ready()) return Promise.resolve(true); if (this.process) return this.installPromise;
-    this.installErrors = [];
-    this.plugin.indexer.lastEvent = 'Installing the local search runtime…'; this.plugin.indexer.changed();
-    this.installPromise = new Promise((resolve, reject) => {
-      try {
-        const install = this.installCommand(['ci', '--no-audit', '--no-fund']);
-        this.process = spawn(install.command, install.args, { cwd: this.workerDir(), stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
-        this.process.stderr?.on('data', data => { const lines = data.toString().trim().split(/\r?\n/).filter(Boolean); for (const message of lines) { this.installErrors.push(message); this.installErrors = this.installErrors.slice(-100); this.plugin.logDiagnostic(`Runtime installer: ${message}`); } const message = lines.at(-1); if (message) { this.plugin.indexer.lastEvent = message; this.plugin.indexer.changed(); } });
-        this.process.on('error', error => { this.process = null; this.plugin.indexer.lastError = error.message; this.plugin.indexer.lastEvent = 'Runtime installation failed'; this.plugin.logDiagnostic(`Runtime installer error: ${error.stack || error.message}`); this.plugin.indexer.changed(); reject(error); });
-        this.process.on('exit', code => { this.process = null; this.plugin.logDiagnostic(`Runtime installer exited with code ${code}`); if (code === 0 && this.ready()) { this.plugin.indexer.lastEvent = 'Local search runtime installed'; this.plugin.indexer.changed(); resolve(true); } else { const clean = value => value.replace(/^npm error\s*/i, '').trim(); const errorCode = this.installErrors.find(line => /npm error code\s+/i.test(line)); const errorPath = this.installErrors.find(line => /npm error path\s+/i.test(line)); const signedCode = Number(code) > 0x7fffffff ? Number(code) - 0x100000000 : code; const detail = [errorCode, errorPath].filter(Boolean).map(clean).join(' · '); reject(new Error(detail || `Runtime installer exited with code ${signedCode}`)); } });
-      } catch (error) { this.process = null; reject(error); }
-    });
-    return this.installPromise;
-  }
-  stop() { this.process?.kill(); this.process = null; }
-  storageBytes() { if (Date.now() - this.sizeCache.at > 30000) this.sizeCache = { at: Date.now(), bytes: directorySize(this.modelDir()) }; return this.sizeCache.bytes; }
-  cleanupLegacy() {
-    migrateDesktopData(this.plugin);
-    const legacy = path.join(this.plugin.pluginDir, 'worker');
-    for (const name of ['node_modules', 'lib', 'embed-server.mjs', 'package.json', 'package-lock.json']) {
-      const target = path.join(legacy, name);
-      try { if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 }); } catch (error) { this.plugin.logDiagnostic(`Could not remove obsolete runtime ${target}: ${error.message}`); }
-    }
-    const runtimeRoot = path.join(this.plugin.cacheRoot, 'runtime', this.plugin.vaultCacheKey);
-    try { for (const entry of fs.readdirSync(runtimeRoot, { withFileTypes: true })) if (entry.isDirectory() && entry.name !== RUNTIME_CHANNEL) fs.rmSync(path.join(runtimeRoot, entry.name), { recursive: true, force: true, maxRetries: 3, retryDelay: 250 }); } catch (error) { this.plugin.logDiagnostic(`Could not remove a superseded runtime: ${error.message}`); }
-  }
-}
-
-class Indexer {
-  constructor(plugin) { this.plugin = plugin; this.process = null; this.lastError = ''; this.lastEvent = 'Not started in this session'; this.listeners = new Set(); this.stderrTail = ''; }
-  onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-  changed() { for (const listener of this.listeners) listener(); }
-  start() {
-    if (!this.plugin.settings.enabled) { this.lastEvent = 'Indexer is disabled'; this.changed(); return false; }
-    if (this.process) { this.lastEvent = 'Indexer is already running'; this.changed(); return false; }
-    const existing = this.plugin.search.workerStatus();
-    if (Number(existing.pid) > 0 && Number(existing.httpPort) > 0) {
-      try { process.kill(Number(existing.pid), 0); process.kill(Number(existing.pid)); this.plugin.logDiagnostic(`Stopped previous worker PID ${existing.pid} before update`); } catch {}
-    }
-    const script = path.join(this.plugin.runtime.workerDir(), 'embed-server.mjs');
-    const modelDir = this.plugin.runtime.modelDir();
-    const args = [script, '--vault', this.plugin.vaultPath, '--models', modelDir, '--index', activeIndexDir(this.plugin), '--model', 'bge'];
-    if (this.plugin.settings.verboseLogging) args.push('--verbose', '1');
-    try {
-      this.stderrTail = '';
-      this.process = spawn(this.plugin.settings.nodePath || 'node', args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
-      const child = this.process; let launchFailed = false;
-      this.lastError = ''; this.lastEvent = `Worker launched (PID ${this.process.pid})`; this.changed();
-      this.plugin.logDiagnostic(`Worker launched: PID ${child.pid}`);
-      child.stderr?.on('data', data => { const message = data.toString().trim(); this.stderrTail = `${this.stderrTail}\n${message}`.trim().slice(-4000); this.lastEvent = message.split(/\r?\n/).pop(); this.plugin.logDiagnostic(message); this.changed(); });
-      child.on('error', error => { launchFailed = true; this.lastError = error.message; this.lastEvent = 'Worker failed'; this.plugin.search.writeStatus('error', error.message, { errorAt: Date.now() }); this.plugin.logDiagnostic(`Worker launch error: ${error.stack || error.message}`); this.process = null; this.changed(); new Notice(`Gib Search indexer failed: ${error.message}`); });
-      child.on('exit', (code, signal) => {
-        if (this.process === child) this.process = null;
-        if (launchFailed) return;
-        const reason = signal || `exit ${code}`;
-        if (child._gibStopRequested) { this.lastEvent = `Indexer paused (${reason})`; this.plugin.search.writeStatus('offline', 'Semantic indexing is paused'); }
-        else { const detail = this.stderrTail.split(/\r?\n/).filter(Boolean).pop(); this.lastError = detail || `Indexer stopped unexpectedly (${reason})`; this.lastEvent = this.lastError; this.plugin.search.writeStatus('error', this.lastError, { errorAt: Date.now(), exitCode: code, exitSignal: signal }); }
-        this.plugin.logDiagnostic(`Worker exited: ${reason}${this.lastError ? `; ${this.lastError}` : ''}`); this.changed();
-      });
-      return true;
-    } catch (error) { this.lastError = error.message; this.lastEvent = 'Worker failed to launch'; this.changed(); new Notice(`Gib Search indexer failed: ${error.message}`); return false; }
-  }
-  stop() {
-    if (this.process) { const pid = this.process.pid; this.process._gibStopRequested = true; this.process.kill(); this.lastEvent = `Stopping worker PID ${pid}…`; this.changed(); return true; }
-    const pid = Number(this.plugin.search.workerStatus().pid);
-    if (pid > 0) { try { process.kill(pid); this.lastEvent = `Stopping worker PID ${pid}…`; this.plugin.search.writeStatus('offline', 'Semantic indexing is paused'); this.changed(); return true; } catch {} }
-    this.lastEvent = 'No plugin-owned worker is running'; this.plugin.search.writeStatus('offline', 'Semantic indexing is paused'); this.changed(); return false;
-  }
-  restart() { this.stop(); setTimeout(() => this.start(), 500); }
-  rebuild() {
-    this.stop();
-    for (const name of ['index.meta.json', 'index.vectors.bin', 'status.json']) {
-      const target = path.join(activeIndexDir(this.plugin), name);
-      if (fs.existsSync(target)) fs.unlinkSync(target);
-    }
-    this.lastEvent = 'Generated index cleared; starting a full rebuild…'; this.changed(); setTimeout(() => this.start(), 500);
-  }
 }
 
 const SEARCH_STOP_WORDS = new Set(['about', 'after', 'again', 'also', 'and', 'are', 'because', 'been', 'before', 'being', 'between', 'but', 'can', 'could', 'does', 'for', 'from', 'have', 'into', 'more', 'not', 'that', 'the', 'their', 'then', 'there', 'these', 'they', 'this', 'those', 'through', 'was', 'were', 'what', 'when', 'where', 'which', 'while', 'who', 'with', 'would', 'your']);
@@ -322,7 +198,7 @@ function groupSearchResults(results, query, maxFiles) {
     const text = distillSnippet(hit.text, query, semanticHighlights);
     if (text && !group.snippets.some(item => item.text === text) && group.snippets.length < 3) group.snippets.push({ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) });
   }
-  // Preserve the worker's tuned rank. Map insertion order reflects the first
+  // Preserve the model's tuned rank. Map insertion order reflects the first
   // (best-ranked) chunk for each file; sorting again by raw cosine would erase
   // model-specific reranking such as filename relevance.
   return [...files.values()].filter(group => group.snippets.length).slice(0, maxFiles);
@@ -628,10 +504,9 @@ class SearchSettings extends PluginSettingTab {
     new Setting(this.containerEl).setName('Indexer').setHeading();
     new Setting(this.containerEl).setName('Semantic index').setDesc('Run the local embedding indexer and continuously watch the vault for note changes.').addToggle(t => t.setValue(this.plugin.settings.enabled).onChange(async value => { this.plugin.settings.enabled = value; await this.plugin.save(); value ? this.plugin.indexer.start() : this.plugin.indexer.stop(); this.refreshHealth(); }));
     new Setting(this.containerEl).setName('Index actions').setDesc('Start, pause, or restart local indexing. Pausing stops the current run without deleting completed work.').addButton(b => b.setButtonText('Start').onClick(() => this.retry(false))).addButton(b => b.setButtonText('Pause').onClick(() => { const stopped = this.plugin.indexer.stop(); new Notice(stopped ? 'Gib Search indexing paused' : this.plugin.indexer.lastEvent); this.refreshHealth(); })).addButton(b => b.setButtonText('Restart').setCta().onClick(() => this.retry(true)));
-    if (!this.plugin.isMobile) new Setting(this.containerEl).setName('Node executable').setDesc('Node.js command or full path used for the local index worker.').addText(t => t.setValue(this.plugin.settings.nodePath).onChange(async value => { this.plugin.settings.nodePath = value.trim() || 'node'; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Diagnostics').setHeading();
     new Setting(this.containerEl).setName('Health check').setDesc('Refresh live health data or run a real semantic query against the index.').addButton(b => b.setButtonText('Refresh').onClick(() => this.refreshHealth(true))).addButton(b => b.setButtonText('Test search').onClick(async () => { if (this.busy) return; this.busy = true; b.setButtonText('Testing…').setDisabled(true); try { const results = await this.plugin.search.search('test', 1, 0); new Notice(`Semantic search is working (${results.length} result${results.length === 1 ? '' : 's'} returned)`); } catch (error) { new Notice(`Semantic search test failed: ${error.message}`, 8000); } finally { this.busy = false; b.setButtonText('Test search').setDisabled(false); this.refreshHealth(); } }));
-    new Setting(this.containerEl).setName('Verbose diagnostic logging').setDesc('Record worker lifecycle, every indexed note path, byte and chunk counts, embedding time, checkpoints, and errors. Note contents are not logged.').addToggle(t => t.setValue(this.plugin.settings.verboseLogging).onChange(async value => { this.plugin.settings.verboseLogging = value; await this.plugin.save(); await this.plugin.logDiagnostic(`Verbose logging ${value ? 'enabled' : 'disabled'}`, true); if (!this.plugin.isMobile && this.plugin.settings.enabled) this.plugin.indexer.restart(); new Notice(`Verbose logging ${value ? 'enabled; indexer restarting' : 'disabled'}`); }));
+    new Setting(this.containerEl).setName('Verbose diagnostic logging').setDesc('Record indexing lifecycle, every indexed note path, byte and chunk counts, embedding time, and errors. Note contents are not logged.').addToggle(t => t.setValue(this.plugin.settings.verboseLogging).onChange(async value => { this.plugin.settings.verboseLogging = value; await this.plugin.save(); await this.plugin.logDiagnostic(`Verbose logging ${value ? 'enabled' : 'disabled'}`, true); if (this.plugin.settings.enabled) this.plugin.indexer.restart(); new Notice(`Verbose logging ${value ? 'enabled; indexer restarting' : 'disabled'}`); }));
     new Setting(this.containerEl).setName('Diagnostic log').setDesc(this.plugin.diagnosticLogPath()).addButton(b => b.setButtonText('Copy path').onClick(async () => { await navigator.clipboard.writeText(this.plugin.diagnosticLogPath()); new Notice('Diagnostic log path copied'); })).addButton(b => b.setButtonText('Clear').setWarning().onClick(async () => { await this.plugin.clearDiagnosticLog(); new Notice('Diagnostic log cleared'); }));
     new Setting(this.containerEl).setName('Maintenance').setHeading();
     new Setting(this.containerEl).setName('Rebuild semantic index').setDesc('Clear generated vectors and metadata, then re-index every note. Vault notes and the local model are untouched.').addButton(b => b.setButtonText('Rebuild').setWarning().onClick(() => { if (!window.confirm('Rebuild the entire semantic index? Generated vectors will be replaced; vault notes are not changed.')) return; this.plugin.indexer.rebuild(); new Notice('Gib Search started a full index rebuild'); this.refreshHealth(); }));
@@ -657,7 +532,7 @@ class SearchSettings extends PluginSettingTab {
   renderHealth() {
     const status = new Setting(this.containerEl).setName('Indexer status');
     this.healthEl = status.settingEl; this.healthEl.addClass('gib-health-status-row');
-    this.healthMessage = status.descEl.createDiv({ text: 'Reading worker status' });
+    this.healthMessage = status.descEl.createDiv({ text: 'Reading index status' });
     this.healthGrid = status.descEl.createDiv({ cls: 'gib-health-inline' });
     this.healthProgress = status.descEl.createEl('progress', { cls: 'gib-health-progress' }); this.healthProgress.max = 100; this.healthProgress.value = 0;
     this.healthProgress.style.display = 'none'; this.healthEvent = status.descEl.createDiv({ cls: 'gib-health-event' });
@@ -675,14 +550,14 @@ class SearchSettings extends PluginSettingTab {
     const stoppedResponding = !remote && working && statusAge > 15000; const activelyWorking = working && !stoppedResponding;
     const state = healthy ? 'healthy' : activelyWorking ? 'working' : this.plugin.settings.enabled ? 'error' : 'disabled'; this.healthEl.dataset.state = state;
     this.healthTitle.textContent = healthy ? 'Healthy and watching your vault' : activelyWorking ? 'Indexing in progress' : this.plugin.settings.enabled ? 'Indexer needs attention' : 'Indexer disabled';
-    this.healthMessage.textContent = healthy ? 'The model is loaded, semantic queries are responding, and note changes are being watched.' : stoppedResponding ? `The indexer stopped responding ${formatElapsed(statusAge)} ago. Retry will resume from the latest checkpoint.` : activelyWorking ? (local.message || this.plugin.indexer.lastEvent) : (this.plugin.indexer.lastError || error || local.message || 'No live worker response');
+    this.healthMessage.textContent = healthy ? 'The model is loaded, semantic queries are responding, and note changes are being watched.' : stoppedResponding ? `The indexer stopped responding ${formatElapsed(statusAge)} ago. Retry will resume from the latest checkpoint.` : activelyWorking ? (local.message || this.plugin.indexer.lastEvent) : (this.plugin.indexer.lastError || error || local.message || 'The semantic index is unavailable');
     const total = Number(local.totalFiles || local.vaultFiles || remote?.vaultFiles || 0), done = Number(local.processedFiles ?? local.fileCount ?? local.indexedFiles ?? remote?.indexedFiles ?? 0);
     const elapsedFrom = Number(local.phaseStartedAt || local.startedAt || 0); const indexBytes = this.plugin.search.storageBytes?.() || 0; const modelBytes = this.plugin.runtime.storageBytes?.() || 0;
     this.healthFields = []; this.field('Phase', stoppedResponding ? 'stopped' : phase.replaceAll('_', ' ')); this.field('Progress', total ? `${done}/${total}` : 'Waiting'); this.field('Indexed', remote?.indexedFiles ?? local.indexedFiles ?? 0); this.field('Chunks', remote?.totalChunks ?? local.totalChunks ?? 0); this.field('Model', remote?.modelLoaded ? (MODEL_PROFILES[remote.modelProfile]?.label || remote.modelId || 'Loaded') : 'Not ready'); this.field('Index size', formatBytes(indexBytes)); if (!this.plugin.isMobile) this.field('Model cache', formatBytes(modelBytes)); this.field('Last success', formatWhen(local.lastSuccessfulIndexAt)); if (activelyWorking && elapsedFrom) this.field('Elapsed', formatElapsed(Date.now() - elapsedFrom)); this.healthGrid.textContent = this.healthFields.join(' · ');
     if (activelyWorking && total > 0) { this.healthProgress.style.display = ''; this.healthProgress.value = Math.min(100, done / total * 100); } else this.healthProgress.style.display = 'none';
     this.healthEvent.textContent = local.currentFile ? `Current file: ${local.currentFile}` : `Latest activity: ${this.plugin.indexer.lastEvent}`;
     if (this.retryButton?.buttonEl) this.retryButton.buttonEl.style.display = state === 'error' ? '' : 'none';
-    if (showNotice) new Notice(healthy ? 'Gib Search is healthy' : activelyWorking ? 'Gib Search is currently indexing' : `Gib Search health check failed: ${stoppedResponding ? 'indexer stopped responding' : error || local.message || 'worker unavailable'}`);
+    if (showNotice) new Notice(healthy ? 'Gib Search is healthy' : activelyWorking ? 'Gib Search is currently indexing' : `Gib Search health check failed: ${stoppedResponding ? 'indexer stopped responding' : error || local.message || 'index unavailable'}`);
   }
   async retry(restart) {
     if (this.busy) return; this.busy = true;
@@ -707,7 +582,8 @@ module.exports = class GibSearch extends Plugin {
     this.settings.modelTweaks = {
       bge: Object.assign({}, MODEL_TWEAK_DEFAULTS.bge, legacyTweaks, loaded.modelTweaks?.mobile || {}, loaded.modelTweaks?.bge || {}),
     };
-    delete this.settings.embeddingModel;
+    this.legacyModelsPath = loaded.modelsPath || ''; delete this.settings.embeddingModel; delete this.settings.modelsPath;
+    delete this.settings.nodePath;
     if (!loaded.folderPathBoostSettingsMigrated) {
       this.settings.folderPathBoostEnabled = true;
       this.settings.folderPathBoostSettingsMigrated = true;
@@ -718,23 +594,22 @@ module.exports = class GibSearch extends Plugin {
       await this.save();
     }
     this.lastError = '';
-    if (this.isMobile) {
-      this.search = this.indexer = new MobileSearchRuntime(this); this.runtime = { ready: () => true, materialize() {}, install: async () => true, stop() {} }; this.indexer.watch();
-    } else {
-      loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id); this.cacheRoot = desktopCacheRoot(); this.vaultCacheKey = vaultCacheKey(this.vaultPath); migrateDesktopData(this);
-      this.search = new SearchClient(activeIndexDir(this)); this.indexer = new Indexer(this); this.runtime = new RuntimeInstaller(this); this.runtime.materialize();
+    this.embeddedWasmGzip = EMBEDDED_WASM_GZIP;
+    if (!this.isMobile) {
+      loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id); this.cacheRoot = desktopCacheRoot(); this.vaultCacheKey = vaultCacheKey(this.vaultPath); restoreDesktopData(this);
+      this.modelDir = path.join(this.pluginDir, 'models'); this.modelCache = new FileModelCache(this.modelDir); this.desktopIndexStore = new DesktopIndexStore(activeIndexDir(this));
     }
+    this.search = this.indexer = new MobileSearchRuntime(this); this.runtime = { ready: () => true, install: async () => true, stop() {}, storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) }; this.indexer.watch();
     this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this));
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: 'semantic-search', name: 'Semantic search', callback: () => new SemanticSearchModal(this.app, this).open() });
     this.addCommand({ id: 'semantic-graph', name: 'Open semantic graph', callback: () => this.openGraph() });
     this.addSettingTab(new SearchSettings(this.app, this));
     this.logDiagnostic(`Gib Search ${this.manifest.version} loaded on ${this.isMobile ? 'mobile' : process.platform}`);
-    const startIndexer = () => { this.indexer.start(); if (!this.isMobile) window.setTimeout(() => this.runtime.cleanupLegacy(), 2500); };
-    if (this.runtime.ready()) startIndexer(); else this.runtime.install().then(startIndexer).catch(error => this.reportOnce(`Could not install the local search runtime: ${error.message}`));
+    this.indexer.start();
   }
   async save() { await this.saveData(this.settings); }
-  diagnosticLogPath() { return this.isMobile ? `gib-search-diagnostics:${this.app.vault.getName()}` : path.join(this.cacheRoot, 'logs', this.vaultCacheKey, 'gib-search.log'); }
+  diagnosticLogPath() { return this.isMobile ? `gib-search-diagnostics:${this.app.vault.getName()}` : path.join(this.pluginDir, 'logs', 'gib-search.log'); }
   async logDiagnostic(message, force = false) {
     if (!force && !this.settings.verboseLogging) return;
     const line = `[${new Date().toISOString()}] ${String(message).replace(/\r?\n/g, '\n')}\n`;

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -13,18 +14,15 @@ if (!/^0\.\d+\.\d+$/.test(manifest.version)) throw new Error('public beta versio
 if (manifest.isDesktopOnly) throw new Error('Gib Search must remain available on mobile');
 
 const builtMain = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
-const embeddedMatch = builtMain.match(/^(?:const|var) EMBEDDED_RUNTIME = (\{.*\});$/m);
-if (!embeddedMatch) throw new Error('main.js does not contain the embedded runtime');
-const embeddedRuntime = JSON.parse(embeddedMatch[1]);
-for (const [relativePath, encoded] of Object.entries(embeddedRuntime)) {
-  const source = fs.readFileSync(path.join(root, 'worker', relativePath));
-  if (!Buffer.from(encoded, 'base64').equals(source)) throw new Error(`Embedded runtime differs from worker/${relativePath}`);
-}
+const embeddedWasm = builtMain.match(/EMBEDDED_WASM_GZIP\s*=\s*["']([^"']+)["']/);
+if (!embeddedWasm) throw new Error('main.js does not contain the bundled WebAssembly runtime');
+const bundledBinary = zlib.gunzipSync(Buffer.from(embeddedWasm[1], 'base64'));
+const sourceBinary = fs.readFileSync(path.join(root, 'node_modules', '@huggingface', 'transformers', 'dist', 'ort-wasm-simd-threaded.jsep.wasm'));
+if (!bundledBinary.equals(sourceBinary)) throw new Error('Bundled WebAssembly runtime differs from the pinned dependency');
+if (!builtMain.includes('wasmBinary = this.plugin.embeddedWasmBinary')) throw new Error('Bundled WebAssembly runtime is not connected to inference');
 
 const codeFiles = [
-  'main.js', 'src/main.js', 'src/mobile-runtime.js', 'styles.css', 'worker/embed-server.mjs',
-  'worker/lib/chunker.mjs', 'worker/lib/engine.mjs', 'worker/lib/indexer.mjs',
-  'worker/lib/status.mjs', 'worker/lib/watcher.mjs',
+  'main.js', 'src/main.js', 'src/mobile-runtime.js', 'styles.css',
 ];
 const forbidden = [
   /\x62\x65\x74\x74\x65\x72\x20\x63\x6c\x61\x75\x64\x65/i,
