@@ -13,7 +13,7 @@ await build({
   stdin: { contents: source, resolveDir: path.join(root, 'src'), sourcefile: 'main.js', loader: 'js' },
   outfile: path.join(root, 'main.js'), bundle: true, platform: 'browser', format: 'cjs', target: 'es2020',
   external: ['obsidian', 'electron', 'fs', 'path', 'os', 'crypto', 'node:*'],
-  conditions: ['browser', 'module', 'import'], define: { global: 'globalThis', 'process.env.NODE_ENV': '"production"' },
+  conditions: ['browser', 'module', 'import'], define: { global: 'globalThis', 'process.env.NODE_ENV': '"production"', 'process.release.name': '"browser"' },
   logLevel: 'warning', legalComments: 'none',
 });
 const outputPath = path.join(root, 'main.js');

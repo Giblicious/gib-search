@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- Fixed ONNX startup inside Obsidian's Electron renderer by selecting the bundled browser inference runtime at build time.
+
 ## 0.3.1
 
 - Fixed startup in Obsidian desktop by allowing the bundled inference runtime to select its supported local device.

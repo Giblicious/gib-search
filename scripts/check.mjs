@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 execFileSync(process.execPath, [path.join(root, 'scripts', 'build.mjs')], { stdio: 'inherit' });
+const buildSource = fs.readFileSync(path.join(root, 'scripts', 'build.mjs'), 'utf8');
+if (!buildSource.includes("'process.release.name': '\"browser\"'")) throw new Error('Obsidian renderer must use the browser inference runtime');
 
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
 if (manifest.id !== 'gib-search') throw new Error('manifest id must be gib-search');
@@ -23,6 +25,7 @@ if (!builtMain.includes('wasmBinary = this.plugin.embeddedWasmBinary')) throw ne
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic search debounce is missing');
 if (/device\s*:\s*["'](?:wasm|webgpu)["']/.test(builtMain)) throw new Error('Inference device must be selected by the host runtime');
+if (/process\?\.release\?\.name\s*===\s*["']node["']/.test(builtMain)) throw new Error('Release build still contains Electron Node runtime detection');
 
 const codeFiles = [
   'main.js', 'src/main.js', 'src/mobile-runtime.js', 'styles.css',
