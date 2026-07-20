@@ -73,17 +73,42 @@ export class MobileSearchRuntime {
     this.pipe = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Mobile search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
     this.listeners = new Set(); this.phraseCache = new Map(); this.pending = new Map(); this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt;
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
-    this.indexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
+    this.legacyIndexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
+    this.indexKey = `${plugin.manifest.id}:${plugin.app.vault.adapter.getBasePath?.() || plugin.app.vault.getName()}:bge-small-en-v1.5`;
+    this.database = null;
   }
   onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   changed() { for (const listener of this.listeners) listener(); }
   setState(phase, message) { if (phase !== this.phase) this.phaseStartedAt = Date.now(); this.phase = phase; this.message = message; this.lastEvent = message; this.lastError = phase === 'error' ? message : ''; this.changed(); }
   workerStatus() { return { phase: this.phase, message: this.message, pid: 'mobile', startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }; }
   async health() { return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelLoaded: Boolean(this.pipe), modelProfile: 'bge', modelId: MODEL_ID }; }
-  async ensureDirectory() {
-    const embeddings = this.indexDir.slice(0, this.indexDir.lastIndexOf('/'));
-    if (!await this.adapter.exists(embeddings)) await this.adapter.mkdir(embeddings);
-    if (!await this.adapter.exists(this.indexDir)) await this.adapter.mkdir(this.indexDir);
+  async openDatabase() {
+    if (this.database) return this.database;
+    this.database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('gib-search', 1);
+      request.onupgradeneeded = () => { if (!request.result.objectStoreNames.contains('indexes')) request.result.createObjectStore('indexes'); };
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error || new Error('Could not open local search storage'));
+    });
+    return this.database;
+  }
+  async databaseGet() {
+    const database = await this.openDatabase();
+    return new Promise((resolve, reject) => { const request = database.transaction('indexes', 'readonly').objectStore('indexes').get(this.indexKey); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+  }
+  async databasePut(value) {
+    const database = await this.openDatabase();
+    return new Promise((resolve, reject) => { const request = database.transaction('indexes', 'readwrite').objectStore('indexes').put(value, this.indexKey); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); });
+  }
+  async migrateLegacyIndex() {
+    const metaPath = `${this.legacyIndexDir}/index.meta.json`, vectorsPath = `${this.legacyIndexDir}/index.vectors.bin`;
+    if (!await this.adapter.exists(metaPath) || !await this.adapter.exists(vectorsPath)) return;
+    const meta = JSON.parse(await this.adapter.read(metaPath)); const vectors = await this.adapter.readBinary(vectorsPath);
+    await this.databasePut({ meta, vectors, migratedAt: Date.now() });
+    try { await this.adapter.rmdir(this.legacyIndexDir, true); const parent = this.legacyIndexDir.slice(0, this.legacyIndexDir.lastIndexOf('/')); if (await this.adapter.exists(parent)) await this.adapter.rmdir(parent, false); } catch {}
+  }
+  async cleanupLegacyGeneratedData() {
+    const pluginDir = `${this.plugin.app.vault.configDir}/plugins/${this.plugin.manifest.id}`;
+    for (const name of ['logs']) { const target = `${pluginDir}/${name}`; try { if (await this.adapter.exists(target)) await this.adapter.rmdir(target, true); } catch {} }
   }
   async initializeModel() {
     if (this.pipe) return;
@@ -106,18 +131,16 @@ export class MobileSearchRuntime {
   refreshLexical() { this.lexical = this.meta.map(item => ({ filename: new Set(tokens(basename(item.file))), folder: new Set(tokens(dirname(item.file))) })); }
   async loadIndex() {
     try {
-      const metaPath = `${this.indexDir}/index.meta.json`, vectorsPath = `${this.indexDir}/index.vectors.bin`;
-      if (!await this.adapter.exists(metaPath) || !await this.adapter.exists(vectorsPath)) return;
-      this.meta = JSON.parse(await this.adapter.read(metaPath)); const binary = await this.adapter.readBinary(vectorsPath); const all = new Float32Array(binary);
+      let stored = await this.databaseGet(); if (!stored) { await this.migrateLegacyIndex(); stored = await this.databaseGet(); } if (!stored) return;
+      this.meta = stored.meta || []; this.lastSuccessfulIndexAt = stored.lastSuccessfulIndexAt || null; const all = new Float32Array(stored.vectors);
       if (all.length !== this.meta.length * DIMENSION) throw new Error('Mobile index dimensions do not match BGE');
       this.vectors = this.meta.map((_, index) => all.slice(index * DIMENSION, (index + 1) * DIMENSION)); this.refreshLexical();
     } catch { this.meta = []; this.vectors = []; this.refreshLexical(); }
   }
   async saveIndex() {
-    await this.ensureDirectory(); const packed = new Float32Array(this.vectors.length * DIMENSION);
+    const packed = new Float32Array(this.vectors.length * DIMENSION);
     this.vectors.forEach((vector, index) => packed.set(vector, index * DIMENSION));
-    await this.adapter.write(`${this.indexDir}/index.meta.json`, JSON.stringify(this.meta));
-    await this.adapter.writeBinary(`${this.indexDir}/index.vectors.bin`, packed.buffer); this.refreshLexical();
+    await this.databasePut({ meta: this.meta, vectors: packed.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }); this.refreshLexical();
   }
   storageBytes() { return this.vectors.length * DIMENSION * 4 + new TextEncoder().encode(JSON.stringify(this.meta)).length; }
   files() { return this.plugin.app.vault.getFiles().filter(file => INDEXABLE.has(file.extension.toLowerCase())); }
@@ -142,12 +165,12 @@ export class MobileSearchRuntime {
       await yieldToUi();
     }
     if (this.cancelRequested || !this.enabled) return;
-    this.meta = meta; this.vectors = vectors; await this.saveIndex(); this.staleFiles = 0; this.currentFile = ''; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`);
+    this.meta = meta; this.vectors = vectors; this.lastSuccessfulIndexAt = Date.now(); await this.saveIndex(); this.staleFiles = 0; this.currentFile = ''; this.processedFiles = files.length; this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`);
   }
   start() {
     if (!this.plugin.settings.enabled) { this.setState('offline', 'Semantic index is disabled'); return false; }
     if (this.startPromise) return false; this.enabled = true; this.cancelRequested = false;
-    this.startPromise = (async () => { try { await this.ensureDirectory(); await this.loadIndex(); await this.initializeModel(); await this.updateIndex(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
+    this.startPromise = (async () => { try { await this.loadIndex(); await this.cleanupLegacyGeneratedData(); await this.initializeModel(); await this.updateIndex(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
     return true;
   }
   stop() { this.cancelRequested = true; this.enabled = false; this.setState('offline', 'Mobile search is paused'); return true; }
