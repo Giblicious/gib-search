@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.4
+
+- Coalesced vault file events into one serialized index update instead of launching overlapping full scans.
+- Reduced background embedding batches so Obsidian can repaint between inference work.
+- Loads the model on demand when an existing index is already current.
+- Deduplicated concurrent model initialization.
+
 ## 0.3.3
 
 - Bundled the browser-only ONNX loader and prevented Electron from importing Node worker modules during WASM startup.

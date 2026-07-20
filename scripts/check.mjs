@@ -30,6 +30,9 @@ if (!builtMain.includes('wasmBinary = this.plugin.embeddedWasmBinary')) throw ne
 if (!builtMain.includes('wasmPaths = { mjs: this.plugin.embeddedWasmModuleUrl }')) throw new Error('Bundled WebAssembly loader is not connected to inference');
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic search debounce is missing');
+if (!builtMain.includes('if (this.indexRun)')) throw new Error('Serialized index scheduling is missing');
+if (!builtMain.includes('clearTimeout(this.updateTimer)')) throw new Error('Vault-wide index event coalescing is missing');
+if (builtMain.includes('this.pending.get(file.path)')) throw new Error('Per-file full-index timers must not be used');
 if (/device\s*:\s*["'](?:wasm|webgpu)["']/.test(builtMain)) throw new Error('Inference device must be selected by the host runtime');
 if (/process\?\.release\?\.name\s*===\s*["']node["']/.test(builtMain)) throw new Error('Release build still contains Electron Node runtime detection');
 
