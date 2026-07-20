@@ -77,7 +77,7 @@ export class MobileSearchRuntime {
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
     this.legacyIndexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
     this.indexKey = `${plugin.manifest.id}:${plugin.app.vault.adapter.getBasePath?.() || plugin.app.vault.getName()}:bge-small-en-v1.5`;
-    this.database = null; this.queryCache = new Map(); this.resultCache = new Map(); this.livePending = null; this.liveRunning = false; this.modelBackend = 'wasm';
+    this.database = null; this.queryCache = new Map(); this.resultCache = new Map(); this.livePending = null; this.liveRunning = false; this.modelBackend = this.isMobile ? 'wasm' : 'cpu';
   }
   onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   changed() { for (const listener of this.listeners) listener(); }
@@ -121,12 +121,6 @@ export class MobileSearchRuntime {
     this.setState('loading_model', 'Loading BGE. The first run downloads the model into Gib Search.');
     env.allowRemoteModels = true; env.allowLocalModels = false; env.useCustomCache = !this.isMobile; env.customCache = this.isMobile ? null : this.plugin.modelCache; env.useBrowserCache = this.isMobile; env.useFSCache = false;
     const progress_callback = progress => { if (progress.status !== 'progress') return; const percent = Number(progress.progress); if (Number.isFinite(percent)) this.setState('loading_model', `Downloading ${progress.file || 'BGE'}: ${Math.round(percent)}%`); };
-    if (!this.isMobile && navigator.gpu) {
-      try {
-        this.setState('loading_model', 'Starting the WebGPU semantic engine…'); this.pipe = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8', device: 'webgpu', progress_callback });
-        await this.pipe([`${QUERY_PREFIX}warm semantic search`], { pooling: 'mean', normalize: true }); this.modelBackend = 'webgpu'; this.plugin.logDiagnostic('WebGPU semantic engine warmed'); return;
-      } catch (error) { this.pipe = null; this.plugin.logDiagnostic(`WebGPU unavailable; using bundled WASM: ${error.message}`); }
-    }
     if (env.backends?.onnx?.wasm) {
       env.backends.onnx.wasm.numThreads = 1; env.backends.onnx.wasm.proxy = false;
       if (!this.plugin.embeddedWasmBinary) {
@@ -136,8 +130,8 @@ export class MobileSearchRuntime {
       }
       env.backends.onnx.wasm.wasmBinary = this.plugin.embeddedWasmBinary;
     }
-    this.pipe = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8', device: 'wasm', progress_callback });
-    await this.pipe([`${QUERY_PREFIX}warm semantic search`], { pooling: 'mean', normalize: true }); this.modelBackend = 'wasm'; this.plugin.logDiagnostic('Bundled WASM semantic engine warmed');
+    this.pipe = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8', progress_callback });
+    await this.pipe([`${QUERY_PREFIX}warm semantic search`], { pooling: 'mean', normalize: true }); this.plugin.logDiagnostic(`Bundled semantic engine warmed with ${this.modelBackend.toUpperCase()}`);
   }
   async embedBatch(texts, query = false) {
     if (!texts.length) return []; await this.initializeModel(); const results = [];
