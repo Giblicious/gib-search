@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- Added native Obsidian Mobile support using local BGE inference through WebAssembly.
+- Added a mobile-safe, per-device semantic index with automatic note-change updates.
+- Kept the existing Node.js worker on desktop for faster indexing.
+- Made search, semantic highlighting, settings health, and the similarity graph available on mobile.
+
 ## 0.1.2
 
 - Removed stale internal terminology from the packaged worker.

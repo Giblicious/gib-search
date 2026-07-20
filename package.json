@@ -1,10 +1,14 @@
 {
   "name": "gib-search",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs"
+  },
+  "devDependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "esbuild": "^0.25.12"
   }
 }

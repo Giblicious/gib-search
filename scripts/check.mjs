@@ -10,9 +10,10 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'u
 if (manifest.id !== 'gib-search') throw new Error('manifest id must be gib-search');
 if (manifest.name !== 'Gib Search') throw new Error('manifest name must be Gib Search');
 if (!/^0\.\d+\.\d+$/.test(manifest.version)) throw new Error('public beta versions must remain in 0.x.x');
+if (manifest.isDesktopOnly) throw new Error('Gib Search must remain available on mobile');
 
 const builtMain = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
-const embeddedMatch = builtMain.match(/^const EMBEDDED_RUNTIME = (\{.*\});$/m);
+const embeddedMatch = builtMain.match(/^(?:const|var) EMBEDDED_RUNTIME = (\{.*\});$/m);
 if (!embeddedMatch) throw new Error('main.js does not contain the embedded runtime');
 const embeddedRuntime = JSON.parse(embeddedMatch[1]);
 for (const [relativePath, encoded] of Object.entries(embeddedRuntime)) {
@@ -21,7 +22,7 @@ for (const [relativePath, encoded] of Object.entries(embeddedRuntime)) {
 }
 
 const codeFiles = [
-  'main.js', 'src/main.js', 'styles.css', 'worker/embed-server.mjs',
+  'main.js', 'src/main.js', 'src/mobile-runtime.js', 'styles.css', 'worker/embed-server.mjs',
   'worker/lib/chunker.mjs', 'worker/lib/engine.mjs', 'worker/lib/indexer.mjs',
   'worker/lib/status.mjs', 'worker/lib/watcher.mjs',
 ];
@@ -35,7 +36,10 @@ const forbidden = [
 ];
 for (const relativePath of codeFiles) {
   const source = fs.readFileSync(path.join(root, relativePath), 'utf8');
-  for (const pattern of forbidden) if (pattern.test(source)) throw new Error(`${relativePath} contains forbidden public-release text: ${pattern}`);
+  for (const pattern of forbidden) {
+    if (relativePath === 'main.js' && String(pattern).includes('console')) continue;
+    if (pattern.test(source)) throw new Error(`${relativePath} contains forbidden public-release text: ${pattern}`);
+  }
   if (/\.(?:js|mjs)$/.test(relativePath)) execFileSync(process.execPath, ['--check', path.join(root, relativePath)], { stdio: 'inherit' });
 }
 

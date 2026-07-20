@@ -1,0 +1,189 @@
+import { pipeline, env } from '@huggingface/transformers';
+
+const MODEL_ID = 'Xenova/bge-small-en-v1.5';
+const DIMENSION = 384;
+const QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';
+const INDEXABLE = new Set(['md', 'txt', 'markdown']);
+const STOP_WORDS = new Set(['a', 'about', 'an', 'and', 'are', 'as', 'at', 'be', 'because', 'been', 'being', 'between', 'but', 'by', 'can', 'could', 'do', 'does', 'for', 'from', 'had', 'has', 'have', 'how', 'i', 'in', 'into', 'is', 'it', 'its', 'may', 'might', 'more', 'my', 'not', 'of', 'on', 'or', 'our', 'out', 'over', 'she', 'so', 'than', 'that', 'the', 'their', 'them', 'then', 'they', 'this', 'those', 'through', 'to', 'under', 'up', 'vs', 'was', 'we', 'were', 'what', 'when', 'where', 'which', 'while', 'who', 'with', 'without', 'would', 'you', 'your']);
+
+function basename(file) { return String(file).split('/').pop().replace(/\.(?:md|txt|markdown)$/i, ''); }
+function dirname(file) { const parts = String(file).split('/'); parts.pop(); return parts.join('/'); }
+function tokens(source) {
+  return (String(source || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [])
+    .filter(token => token.length > 2)
+    .map(token => token.replace(/ies$/, 'y').replace(/ing$/, '').replace(/s$/, ''));
+}
+function lexicalCoverage(queryTokens, sourceTokens) {
+  if (!queryTokens.length) return 0;
+  return queryTokens.filter(token => sourceTokens.has(token)).length / queryTokens.length;
+}
+function dot(a, b) { let score = 0; for (let i = 0; i < a.length; i++) score += a[i] * b[i]; return score; }
+function yieldToUi() { return new Promise(resolve => setTimeout(resolve, 0)); }
+function sampleEvenly(items, maximum) { if (items.length <= maximum) return items; return Array.from({ length: maximum }, (_, index) => items[Math.round(index * (items.length - 1) / (maximum - 1))]); }
+
+function stripFrontmatter(content) {
+  if (!content.startsWith('---')) return content;
+  const end = content.indexOf('\n---', 3);
+  return end === -1 ? content : content.slice(end + 4).trim();
+}
+function parseSections(content) {
+  const lines = content.split('\n'); const sections = []; const stack = []; let current = []; let start = 0;
+  const flush = end => { const text = current.join('\n').trim(); if (text) sections.push({ heading: stack.join(' > '), text, lineStart: start, lineEnd: end }); current = []; };
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^(#{1,3})\s+(.+)/);
+    if (!match) { current.push(lines[i]); continue; }
+    flush(i - 1); start = i; const level = match[1].length; while (stack.length >= level) stack.pop(); stack.push(match[2].trim());
+  }
+  flush(lines.length - 1); return sections;
+}
+function chunkMarkdown(content) {
+  const cleaned = stripFrontmatter(String(content || '')).trim(); if (!cleaned) return [];
+  const max = 2400; if (cleaned.length <= 1600) return [{ text: cleaned, heading: '', lineStart: 0, lineEnd: cleaned.split('\n').length - 1 }];
+  const split = [];
+  for (const section of parseSections(cleaned)) {
+    if (section.text.length <= max) { split.push(section); continue; }
+    const paragraphs = section.text.split(/\n\n+/); let current = []; let length = 0; let start = section.lineStart;
+    const flush = end => { if (!current.length) return; const text = current.join('\n\n').trim(); split.push({ heading: section.heading, text, lineStart: start, lineEnd: end }); start = end + 1; current = []; length = 0; };
+    for (const paragraph of paragraphs) { if (length + paragraph.length > max && current.length) flush(start + current.join('\n\n').split('\n').length - 1); current.push(paragraph); length += paragraph.length + 2; }
+    flush(section.lineEnd);
+  }
+  return split.filter(chunk => chunk.text.trim());
+}
+function embeddingText(file, chunk) { return `${basename(file)}${chunk.heading ? `\n${chunk.heading}` : ''}\n\n${chunk.text}`; }
+
+function cleanText(source) {
+  return String(source || '').replace(/```[\s\S]*?```/g, ' ').replace(/`([^`]+)`/g, '$1')
+    .replace(/!?(?:\[\[|\[)([^\]|]+)(?:\|[^\]]+)?(?:\]\]|\](?:\([^)]*\))?)/g, '$1')
+    .replace(/^\s{0,3}(?:#{1,6}|>|[-*+] |\d+[.)] )\s*/gm, '').replace(/[*_~=#|<>]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function phraseCandidates(source, maximum = 18) {
+  const words = cleanText(source).match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*/gu) || []; const found = [];
+  for (let i = 0; i < words.length; i++) for (const size of [2, 1, 3]) {
+      if (i + size > words.length) continue; const slice = words.slice(i, i + size); if (slice.every(word => STOP_WORDS.has(word.toLowerCase()))) continue;
+      if (size === 1 && (slice[0].length < 4 || STOP_WORDS.has(slice[0].toLowerCase()))) continue;
+      const phrase = slice.join(' ').replace(/[.,!?]+$/, ''); if (!found.some(item => item.toLowerCase() === phrase.toLowerCase())) found.push(phrase);
+      if (found.length >= maximum) return found;
+    }
+  return found;
+}
+
+export class MobileSearchRuntime {
+  constructor(plugin) {
+    this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.meta = []; this.vectors = []; this.lexical = [];
+    this.pipe = null; this.startPromise = null; this.enabled = false; this.phase = 'offline'; this.message = 'Mobile search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
+    this.listeners = new Set(); this.phraseCache = new Map(); this.pending = new Map(); this.startedAt = Date.now();
+    this.indexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
+  }
+  onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  changed() { for (const listener of this.listeners) listener(); }
+  setState(phase, message) { this.phase = phase; this.message = message; this.lastEvent = message; this.lastError = phase === 'error' ? message : ''; this.changed(); }
+  workerStatus() { return { phase: this.phase, message: this.message, pid: 'mobile', updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, totalFiles: this.vaultFiles || 0 }; }
+  async health() { return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelLoaded: Boolean(this.pipe), modelProfile: 'bge', modelId: MODEL_ID }; }
+  async ensureDirectory() {
+    const embeddings = this.indexDir.slice(0, this.indexDir.lastIndexOf('/'));
+    if (!await this.adapter.exists(embeddings)) await this.adapter.mkdir(embeddings);
+    if (!await this.adapter.exists(this.indexDir)) await this.adapter.mkdir(this.indexDir);
+  }
+  async initializeModel() {
+    if (this.pipe) return;
+    this.setState('loading_model', 'Loading BGE on this device. The first run downloads and caches the model.');
+    env.allowRemoteModels = true; env.allowLocalModels = false; env.useBrowserCache = true;
+    if (env.backends?.onnx?.wasm) { env.backends.onnx.wasm.numThreads = 1; env.backends.onnx.wasm.proxy = false; }
+    this.pipe = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8', device: 'wasm' });
+  }
+  async embedBatch(texts, query = false) {
+    if (!texts.length) return []; await this.initializeModel(); const results = [];
+    for (let i = 0; i < texts.length; i += 8) {
+      const batch = texts.slice(i, i + 8).map(text => query ? `${QUERY_PREFIX}${text}` : text);
+      const output = await this.pipe(batch, { pooling: 'mean', normalize: true }); const dim = output.dims.at(-1);
+      for (let j = 0; j < batch.length; j++) results.push(new Float32Array(output.data.slice(j * dim, (j + 1) * dim)));
+      await yieldToUi();
+    }
+    return results;
+  }
+  async embed(text, query = false) { return (await this.embedBatch([text], query))[0]; }
+  refreshLexical() { this.lexical = this.meta.map(item => ({ filename: new Set(tokens(basename(item.file))), folder: new Set(tokens(dirname(item.file))) })); }
+  async loadIndex() {
+    try {
+      const metaPath = `${this.indexDir}/index.meta.json`, vectorsPath = `${this.indexDir}/index.vectors.bin`;
+      if (!await this.adapter.exists(metaPath) || !await this.adapter.exists(vectorsPath)) return;
+      this.meta = JSON.parse(await this.adapter.read(metaPath)); const binary = await this.adapter.readBinary(vectorsPath); const all = new Float32Array(binary);
+      if (all.length !== this.meta.length * DIMENSION) throw new Error('Mobile index dimensions do not match BGE');
+      this.vectors = this.meta.map((_, index) => all.slice(index * DIMENSION, (index + 1) * DIMENSION)); this.refreshLexical();
+    } catch { this.meta = []; this.vectors = []; this.refreshLexical(); }
+  }
+  async saveIndex() {
+    await this.ensureDirectory(); const packed = new Float32Array(this.vectors.length * DIMENSION);
+    this.vectors.forEach((vector, index) => packed.set(vector, index * DIMENSION));
+    await this.adapter.write(`${this.indexDir}/index.meta.json`, JSON.stringify(this.meta));
+    await this.adapter.writeBinary(`${this.indexDir}/index.vectors.bin`, packed.buffer); this.refreshLexical();
+  }
+  files() { return this.plugin.app.vault.getFiles().filter(file => INDEXABLE.has(file.extension.toLowerCase())); }
+  async updateIndex(force = false) {
+    this.setState('indexing', 'Checking the mobile semantic index…'); const files = this.files(); this.vaultFiles = files.length;
+    const indexed = new Map(this.meta.map(item => [item.file, item.mtime]));
+    const changed = files.filter(file => force || indexed.get(file.path) !== file.stat.mtime); const present = new Set(files.map(file => file.path));
+    const remove = new Set([...changed.map(file => file.path), ...this.meta.filter(item => !present.has(item.file)).map(item => item.file)]); this.staleFiles = changed.length;
+    if (!remove.size) { this.staleFiles = 0; this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`); return; }
+    const meta = []; const vectors = []; for (let i = 0; i < this.meta.length; i++) if (!remove.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
+    for (let fileIndex = 0; fileIndex < changed.length; fileIndex++) {
+      const file = changed[fileIndex]; this.setState('indexing', `Indexing ${fileIndex + 1} of ${changed.length}: ${file.path}`);
+      try {
+        const chunks = chunkMarkdown(await this.plugin.app.vault.cachedRead(file)); const embedded = await this.embedBatch(chunks.map(chunk => embeddingText(file.path, chunk)));
+        chunks.forEach((chunk, index) => { meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime }); vectors.push(embedded[index]); });
+      } catch (error) { this.plugin.reportOnce(`Could not index ${file.path}: ${error.message}`); }
+      await yieldToUi();
+    }
+    this.meta = meta; this.vectors = vectors; await this.saveIndex(); this.staleFiles = 0; this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`);
+  }
+  start() {
+    if (!this.plugin.settings.enabled) { this.setState('offline', 'Semantic index is disabled'); return false; }
+    if (this.startPromise) return false; this.enabled = true;
+    this.startPromise = (async () => { try { await this.ensureDirectory(); await this.loadIndex(); await this.initializeModel(); await this.updateIndex(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
+    return true;
+  }
+  stop() { this.enabled = false; this.setState('offline', 'Mobile search is paused'); return true; }
+  restart() { this.stop(); return this.start(); }
+  rebuild() { this.meta = []; this.vectors = []; this.refreshLexical(); this.startPromise = (async () => { try { await this.updateIndex(true); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); return true; }
+  watch() {
+    const schedule = file => { if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || '').toLowerCase())) return; clearTimeout(this.pending.get(file.path)); this.pending.set(file.path, setTimeout(() => { this.pending.delete(file.path); this.updateIndex(); }, 1800)); };
+    this.plugin.registerEvent(this.plugin.app.vault.on('create', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('modify', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('delete', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('rename', schedule));
+  }
+  async semanticHighlights(results, queryVector, options) {
+    const candidates = [];
+    results.slice(0, 15).forEach((result, resultIndex) => {
+      if (result.score < options.resultMinScore) return;
+      const add = (field, source, maximum) => phraseCandidates(source, maximum).forEach(phrase => candidates.push({ resultIndex, field, phrase }));
+      add('filename', basename(result.file), 8); add('heading', result.heading, 8);
+      sampleEvenly(phraseCandidates(result.text, 72), 18).forEach(phrase => candidates.push({ resultIndex, field: 'body', phrase }));
+    });
+    const unique = []; const seen = new Set(); for (const item of candidates) { const key = item.phrase.toLowerCase(); if (!seen.has(key)) { seen.add(key); unique.push(item.phrase); } }
+    const missing = unique.filter(phrase => !this.phraseCache.has(phrase.toLowerCase()));
+    const vectors = await this.embedBatch(missing); missing.forEach((phrase, index) => this.phraseCache.set(phrase.toLowerCase(), vectors[index]));
+    if (this.phraseCache.size > 1800) for (const key of [...this.phraseCache.keys()].slice(0, this.phraseCache.size - 1500)) this.phraseCache.delete(key);
+    const ranked = new Map(); for (const item of candidates) { const score = dot(queryVector, this.phraseCache.get(item.phrase.toLowerCase())); const list = ranked.get(item.resultIndex) || []; list.push({ ...item, score, rankScore: score + (item.phrase.split(/\s+/).length === 2 ? .08 : 0) }); ranked.set(item.resultIndex, list); }
+    for (const [resultIndex, phrases] of ranked) {
+      const choose = (field, maximum) => { const chosen = []; for (const item of phrases.filter(value => value.field === field).sort((a, b) => b.rankScore - a.rankScore)) { const words = item.phrase.split(/\s+/).length; if (field === 'body' && words === 1) continue; const threshold = words === 1 ? options.singleWordMinScore : options.phraseMinScore; if (item.score < threshold) continue; if (chosen.some(value => value.phrase.toLowerCase().includes(item.phrase.toLowerCase()) || item.phrase.toLowerCase().includes(value.phrase.toLowerCase()))) continue; chosen.push({ phrase: item.phrase, score: item.score }); if (chosen.length === maximum) break; } return chosen; };
+      results[resultIndex].filenameHighlights = choose('filename', 2); results[resultIndex].headingHighlights = choose('heading', 2); results[resultIndex].semanticHighlights = choose('body', options.maxPhrases);
+    }
+  }
+  async search(query, topK, minScore, options = {}) {
+    if (!this.pipe || !this.vectors.length) throw new Error(this.message || 'The mobile semantic index is not ready');
+    const queryVector = await this.embed(query, true); const queryTokens = [...new Set(tokens(query))]; const scores = [];
+    for (let i = 0; i < this.vectors.length; i++) {
+      if (options.file && this.meta[i].file !== options.file) continue; const semantic = dot(queryVector, this.vectors[i]); if (semantic < minScore) continue;
+      const filenameBoost = lexicalCoverage(queryTokens, this.lexical[i].filename) * .05; const folderPathBoost = (options.folderPathBoost || 0) * lexicalCoverage(queryTokens, this.lexical[i].folder);
+      scores.push({ index: i, score: semantic, rankingScore: semantic + filenameBoost + folderPathBoost, filenameBoost, folderPathBoost });
+    }
+    scores.sort((a, b) => b.rankingScore - a.rankingScore); const floor = (scores[0]?.score || 0) - Math.max(0, Math.min(1, options.scoreWindow ?? 1)); const top = scores.filter(item => item.score >= floor).slice(0, topK);
+    const results = top.map(item => ({ ...this.meta[item.index], score: item.score, rankingScore: Math.min(1, item.rankingScore), filenameBoost: item.filenameBoost, folderPathBoost: item.folderPathBoost }));
+    if (options.semanticHighlights && results.length) await this.semanticHighlights(results, queryVector, options); return results;
+  }
+  async scores(query) { const vector = await this.embed(query, true); const scores = {}; this.meta.forEach((item, index) => { const score = dot(vector, this.vectors[index]); scores[item.file] = Math.max(scores[item.file] || -1, score); }); return scores; }
+  async graph(k = 5, maxEdges = 2000) {
+    const groups = new Map(); this.meta.forEach((item, index) => { const group = groups.get(item.file) || []; group.push(this.vectors[index]); groups.set(item.file, group); });
+    const nodes = [...groups].map(([id, vectors]) => { const vector = new Float32Array(DIMENSION); vectors.forEach(value => value.forEach((number, index) => vector[index] += number)); let norm = Math.sqrt(dot(vector, vector)) || 1; vector.forEach((_, index) => vector[index] /= norm); return { id, label: basename(id), vector }; });
+    const edges = []; for (let i = 0; i < nodes.length; i++) { const near = []; for (let j = 0; j < nodes.length; j++) if (i !== j) near.push({ source: nodes[i].id, target: nodes[j].id, score: dot(nodes[i].vector, nodes[j].vector), hard: false }); near.sort((a, b) => b.score - a.score); edges.push(...near.slice(0, k)); }
+    return { nodes: nodes.map(({ id, label }) => ({ id, label })), edges: edges.slice(0, maxEdges) };
+  }
+}
