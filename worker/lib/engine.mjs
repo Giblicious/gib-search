@@ -2,14 +2,13 @@
 import { env, pipeline } from '@huggingface/transformers';
 
 export const MODEL_PROFILES = {
-  nomic: { id: 'nomic-ai/nomic-embed-text-v1.5', dimension: 768, dtype: 'q8', queryPrefix: '' },
-  mobile: { id: 'Xenova/bge-small-en-v1.5', dimension: 384, dtype: 'q8', queryPrefix: 'Represent this sentence for searching relevant passages: ' },
+  bge: { id: 'Xenova/bge-small-en-v1.5', dimension: 384, dtype: 'q8', queryPrefix: 'Represent this sentence for searching relevant passages: ' },
 };
 
 export class EmbeddingEngine {
-  constructor(modelsPath, profileName = 'nomic') {
+  constructor(modelsPath, profileName = 'bge') {
     this.modelsPath = modelsPath;
-    this.profileName = MODEL_PROFILES[profileName] ? profileName : 'nomic';
+    this.profileName = MODEL_PROFILES[profileName] ? profileName : 'bge';
     this.profile = MODEL_PROFILES[this.profileName];
     this.pipe = null;
   }
@@ -29,7 +28,7 @@ export class EmbeddingEngine {
   async embedBatch(texts) {
     if (!this.pipe) throw new Error('Engine not initialized');
     if (texts.length === 0) return [];
-    const batchSize = this.profileName === 'mobile' ? 48 : 32;
+    const batchSize = 48;
     const results = [];
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize);

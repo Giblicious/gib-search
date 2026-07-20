@@ -419,7 +419,7 @@ export class VaultIndexer {
     // (vectors are pre-normalized, so dot product = cosine similarity)
     const scores = [];
     const queryTokens = [...new Set(retrievalTokens(query))];
-    const tuneMobile = this.engine.getProfileName?.() === 'mobile';
+    const tuneBge = this.engine.getProfileName?.() === 'bge';
     for (let i = 0; i < this.vectors.length; i++) {
       if (fileFilter && this.meta[i].file !== fileFilter) continue;
       let dot = 0;
@@ -430,7 +430,7 @@ export class VaultIndexer {
         let rankScore = dot;
         let filenameBoost = 0;
         let folderPathBoost = 0;
-        if (tuneMobile) {
+        if (tuneBge) {
           const lexical = this.lexicalMeta[i];
           // A restrained title signal improves intent without turning search
           // into literal keyword matching. Body meaning remains BGE-driven.

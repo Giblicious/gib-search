@@ -38,7 +38,7 @@ const args = parseArgs(process.argv);
 const VAULT_PATH = args.vault;
 const MODELS_PATH = args.models;
 const INDEX_PATH = args.index;
-const MODEL_PROFILE = args.model || 'nomic';
+const MODEL_PROFILE = args.model || 'bge';
 
 if (!VAULT_PATH || !MODELS_PATH || !INDEX_PATH) {
   process.stderr.write(
