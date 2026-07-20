@@ -1,10 +1,8 @@
 /**
- * BC Embed Server — HTTP server for semantic search over an Obsidian vault.
+ * Local HTTP server for semantic search over an Obsidian vault.
  *
- * Runs as a long-lived child process of the plugin (not the SDK).
+ * Runs as a long-lived child process of the plugin.
  * Provides HTTP endpoints for search and status.
- * The agent's semantic_search tool is served via an in-process SDK MCP server
- * in the plugin, which proxies to this HTTP server.
  *
  * Usage:
  *   node embed-server.mjs --vault <path> --models <path> --index <path>

@@ -61,7 +61,7 @@ export class StatusWriter {
 
   downloadingModel() {
     this.write('downloading_model', {
-      message: 'Downloading embedding model (~270MB, first run only)...',
+      message: 'Downloading BGE Small English v1.5 (first run only)...',
     });
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "gib-search-runtime",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Local embedding runtime for Gib Search",
   "main": "embed-server.mjs",
