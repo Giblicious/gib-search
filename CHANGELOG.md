@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- Added live indexing phases, exact file progress, elapsed time, current-file feedback, and last-success timestamps.
+- Added index and model-cache storage reporting plus a visible retry action when startup fails.
+- Improved pause and restart behavior while preserving completed indexes.
+
 ## 0.2.1
 
 - Fixed release packaging for the bundled mobile runtime.

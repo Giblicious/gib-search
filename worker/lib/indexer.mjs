@@ -166,6 +166,8 @@ export class VaultIndexer {
 
     /** @type {((status: {indexedFiles: number, totalChunks: number}) => void) | null} */
     this.onIndexChanged = null;
+    /** @type {((status: {processedFiles: number, totalFiles: number, currentFile: string}) => void) | null} */
+    this.onIndexProgress = null;
   }
 
   /**
@@ -273,6 +275,8 @@ export class VaultIndexer {
       }
 
       this.staleFileCount = toReindex.length;
+      let processedFiles = Math.max(0, vaultFiles.size - toReindex.length);
+      if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: '' });
 
       if (toReindex.length === 0 && deletedFiles.size === 0) {
         process.stderr.write('[gib-search] Index is up to date\n');
@@ -296,16 +300,23 @@ export class VaultIndexer {
 
       // Index new/changed files
       for (const { filePath, mtime } of toReindex) {
+        if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: filePath });
         const absPath = path.join(this.vaultPath, filePath);
         let content;
         try {
           content = fs.readFileSync(absPath, 'utf-8');
         } catch {
+          processedFiles++;
+          if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: filePath });
           continue; // File may have been deleted between scan and read
         }
 
         const chunks = chunkMarkdown(content, filePath);
-        if (chunks.length === 0) continue;
+        if (chunks.length === 0) {
+          processedFiles++;
+          if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: filePath });
+          continue;
+        }
 
         const texts = chunks.map((c) => buildEmbeddingText(filePath, c));
         const embeddings = await this.engine.embedBatch(texts);
@@ -321,6 +332,8 @@ export class VaultIndexer {
           });
           newVectors.push(embeddings[i]);
         }
+        processedFiles++;
+        if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: filePath });
       }
 
       this.meta = newMeta;

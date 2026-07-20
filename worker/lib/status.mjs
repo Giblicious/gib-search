@@ -16,6 +16,13 @@ export class StatusWriter {
     this.statusPath = path.join(indexPath, STATUS_FILE);
     this.startTime = Date.now();
     this.httpPort = null;
+    this._lastDetails = {};
+    try {
+      const previous = JSON.parse(fs.readFileSync(this.statusPath, 'utf8'));
+      this.lastSuccessfulIndexAt = Number(previous.lastSuccessfulIndexAt) || null;
+    } catch {
+      this.lastSuccessfulIndexAt = null;
+    }
   }
 
   /**
@@ -24,8 +31,7 @@ export class StatusWriter {
    */
   setHttpPort(port) {
     this.httpPort = port;
-    // Re-write current status with port
-    this.write(this._lastPhase || 'starting');
+    this.write(this._lastPhase || 'starting', this._lastDetails);
   }
 
   /**
@@ -34,14 +40,18 @@ export class StatusWriter {
    * @param {object} [details]
    */
   write(phase, details = {}) {
+    if (phase !== this._lastPhase) this.phaseStartedAt = Date.now();
     this._lastPhase = phase;
+    this._lastDetails = details;
 
     const status = {
       phase,
       pid: process.pid,
       httpPort: this.httpPort,
       startedAt: this.startTime,
+      phaseStartedAt: this.phaseStartedAt || this.startTime,
       updatedAt: Date.now(),
+      lastSuccessfulIndexAt: this.lastSuccessfulIndexAt,
       ...details,
     };
 
@@ -56,7 +66,7 @@ export class StatusWriter {
   }
 
   starting() {
-    this.write('starting');
+    this.write('starting', { message: 'Starting the local semantic indexer...' });
   }
 
   downloadingModel() {
@@ -71,25 +81,34 @@ export class StatusWriter {
     });
   }
 
-  indexing(fileCount, totalFiles) {
+  indexing(fileCount, totalFiles, currentFile = '') {
     this.write('indexing', {
-      message: `Indexing vault... (${fileCount}/${totalFiles} files)`,
+      message: currentFile
+        ? `Indexing ${fileCount} of ${totalFiles}: ${currentFile}`
+        : `Indexing vault... (${fileCount}/${totalFiles} files)`,
       fileCount,
+      processedFiles: fileCount,
       totalFiles,
+      currentFile,
     });
   }
 
-  ready(indexedFiles, totalChunks) {
+  ready(indexedFiles, totalChunks, totalFiles = indexedFiles) {
+    this.lastSuccessfulIndexAt = Date.now();
     this.write('ready', {
       message: `Ready (${indexedFiles} files, ${totalChunks} chunks indexed)`,
       indexedFiles,
       totalChunks,
+      processedFiles: totalFiles,
+      totalFiles,
+      lastSuccessfulIndexAt: this.lastSuccessfulIndexAt,
     });
   }
 
   error(errorMessage) {
     this.write('error', {
       message: errorMessage,
+      errorAt: Date.now(),
     });
   }
 }

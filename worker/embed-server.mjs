@@ -62,7 +62,10 @@ const watcher = new VaultWatcher(VAULT_PATH, indexer);
 
 // Update status.json whenever the index changes (live re-indexing)
 indexer.onIndexChanged = ({ indexedFiles, totalChunks }) => {
-  status.ready(indexedFiles, totalChunks);
+  status.ready(indexedFiles, totalChunks, indexer.getStatus().vaultFiles);
+};
+indexer.onIndexProgress = ({ processedFiles, totalFiles, currentFile }) => {
+  status.indexing(processedFiles, totalFiles, currentFile);
 };
 
 // ---------------------------------------------------------------------------
@@ -211,7 +214,7 @@ async function main() {
   process.stderr.write('[gib-search] Watching vault for changes\n');
 
   // Mark ready
-  status.ready(idxStatus.indexedFiles, idxStatus.totalChunks);
+  status.ready(idxStatus.indexedFiles, idxStatus.totalChunks, idxStatus.vaultFiles);
   process.stderr.write('[gib-search] Ready\n');
 }
 
