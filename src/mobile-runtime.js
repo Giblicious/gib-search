@@ -72,8 +72,8 @@ function phraseCandidates(source, maximum = 18) {
 export class MobileSearchRuntime {
   constructor(plugin) {
     this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.packedVectors = new Float32Array(); this.lexical = [];
-    this.pipe = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Semantic search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
-    this.listeners = new Set(); this.phraseCache = new Map(); this.pending = new Map(); this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt;
+    this.pipe = null; this.modelPromise = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Semantic search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
+    this.listeners = new Set(); this.phraseCache = new Map(); this.updateTimer = null; this.indexRun = null; this.indexAgain = false; this.indexForce = false; this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt;
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
     this.legacyIndexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
     this.indexKey = `${plugin.manifest.id}:${plugin.app.vault.adapter.getBasePath?.() || plugin.app.vault.getName()}:bge-small-en-v1.5`;
@@ -118,6 +118,11 @@ export class MobileSearchRuntime {
   }
   async initializeModel() {
     if (this.pipe) return;
+    if (this.modelPromise) return this.modelPromise;
+    this.modelPromise = this.loadModel();
+    try { return await this.modelPromise; } finally { this.modelPromise = null; }
+  }
+  async loadModel() {
     this.setState('loading_model', 'Loading BGE. The first run downloads the model into Gib Search.');
     env.allowRemoteModels = true; env.allowLocalModels = false; env.useCustomCache = !this.isMobile; env.customCache = this.isMobile ? null : this.plugin.modelCache; env.useBrowserCache = this.isMobile; env.useFSCache = false;
     const progress_callback = progress => { if (progress.status !== 'progress') return; const percent = Number(progress.progress); if (Number.isFinite(percent)) this.setState('loading_model', `Downloading ${progress.file || 'BGE'}: ${Math.round(percent)}%`); };
@@ -145,8 +150,9 @@ export class MobileSearchRuntime {
   }
   async embedBatch(texts, query = false) {
     if (!texts.length) return []; await this.initializeModel(); const results = [];
-    for (let i = 0; i < texts.length; i += 8) {
-      const batch = texts.slice(i, i + 8).map(text => query ? `${QUERY_PREFIX}${text}` : text);
+    const batchSize = query ? 8 : 2;
+    for (let i = 0; i < texts.length; i += batchSize) {
+      const batch = texts.slice(i, i + batchSize).map(text => query ? `${QUERY_PREFIX}${text}` : text);
       const output = await this.pipe(batch, { pooling: 'mean', normalize: true }); const dim = output.dims.at(-1);
       for (let j = 0; j < batch.length; j++) results.push(new Float32Array(output.data.slice(j * dim, (j + 1) * dim)));
       await yieldToUi();
@@ -172,6 +178,14 @@ export class MobileSearchRuntime {
   storageBytes() { return this.vectors.length * DIMENSION * 4 + new TextEncoder().encode(JSON.stringify(this.meta)).length; }
   files() { return this.plugin.app.vault.getFiles().filter(file => INDEXABLE.has(file.extension.toLowerCase())); }
   async updateIndex(force = false) {
+    if (this.indexRun) { this.indexAgain = true; this.indexForce ||= force; return this.indexRun; }
+    this.indexRun = (async () => {
+      let nextForce = force;
+      do { this.indexAgain = false; this.indexForce = false; await this.performIndexUpdate(nextForce); nextForce = this.indexForce; } while (this.indexAgain && this.enabled && !this.cancelRequested);
+    })();
+    try { return await this.indexRun; } finally { this.indexRun = null; }
+  }
+  async performIndexUpdate(force = false) {
     this.setState('indexing', 'Checking the semantic index…'); const files = this.files(); this.vaultFiles = files.length; this.totalFiles = files.length; this.currentFile = '';
     const indexed = new Map(this.meta.map(item => [item.file, item.mtime]));
     const changed = files.filter(file => force || indexed.get(file.path) !== file.stat.mtime); const present = new Set(files.map(file => file.path));
@@ -198,14 +212,14 @@ export class MobileSearchRuntime {
   start() {
     if (!this.plugin.settings.enabled) { this.setState('offline', 'Semantic index is disabled'); return false; }
     if (this.startPromise) return false; this.enabled = true; this.cancelRequested = false;
-    this.startPromise = (async () => { try { await this.loadIndex(); await this.cleanupLegacyGeneratedData(); await this.initializeModel(); await this.updateIndex(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
+    this.startPromise = (async () => { try { await this.loadIndex(); await this.cleanupLegacyGeneratedData(); await this.updateIndex(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
     return true;
   }
-  stop() { this.cancelRequested = true; this.enabled = false; if (this.livePending) { this.livePending.reject(staleSearchError()); this.livePending = null; } this.setState('offline', 'Semantic search is paused'); return true; }
+  stop() { this.cancelRequested = true; this.enabled = false; clearTimeout(this.updateTimer); this.updateTimer = null; if (this.livePending) { this.livePending.reject(staleSearchError()); this.livePending = null; } this.setState('offline', 'Semantic search is paused'); return true; }
   restart() { this.stop(); const resume = () => this.startPromise ? setTimeout(resume, 100) : this.start(); resume(); return true; }
   rebuild() { this.stop(); const rebuild = () => { if (this.startPromise) return setTimeout(rebuild, 100); this.meta = []; this.vectors = []; this.packedVectors = new Float32Array(); this.queryCache.clear(); this.resultCache.clear(); this.refreshLexical(); this.enabled = true; this.cancelRequested = false; this.startPromise = (async () => { try { await this.updateIndex(true); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); }; rebuild(); return true; }
   watch() {
-    const schedule = file => { if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || '').toLowerCase())) return; clearTimeout(this.pending.get(file.path)); this.pending.set(file.path, setTimeout(() => { this.pending.delete(file.path); this.updateIndex(); }, 1800)); };
+    const schedule = file => { if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || '').toLowerCase())) return; clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; this.updateIndex(); }, 1800); };
     this.plugin.registerEvent(this.plugin.app.vault.on('create', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('modify', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('delete', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('rename', schedule));
   }
   async semanticHighlights(results, queryVector, options) {
@@ -245,7 +259,7 @@ export class MobileSearchRuntime {
     finally { this.liveRunning = false; if (this.livePending) this.pumpLiveSearch(); }
   }
   async search(query, topK, minScore, options = {}) {
-    if (!this.pipe || !this.vectors.length) throw new Error(this.message || 'The semantic index is not ready');
+    if (!this.vectors.length) throw new Error(this.message || 'The semantic index is not ready'); await this.initializeModel();
     const cacheKey = JSON.stringify([String(query).trim().toLowerCase(), topK, minScore, options.scoreWindow, options.folderPathBoost, Boolean(options.semanticHighlights), options.resultMinScore, options.singleWordMinScore, options.phraseMinScore, options.maxPhrases, options.file || '']);
     const cached = this.resultCache.get(cacheKey); if (cached) { this.cacheResult(this.resultCache, cacheKey, cached, 80); return cached; }
     const queryVector = await this.queryVector(query); const queryTokens = [...new Set(tokens(query))]; const scores = [];
