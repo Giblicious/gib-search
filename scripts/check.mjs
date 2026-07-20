@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 execFileSync(process.execPath, [path.join(root, 'scripts', 'build.mjs')], { stdio: 'inherit' });
@@ -33,6 +33,8 @@ if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic se
 if (!builtMain.includes('if (this.indexRun)')) throw new Error('Serialized index scheduling is missing');
 if (!builtMain.includes('clearTimeout(this.updateTimer)')) throw new Error('Vault-wide index event coalescing is missing');
 if (builtMain.includes('this.pending.get(file.path)')) throw new Error('Per-file full-index timers must not be used');
+if (!builtMain.includes('contextualExpression') || !builtMain.includes('phraseStructure')) throw new Error('Contextual span attribution is missing');
+if (builtMain.includes('function phraseCandidates(')) throw new Error('Legacy isolated n-gram highlighting is still bundled');
 if (/device\s*:\s*["'](?:wasm|webgpu)["']/.test(builtMain)) throw new Error('Inference device must be selected by the host runtime');
 if (/process\?\.release\?\.name\s*===\s*["']node["']/.test(builtMain)) throw new Error('Release build still contains Electron Node runtime detection');
 
@@ -55,6 +57,17 @@ for (const relativePath of codeFiles) {
   }
   if (/\.(?:js|mjs)$/.test(relativePath)) execFileSync(process.execPath, ['--check', path.join(root, relativePath)], { stdio: 'inherit' });
 }
+
+const { MobileSearchRuntime } = await import(pathToFileURL(path.join(root, 'src', 'mobile-runtime.js')).href);
+const mockPlugin = { isMobile: false, manifest: { id: 'gib-search' }, app: { vault: { adapter: { getBasePath: () => 'test' }, configDir: '.obsidian', getName: () => 'test' } } };
+const highlighter = new MobileSearchRuntime(mockPlugin);
+const mockScores = new Map([['i can feel the spirit.', .82], ['feel the spirit', .88], ['feel', .69], ['spirit', .76], ['i can', .28], ['i can the spirit.', .58], ['i can feel the.', .54], ['the lord warmed my bosom.', .77], ['warmed my bosom', .79], ['warmed', .66], ['bosom', .62], ['the lord.', .31]]);
+highlighter.cachedPassageVectors = async () => text => new Float32Array([mockScores.get(String(text).toLowerCase()) ?? (/feel|spirit|warm|bosom/i.test(text) ? .57 : .2)]);
+const highlightResults = [{ file: 'direct.md', heading: '', text: 'I can feel the spirit.', score: .8 }, { file: 'expression.md', heading: '', text: 'The Lord warmed my bosom.', score: .75 }];
+await highlighter.semanticHighlights(highlightResults, new Float32Array([1]), { query: 'i felt the spirit', resultMinScore: .55, singleWordMinScore: .62, phraseMinScore: .56, maxPhrases: 5 });
+const directPhrases = highlightResults[0].semanticHighlights.map(item => item.phrase.toLowerCase()); const expressionPhrases = highlightResults[1].semanticHighlights.map(item => item.phrase.toLowerCase());
+if (!directPhrases.includes('feel the spirit') || directPhrases.includes('the spirit')) throw new Error(`Contextual phrase selection failed: ${directPhrases.join(', ')}`);
+if (!expressionPhrases.includes('warmed my bosom')) throw new Error(`Contextual expression selection failed: ${expressionPhrases.join(', ')}`);
 
 for (const required of ['main.js', 'manifest.json', 'styles.css', 'versions.json', 'README.md', 'LICENSE', 'SECURITY.md']) {
   if (!fs.existsSync(path.join(root, required))) throw new Error(`Missing public release file: ${required}`);

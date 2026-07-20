@@ -1,4 +1,5 @@
 import { pipeline, env } from '@huggingface/transformers';
+import nlp from 'compromise';
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const DIMENSION = 384;
@@ -58,15 +59,49 @@ function cleanText(source) {
     .replace(/!?(?:\[\[|\[)([^\]|]+)(?:\|[^\]]+)?(?:\]\]|\](?:\([^)]*\))?)/g, '$1')
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+] |\d+[.)] )\s*/gm, '').replace(/[*_~=#|<>]/g, ' ').replace(/\s+/g, ' ').trim();
 }
-function phraseCandidates(source, maximum = 18) {
-  const words = cleanText(source).match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*/gu) || []; const found = [];
-  for (let i = 0; i < words.length; i++) for (const size of [2, 1, 3]) {
-      if (i + size > words.length) continue; const slice = words.slice(i, i + size); if (slice.every(word => STOP_WORDS.has(word.toLowerCase()))) continue;
-      if (size === 1 && (slice[0].length < 4 || STOP_WORDS.has(slice[0].toLowerCase()))) continue;
-      const phrase = slice.join(' ').replace(/[.,!?]+$/, ''); if (!found.some(item => item.toLowerCase() === phrase.toLowerCase())) found.push(phrase);
-      if (found.length >= maximum) return found;
-    }
-  return found;
+const IRREGULAR_LEMMAS = new Map([['felt', 'feel'], ['feels', 'feel'], ['feelings', 'feel'], ['children', 'child'], ['people', 'person'], ['men', 'man'], ['women', 'woman']]);
+function lemma(source) {
+  const word = String(source || '').toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+  if (IRREGULAR_LEMMAS.has(word)) return IRREGULAR_LEMMAS.get(word);
+  if (word.length > 5 && word.endsWith('ing')) return word.slice(0, -3).replace(/(.)\1$/, '$1');
+  if (word.length > 4 && word.endsWith('ies')) return `${word.slice(0, -3)}y`;
+  if (word.length > 4 && word.endsWith('ed')) return word.slice(0, -2).replace(/(.)\1$/, '$1');
+  if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss')) return word.slice(0, -1);
+  return word;
+}
+function queryAnchors(query) {
+  return new Set((String(query || '').match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*/gu) || []).map(lemma).filter(word => word.length > 2 && !STOP_WORDS.has(word)));
+}
+function contextualSentences(source, maximum = 12) {
+  const clean = cleanText(source); if (!clean) return [];
+  const split = clean.match(/[^.!?\n]+[.!?]?/g)?.map(value => value.trim()).filter(Boolean) || [clean];
+  return split.length <= maximum ? split : sampleEvenly(split, maximum);
+}
+function sentenceWords(sentence) {
+  return (String(sentence).match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*/gu) || []).map((text, index) => ({ text: text.replace(/[.,!?]+$/, ''), index, lemma: lemma(text), stop: STOP_WORDS.has(lemma(text)) }));
+}
+function spanCandidates(sentenceRecord, wordScores, anchors, maximum = 32) {
+  const words = sentenceRecord.words; const seeded = new Set(words.filter(word => anchors.has(word.lemma)).map(word => word.index));
+  words.filter(word => !word.stop && word.text.length >= 3).sort((a, b) => (wordScores.get(b.text.toLowerCase()) || 0) - (wordScores.get(a.text.toLowerCase()) || 0)).slice(0, 8).forEach(word => seeded.add(word.index));
+  const found = [];
+  for (let start = 0; start < words.length; start++) for (let size = 1; size <= 3 && start + size <= words.length; size++) {
+    const slice = words.slice(start, start + size); if (slice[0].stop || slice.at(-1).stop || !slice.some(word => seeded.has(word.index))) continue;
+    if (size === 1 && slice[0].text.length < 3) continue;
+    const anchorCount = new Set(slice.filter(word => anchors.has(word.lemma)).map(word => word.lemma)).size;
+    const seedScore = Math.max(...slice.map(word => wordScores.get(word.text.toLowerCase()) || 0));
+    const phrase = slice.map(word => word.text).join(' '); const key = phrase.toLowerCase(); if (found.some(item => item.key === key)) continue;
+    found.push({ key, phrase, sentence: sentenceRecord.sentence, sentenceScore: sentenceRecord.score, field: sentenceRecord.field, resultIndex: sentenceRecord.resultIndex, start, end: start + size - 1, words: size, anchorCount, seedScore, priority: anchorCount * .12 + seedScore + (size > 1 ? .025 : 0) });
+  }
+  return found.sort((a, b) => b.priority - a.priority).slice(0, maximum);
+}
+function removePhrase(sentence, phrase) {
+  const index = sentence.toLowerCase().indexOf(phrase.toLowerCase());
+  return index < 0 ? sentence : `${sentence.slice(0, index)} ${sentence.slice(index + phrase.length)}`.replace(/\s+/g, ' ').trim();
+}
+function phraseStructure(phrase) {
+  const terms = nlp(phrase).terms().json().flatMap(item => item.terms || []); const tags = new Set(terms.flatMap(term => term.tags || []));
+  const hasNoun = tags.has('Noun') || tags.has('ProperNoun'); const hasVerb = tags.has('Verb'); const hasExpression = tags.has('Expression'); const adjectiveOnly = tags.has('Adjective') && !hasNoun && !hasVerb;
+  return { hasNoun, hasVerb, hasExpression, adjectiveOnly, quality: (hasNoun ? .018 : 0) + (hasNoun && hasVerb ? .025 : 0) + (hasExpression ? .03 : 0) };
 }
 
 export class MobileSearchRuntime {
@@ -148,9 +183,9 @@ export class MobileSearchRuntime {
       if (this.plugin.embeddedWasmModuleUrl) { URL.revokeObjectURL(this.plugin.embeddedWasmModuleUrl); this.plugin.embeddedWasmModuleUrl = null; }
     }
   }
-  async embedBatch(texts, query = false) {
+  async embedBatch(texts, query = false, preferredBatchSize = null) {
     if (!texts.length) return []; await this.initializeModel(); const results = [];
-    const batchSize = query ? 8 : 2;
+    const batchSize = preferredBatchSize || (query ? 8 : 2);
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize).map(text => query ? `${QUERY_PREFIX}${text}` : text);
       const output = await this.pipe(batch, { pooling: 'mean', normalize: true }); const dim = output.dims.at(-1);
@@ -222,21 +257,51 @@ export class MobileSearchRuntime {
     const schedule = file => { if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || '').toLowerCase())) return; clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; this.updateIndex(); }, 1800); };
     this.plugin.registerEvent(this.plugin.app.vault.on('create', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('modify', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('delete', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('rename', schedule));
   }
+  async cachedPassageVectors(texts) {
+    const unique = []; const seen = new Set();
+    for (const text of texts) { const key = String(text || '').trim().toLowerCase(); if (key && !seen.has(key) && !this.phraseCache.has(key)) { seen.add(key); unique.push(String(text).trim()); } }
+    const vectors = await this.embedBatch(unique, false, 8); unique.forEach((text, index) => this.phraseCache.set(text.toLowerCase(), vectors[index]));
+    if (this.phraseCache.size > 2200) for (const key of [...this.phraseCache.keys()].slice(0, this.phraseCache.size - 1800)) this.phraseCache.delete(key);
+    return text => this.phraseCache.get(String(text || '').trim().toLowerCase());
+  }
   async semanticHighlights(results, queryVector, options) {
-    const candidates = [];
+    const anchors = queryAnchors(options.query); const sentenceRecords = [];
     results.slice(0, 15).forEach((result, resultIndex) => {
       if (result.score < options.resultMinScore) return;
-      const add = (field, source, maximum) => phraseCandidates(source, maximum).forEach(phrase => candidates.push({ resultIndex, field, phrase }));
-      add('filename', basename(result.file), 8); add('heading', result.heading, 8);
-      sampleEvenly(phraseCandidates(result.text, 72), 18).forEach(phrase => candidates.push({ resultIndex, field: 'body', phrase }));
+      const add = (field, source, maximum) => contextualSentences(source, maximum).forEach(sentence => sentenceRecords.push({ resultIndex, field, sentence, words: sentenceWords(sentence) }));
+      add('filename', basename(result.file), 1); add('heading', result.heading, 2); add('body', result.text, 12);
     });
-    const unique = []; const seen = new Set(); for (const item of candidates) { const key = item.phrase.toLowerCase(); if (!seen.has(key)) { seen.add(key); unique.push(item.phrase); } }
-    const missing = unique.filter(phrase => !this.phraseCache.has(phrase.toLowerCase()));
-    const vectors = await this.embedBatch(missing); missing.forEach((phrase, index) => this.phraseCache.set(phrase.toLowerCase(), vectors[index]));
-    if (this.phraseCache.size > 1800) for (const key of [...this.phraseCache.keys()].slice(0, this.phraseCache.size - 1500)) this.phraseCache.delete(key);
-    const ranked = new Map(); for (const item of candidates) { const score = dot(queryVector, this.phraseCache.get(item.phrase.toLowerCase())); const list = ranked.get(item.resultIndex) || []; list.push({ ...item, score, rankScore: score + (item.phrase.split(/\s+/).length === 2 ? .08 : 0) }); ranked.set(item.resultIndex, list); }
-    for (const [resultIndex, phrases] of ranked) {
-      const choose = (field, maximum) => { const chosen = []; for (const item of phrases.filter(value => value.field === field).sort((a, b) => b.rankScore - a.rankScore)) { const words = item.phrase.split(/\s+/).length; if (field === 'body' && words === 1) continue; const threshold = words === 1 ? options.singleWordMinScore : options.phraseMinScore; if (item.score < threshold) continue; if (chosen.some(value => value.phrase.toLowerCase().includes(item.phrase.toLowerCase()) || item.phrase.toLowerCase().includes(value.phrase.toLowerCase()))) continue; chosen.push({ phrase: item.phrase, score: item.score }); if (chosen.length === maximum) break; } return chosen; };
+    const sentenceVector = await this.cachedPassageVectors(sentenceRecords.map(item => item.sentence));
+    sentenceRecords.forEach(item => { item.score = dot(queryVector, sentenceVector(item.sentence)); item.anchorCount = new Set(item.words.filter(word => anchors.has(word.lemma)).map(word => word.lemma)).size; });
+    const selectedSentences = [];
+    for (let resultIndex = 0; resultIndex < Math.min(15, results.length); resultIndex++) for (const field of ['filename', 'heading', 'body']) {
+      const values = sentenceRecords.filter(item => item.resultIndex === resultIndex && item.field === field).sort((a, b) => (b.score + b.anchorCount * .04) - (a.score + a.anchorCount * .04));
+      selectedSentences.push(...values.slice(0, field === 'body' ? 1 : 2));
+    }
+    const contentWords = [...new Set(selectedSentences.flatMap(item => item.words.filter(word => !word.stop && word.text.length >= 3).map(word => word.text)))];
+    const wordVector = await this.cachedPassageVectors(contentWords); const wordScores = new Map(contentWords.map(word => [word.toLowerCase(), dot(queryVector, wordVector(word))]));
+    const candidates = selectedSentences.flatMap(item => spanCandidates(item, wordScores, anchors));
+    const phraseVector = await this.cachedPassageVectors(candidates.map(item => item.phrase));
+    candidates.forEach(item => { item.directScore = dot(queryVector, phraseVector(item.phrase)); item.structure = phraseStructure(item.phrase); item.preScore = item.directScore + item.anchorCount * .045 + (item.words > 1 ? .015 : 0) + item.structure.quality; });
+    const finalists = [];
+    for (let resultIndex = 0; resultIndex < Math.min(15, results.length); resultIndex++) for (const field of ['filename', 'heading', 'body']) finalists.push(...candidates.filter(item => item.resultIndex === resultIndex && item.field === field).sort((a, b) => b.preScore - a.preScore).slice(0, field === 'body' ? 10 : 5));
+    finalists.forEach(item => { item.masked = removePhrase(item.sentence, item.phrase) || 'unrelated text'; });
+    const maskedVector = await this.cachedPassageVectors(finalists.map(item => item.masked));
+    finalists.forEach(item => {
+      item.attribution = item.sentenceScore - dot(queryVector, maskedVector(item.masked));
+      item.confidence = item.directScore + Math.max(-.04, Math.min(.12, item.attribution * 1.75)) + item.anchorCount * .025;
+      item.rankScore = item.confidence + item.anchorCount * .05 + (item.words > 1 ? .02 : 0) + item.words * .012 + item.structure.quality;
+    });
+    for (let resultIndex = 0; resultIndex < Math.min(15, results.length); resultIndex++) {
+      const choose = (field, maximum) => { const chosen = []; for (const item of finalists.filter(value => value.resultIndex === resultIndex && value.field === field).sort((a, b) => b.rankScore - a.rankScore)) {
+        const threshold = item.words === 1 ? options.singleWordMinScore : options.phraseMinScore; const contextualAnchor = item.anchorCount > 0 && item.sentenceScore >= options.resultMinScore && item.directScore >= threshold - .08;
+        const contextualExpression = item.words > 1 && item.sentenceScore >= options.resultMinScore && item.directScore >= threshold - .14;
+        if (item.words === 1 && item.structure.adjectiveOnly && item.anchorCount === 0 && item.directScore < threshold + .06) continue;
+        if (item.words > 1 && !item.structure.hasNoun && !item.structure.hasExpression && item.anchorCount === 0 && item.directScore < threshold + .08) continue;
+        if (item.confidence < threshold && !contextualAnchor && !contextualExpression) continue;
+        if (chosen.some(value => value.sentence === item.sentence && !(item.end < value.start || item.start > value.end))) continue;
+        chosen.push({ phrase: item.phrase, score: item.confidence, sentence: item.sentence, start: item.start, end: item.end }); if (chosen.length === maximum) break;
+      } return chosen.map(({ phrase, score }) => ({ phrase, score })); };
       results[resultIndex].filenameHighlights = choose('filename', 2); results[resultIndex].headingHighlights = choose('heading', 2); results[resultIndex].semanticHighlights = choose('body', options.maxPhrases);
     }
   }
@@ -270,7 +335,7 @@ export class MobileSearchRuntime {
     }
     scores.sort((a, b) => b.rankingScore - a.rankingScore); const floor = (scores[0]?.score || 0) - Math.max(0, Math.min(1, options.scoreWindow ?? 1)); const top = scores.filter(item => item.score >= floor).slice(0, topK);
     const results = top.map(item => ({ ...this.meta[item.index], score: Math.min(1, item.rankingScore), semanticScore: item.score, rankingScore: Math.min(1, item.rankingScore), filenameBoost: item.filenameBoost, folderPathBoost: item.folderPathBoost }));
-    if (options.semanticHighlights && results.length) await this.semanticHighlights(results, queryVector, options); return this.cacheResult(this.resultCache, cacheKey, results, 80);
+    if (options.semanticHighlights && results.length) await this.semanticHighlights(results, queryVector, { ...options, query }); return this.cacheResult(this.resultCache, cacheKey, results, 80);
   }
   async scores(query) { const vector = await this.queryVector(query); const scores = {}; this.meta.forEach((item, index) => { const score = dotPacked(vector, this.packedVectors, index * DIMENSION); scores[item.file] = Math.max(scores[item.file] || -1, score); }); return scores; }
   async graph(k = 5, maxEdges = 2000) {
