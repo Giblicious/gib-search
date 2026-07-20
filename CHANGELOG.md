@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.8
+
+- Moved desktop runtime dependencies, model files, indexes, and diagnostic logs to a device-local cache outside the vault.
+- Moved mobile indexes and diagnostics to device-local browser storage.
+- Migrates existing generated data with size verification before removing the old in-vault copies.
+- Prevents vault sync plugins from uploading Gib Search models and other generated files.
+
 ## 0.2.7
 
 - Isolated runtime dependencies from BRAT-managed plugin files to prevent locked or partially removed installs.

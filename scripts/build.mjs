@@ -27,7 +27,7 @@ const bundledSource = source.replace(marker, `const EMBEDDED_RUNTIME = ${JSON.st
 await build({
   stdin: { contents: bundledSource, resolveDir: path.join(root, 'src'), sourcefile: 'main.js', loader: 'js' },
   outfile: path.join(root, 'main.js'), bundle: true, platform: 'browser', format: 'cjs', target: 'es2020',
-  external: ['obsidian', 'electron', 'child_process', 'fs', 'path', 'http', 'node:*'],
+  external: ['obsidian', 'electron', 'child_process', 'fs', 'path', 'http', 'os', 'crypto', 'node:*'],
   conditions: ['browser', 'module', 'import'], define: { global: 'globalThis', 'process.env.NODE_ENV': '"production"' },
   logLevel: 'warning', legalComments: 'none',
 });

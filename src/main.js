@@ -1,9 +1,9 @@
 const { Plugin, PluginSettingTab, Setting, SuggestModal, ItemView, Notice, TFile, setIcon, Platform } = require('obsidian');
 const { MobileSearchRuntime } = require('./mobile-runtime');
-let spawn, fs, path, http;
+let spawn, fs, path, http, os, crypto;
 function loadDesktopModules() {
   if (fs) return;
-  ({ spawn } = require('child_process')); fs = require('fs'); path = require('path'); http = require('http');
+  ({ spawn } = require('child_process')); fs = require('fs'); path = require('path'); http = require('http'); os = require('os'); crypto = require('crypto');
 }
 
 const EMBEDDED_RUNTIME = null;
@@ -18,7 +18,55 @@ const MODEL_TWEAK_DEFAULTS = {
 };
 const DEFAULTS = { enabled: true, nodePath: 'node', modelsPath: '', verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
 function activeIndexDir(plugin) {
-  return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
+  return path.join(plugin.cacheRoot, 'indexes', plugin.vaultCacheKey, MODEL_PROFILES.bge.indexFolder);
+}
+function desktopCacheRoot() {
+  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Gib Search');
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Caches', 'Gib Search');
+  return path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'gib-search');
+}
+function vaultCacheKey(vaultPath) {
+  const normalized = path.resolve(vaultPath).replaceAll('\\', '/').toLowerCase();
+  return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+}
+function directoryFiles(directory, root = directory) {
+  if (!fs.existsSync(directory)) return [];
+  const files = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...directoryFiles(target, root));
+    else { try { files.push({ relative: path.relative(root, target), size: fs.statSync(target).size }); } catch {} }
+  }
+  return files;
+}
+function migrateDirectory(source, destination, plugin) {
+  if (!fs.existsSync(source) || path.resolve(source) === path.resolve(destination)) return true;
+  try {
+    for (const file of directoryFiles(source)) {
+      const from = path.join(source, file.relative), to = path.join(destination, file.relative);
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      if (!fs.existsSync(to) || fs.statSync(to).size !== file.size) fs.copyFileSync(from, to);
+    }
+    const complete = directoryFiles(source).every(file => {
+      const target = path.join(destination, file.relative);
+      return fs.existsSync(target) && fs.statSync(target).size === file.size;
+    });
+    if (!complete) throw new Error('destination verification failed');
+    fs.rmSync(source, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 });
+    return true;
+  } catch (error) { plugin.logDiagnostic(`Could not migrate ${source}: ${error.message}`, true); return false; }
+}
+function migrateDesktopData(plugin) {
+  fs.mkdirSync(plugin.cacheRoot, { recursive: true });
+  const defaultModels = path.join(plugin.cacheRoot, 'models');
+  migrateDirectory(path.join(plugin.pluginDir, 'models'), defaultModels, plugin);
+  migrateDirectory(path.join(plugin.pluginDir, 'worker', 'models'), defaultModels, plugin);
+  migrateDirectory(path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder), activeIndexDir(plugin), plugin);
+  migrateDirectory(path.join(plugin.pluginDir, 'runtime', RUNTIME_CHANNEL), path.join(plugin.cacheRoot, 'runtime', plugin.vaultCacheKey, RUNTIME_CHANNEL), plugin);
+  migrateDirectory(path.join(plugin.pluginDir, 'logs'), path.join(plugin.cacheRoot, 'logs', plugin.vaultCacheKey), plugin);
+  for (const empty of [path.join(plugin.pluginDir, 'embeddings'), path.join(plugin.pluginDir, 'runtime')]) {
+    try { if (fs.existsSync(empty) && fs.readdirSync(empty).length === 0) fs.rmdirSync(empty); } catch {}
+  }
 }
 function activeTweaks(plugin) {
   return plugin.settings.modelTweaks.bge;
@@ -96,8 +144,8 @@ class SearchClient {
 
 class RuntimeInstaller {
   constructor(plugin) { this.plugin = plugin; this.process = null; this.sizeCache = { at: 0, bytes: 0 }; this.installErrors = []; }
-  workerDir() { return path.join(this.plugin.pluginDir, 'runtime', RUNTIME_CHANNEL); }
-  modelDir() { const legacy = path.join(this.plugin.pluginDir, 'worker', 'models'); return this.plugin.settings.modelsPath || (fs.existsSync(legacy) ? legacy : path.join(this.plugin.pluginDir, 'models')); }
+  workerDir() { return path.join(this.plugin.cacheRoot, 'runtime', this.plugin.vaultCacheKey, RUNTIME_CHANNEL); }
+  modelDir() { return this.plugin.settings.modelsPath || path.join(this.plugin.cacheRoot, 'models'); }
   ready() { return fs.existsSync(path.join(this.workerDir(), 'embed-server.mjs')) && fs.existsSync(path.join(this.workerDir(), 'node_modules', '@huggingface', 'transformers')); }
   materialize() {
     if (!EMBEDDED_RUNTIME) return;
@@ -135,12 +183,13 @@ class RuntimeInstaller {
   stop() { this.process?.kill(); this.process = null; }
   storageBytes() { if (Date.now() - this.sizeCache.at > 30000) this.sizeCache = { at: Date.now(), bytes: directorySize(this.modelDir()) }; return this.sizeCache.bytes; }
   cleanupLegacy() {
+    migrateDesktopData(this.plugin);
     const legacy = path.join(this.plugin.pluginDir, 'worker');
     for (const name of ['node_modules', 'lib', 'embed-server.mjs', 'package.json', 'package-lock.json']) {
       const target = path.join(legacy, name);
       try { if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 }); } catch (error) { this.plugin.logDiagnostic(`Could not remove obsolete runtime ${target}: ${error.message}`); }
     }
-    const runtimeRoot = path.join(this.plugin.pluginDir, 'runtime');
+    const runtimeRoot = path.join(this.plugin.cacheRoot, 'runtime', this.plugin.vaultCacheKey);
     try { for (const entry of fs.readdirSync(runtimeRoot, { withFileTypes: true })) if (entry.isDirectory() && entry.name !== RUNTIME_CHANNEL) fs.rmSync(path.join(runtimeRoot, entry.name), { recursive: true, force: true, maxRetries: 3, retryDelay: 250 }); } catch (error) { this.plugin.logDiagnostic(`Could not remove a superseded runtime: ${error.message}`); }
   }
 }
@@ -672,7 +721,7 @@ module.exports = class GibSearch extends Plugin {
     if (this.isMobile) {
       this.search = this.indexer = new MobileSearchRuntime(this); this.runtime = { ready: () => true, materialize() {}, install: async () => true, stop() {} }; this.indexer.watch();
     } else {
-      loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id);
+      loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id); this.cacheRoot = desktopCacheRoot(); this.vaultCacheKey = vaultCacheKey(this.vaultPath); migrateDesktopData(this);
       this.search = new SearchClient(activeIndexDir(this)); this.indexer = new Indexer(this); this.runtime = new RuntimeInstaller(this); this.runtime.materialize();
     }
     this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this));
@@ -685,18 +734,16 @@ module.exports = class GibSearch extends Plugin {
     if (this.runtime.ready()) startIndexer(); else this.runtime.install().then(startIndexer).catch(error => this.reportOnce(`Could not install the local search runtime: ${error.message}`));
   }
   async save() { await this.saveData(this.settings); }
-  diagnosticLogPath() { return this.isMobile ? `${this.app.vault.configDir}/plugins/${this.manifest.id}/logs/gib-search.log` : path.join(this.pluginDir, 'logs', 'gib-search.log'); }
+  diagnosticLogPath() { return this.isMobile ? `gib-search-diagnostics:${this.app.vault.getName()}` : path.join(this.cacheRoot, 'logs', this.vaultCacheKey, 'gib-search.log'); }
   async logDiagnostic(message, force = false) {
     if (!force && !this.settings.verboseLogging) return;
     const line = `[${new Date().toISOString()}] ${String(message).replace(/\r?\n/g, '\n')}\n`;
     try {
-      if (this.isMobile) {
-        const directory = this.diagnosticLogPath().slice(0, this.diagnosticLogPath().lastIndexOf('/')); if (!await this.app.vault.adapter.exists(directory)) await this.app.vault.adapter.mkdir(directory);
-        await this.app.vault.adapter.append(this.diagnosticLogPath(), line);
-      } else { fs.mkdirSync(path.dirname(this.diagnosticLogPath()), { recursive: true }); fs.appendFileSync(this.diagnosticLogPath(), line); }
+      if (this.isMobile) { const key = this.diagnosticLogPath(); localStorage.setItem(key, `${localStorage.getItem(key) || ''}${line}`.slice(-200000)); }
+      else { fs.mkdirSync(path.dirname(this.diagnosticLogPath()), { recursive: true }); fs.appendFileSync(this.diagnosticLogPath(), line); }
     } catch {}
   }
-  async clearDiagnosticLog() { try { if (this.isMobile) { if (await this.app.vault.adapter.exists(this.diagnosticLogPath())) await this.app.vault.adapter.write(this.diagnosticLogPath(), ''); } else { fs.mkdirSync(path.dirname(this.diagnosticLogPath()), { recursive: true }); fs.writeFileSync(this.diagnosticLogPath(), ''); } } catch {} }
+  async clearDiagnosticLog() { try { if (this.isMobile) localStorage.removeItem(this.diagnosticLogPath()); else { fs.mkdirSync(path.dirname(this.diagnosticLogPath()), { recursive: true }); fs.writeFileSync(this.diagnosticLogPath(), ''); } } catch {} }
   reportOnce(message) { if (message !== this.lastError) { this.lastError = message; new Notice(`Gib Search: ${message}`); } }
   async openGraph() { let leaf = this.app.workspace.getLeavesOfType(GRAPH_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: GRAPH_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); }
   onunload() { this.runtime?.stop(); this.indexer?.stop(); }
