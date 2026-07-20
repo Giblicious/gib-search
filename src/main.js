@@ -15,7 +15,7 @@ const MODEL_PROFILES = {
 const MODEL_TWEAK_DEFAULTS = {
   bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 },
 };
-const DEFAULTS = { enabled: true, nodePath: 'node', modelsPath: '', verboseLogging: false, folderPathBoostEnabled: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
+const DEFAULTS = { enabled: true, nodePath: 'node', modelsPath: '', verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
 function activeIndexDir(plugin) {
   return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
 }
@@ -237,6 +237,16 @@ function mergeSemanticPhrases(...lists) {
   for (const phrase of lists.flat()) if (phrase && !merged.some(existing => existing.toLowerCase() === phrase.toLowerCase())) merged.push(phrase);
   return merged;
 }
+const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i;
+function extractImageReferences(source, anchorPhrases = []) {
+  const value = String(source || '').replace(/```[\s\S]*?```/g, ' '); const found = []; const seen = new Set(); const lower = value.toLowerCase();
+  const anchors = anchorPhrases.flatMap(phrase => { const needle = String(phrase || '').toLowerCase().trim(); const positions = []; if (!needle) return positions; let index = 0; while ((index = lower.indexOf(needle, index)) >= 0) { positions.push(index); index += Math.max(1, needle.length); } return positions; });
+  const add = (target, alt = '', position = 0) => { const normalized = String(target || '').trim(); if (!normalized || seen.has(normalized)) return; seen.add(normalized); const distance = anchors.length ? Math.min(...anchors.map(anchor => Math.abs(anchor - position))) : position; found.push({ target: normalized, alt: String(alt || '').trim(), distance }); };
+  for (const match of value.matchAll(/!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)) add(match[1], match[1].split('/').pop(), match.index);
+  for (const match of value.matchAll(/!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^)]*)?\)/g)) add(match[2] || match[3], match[1], match.index);
+  for (const match of value.matchAll(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)) { const alt = match[0].match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || ''; add(match[1], alt, match.index); }
+  return found.sort((a, b) => a.distance - b.distance).map(({ distance, ...reference }) => reference);
+}
 function groupSearchResults(results, query, maxFiles) {
   const sharedPhrases = semanticPhrasePool(results);
   const files = new Map();
@@ -250,7 +260,7 @@ function groupSearchResults(results, query, maxFiles) {
     const headingHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.heading, sharedPhrases), (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean));
     for (const phrase of filenameHighlights) if (!group.filenameHighlights.includes(phrase)) group.filenameHighlights.push(phrase);
     const text = distillSnippet(hit.text, query, semanticHighlights);
-    if (text && !group.snippets.some(item => item.text === text) && group.snippets.length < 3) group.snippets.push({ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights });
+    if (text && !group.snippets.some(item => item.text === text) && group.snippets.length < 3) group.snippets.push({ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) });
   }
   // Preserve the worker's tuned rank. Map insertion order reflects the first
   // (best-ranked) chunk for each file; sorting again by raw cosine would erase
@@ -259,7 +269,7 @@ function groupSearchResults(results, query, maxFiles) {
 }
 function passageSearchResults(results, query, maximum) {
   const sharedPhrases = semanticPhrasePool(results);
-  return results.slice(0, maximum).map(hit => { const semanticHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.text, sharedPhrases), (hit.semanticHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); const filename = hit.file.replace(/\.md$/i, '').split('/').pop(); const filenameHighlights = mergeSemanticPhrases(matchingSemanticPhrases(filename, sharedPhrases), (hit.filenameHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); const headingHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.heading, sharedPhrases), (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); return { file: hit.file, score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: [{ text: distillSnippet(hit.text, query, semanticHighlights), heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights }] }; }).filter(result => result.snippets[0].text);
+  return results.slice(0, maximum).map(hit => { const semanticHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.text, sharedPhrases), (hit.semanticHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); const filename = hit.file.replace(/\.md$/i, '').split('/').pop(); const filenameHighlights = mergeSemanticPhrases(matchingSemanticPhrases(filename, sharedPhrases), (hit.filenameHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); const headingHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.heading, sharedPhrases), (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); return { file: hit.file, score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: [{ text: distillSnippet(hit.text, query, semanticHighlights), heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) }] }; }).filter(result => result.snippets[0].text);
 }
 function highlightForms(value) {
   const word = String(value || '').trim();
@@ -336,6 +346,22 @@ class SemanticSearchModal extends SuggestModal {
     button.addEventListener('mousedown', event => event.preventDefault());
     button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); button.disabled = true; button.textContent = 'Loading…'; this.visibleLimit += 10; this.triggerSearch(this.lastQuery); });
   }
+  resolveSnippetImage(references, sourcePath) {
+    for (const reference of references || []) {
+      let target = String(reference.target || '').trim(); if (!target) continue;
+      if (/^\/\//.test(target)) target = `https:${target}`;
+      if (/^https?:\/\//i.test(target)) {
+        if (this.plugin.settings.allowExternalImageThumbnails) return { src: target, alt: reference.alt || 'External image', external: true };
+        continue;
+      }
+      if (/^(?:data|javascript):/i.test(target)) continue;
+      target = target.split('#')[0].split('?')[0]; try { target = decodeURIComponent(target); } catch {}
+      const file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+      if (!(file instanceof TFile) || !IMAGE_EXTENSION.test(file.path)) continue;
+      return { src: this.app.vault.getResourcePath(file), alt: reference.alt || file.basename, file, external: false };
+    }
+    return null;
+  }
   renderSuggestion(result, el) {
     const pathParts = result.file.replace(/\.md$/i, '').split('/'); const fileName = pathParts.pop() || result.file.replace(/\.md$/i, '');
     const container = el.createDiv({ cls: 'gib-semantic-result' });
@@ -351,7 +377,15 @@ class SemanticSearchModal extends SuggestModal {
     result.snippets.forEach((snippet, index) => {
       const block = snippets.createDiv({ cls: 'gib-semantic-snippet' });
       if (snippet.heading) { const heading = block.createDiv({ cls: 'gib-semantic-result-heading' }); renderHighlighted(heading, snippet.heading, this.lastQuery, snippet.headingHighlights); }
-      const preview = block.createDiv({ cls: 'gib-semantic-result-preview' }); renderHighlighted(preview, snippet.text, this.lastQuery, snippet.semanticHighlights);
+      const content = block.createDiv({ cls: 'gib-semantic-snippet-content' });
+      const preview = content.createDiv({ cls: 'gib-semantic-result-preview' }); renderHighlighted(preview, snippet.text, this.lastQuery, snippet.semanticHighlights);
+      const image = this.resolveSnippetImage(snippet.imageReferences, result.file);
+      if (image) {
+        const thumbnail = content.createEl('img', { cls: 'gib-semantic-snippet-thumbnail', attr: { src: image.src, alt: image.alt, loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' } });
+        thumbnail.addEventListener('error', () => thumbnail.remove());
+        thumbnail.addEventListener('mousedown', event => event.stopPropagation());
+        thumbnail.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); if (image.external) window.open(image.src, '_blank', 'noopener,noreferrer'); else this.app.workspace.getLeaf('tab').openFile(image.file); });
+      }
       if (index < result.snippets.length - 1) snippets.createDiv({ cls: 'gib-semantic-snippet-divider' });
     });
   }
@@ -547,6 +581,7 @@ class SearchSettings extends PluginSettingTab {
     new Setting(this.containerEl).setName('Score window').setDesc('Keep results within this distance of the strongest match. Smaller values filter ambiguous lower-ranked results.').addSlider(s => s.setLimits(.05, 1, .01).setValue(tweaks.scoreWindow).setDynamicTooltip().onChange(async value => { tweaks.scoreWindow = value; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Results').addSlider(s => s.setLimits(5, 50, 5).setValue(tweaks.topK).setDynamicTooltip().onChange(async value => { tweaks.topK = value; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Boost folder path matches').setDesc('Give notes a modest ranking boost when the query matches words in their folder path.').addToggle(t => t.setValue(this.plugin.settings.folderPathBoostEnabled).onChange(async value => { this.plugin.settings.folderPathBoostEnabled = value; await this.plugin.save(); }));
+    new Setting(this.containerEl).setName('Load external image thumbnails').setDesc('Allow search results to request images from web URLs found in notes. Local vault images are always available. Disabled by default for privacy and performance.').addToggle(t => t.setValue(this.plugin.settings.allowExternalImageThumbnails).onChange(async value => { this.plugin.settings.allowExternalImageThumbnails = value; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Enable semantic highlighting').setDesc('Color compact concepts that the local model identifies as related to the query.').addToggle(t => t.setValue(tweaks.semanticHighlights).onChange(async value => { tweaks.semanticHighlights = value; await this.plugin.save(); this.display(); }));
     if (tweaks.semanticHighlights) {
       new Setting(this.containerEl).setName('Result confidence').setDesc('Only attribute phrases inside results at or above this similarity. Higher values reduce misleading highlights.').addSlider(s => s.setLimits(.4, .9, .01).setValue(tweaks.highlightResultMinScore).setDynamicTooltip().onChange(async value => { tweaks.highlightResultMinScore = value; await this.plugin.save(); }));
