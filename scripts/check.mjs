@@ -30,6 +30,7 @@ const forbidden = [
   /\b\x63\x6c\x61\x75\x64\x65\b/i,
   /\b\x63\x6f\x64\x65\x78\b/i,
   /\b\x63\x68\x61\x74\x67\x70\x74\b/i,
+  /\bbc embed\b/i, /agent's semantic_search/i, /sdk mcp/i,
   /C:\\Users\\/i, /[A-Z]:\\Tucker\\/i, /console\.(?:log|debug)\s*\(/,
 ];
 for (const relativePath of codeFiles) {

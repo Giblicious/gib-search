@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- Removed stale internal terminology from the packaged worker.
+- Expanded public-release checks for legacy project text.
+
 ## 0.1.1
 
 - Standardized indexing and search on BGE Small English v1.5.
