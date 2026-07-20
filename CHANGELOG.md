@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.7
+
+- Isolated runtime dependencies from BRAT-managed plugin files to prevent locked or partially removed installs.
+- Stops superseded workers during reload instead of adopting outdated processes.
+- Removes obsolete runtime code and dependencies while preserving models and indexes.
+- Reports signed npm error details instead of opaque Windows exit numbers.
+
 ## 0.2.6
 
 - Moved result thumbnails to the left of snippet text while preserving the quote rail position.
