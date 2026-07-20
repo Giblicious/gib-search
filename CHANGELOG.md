@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.6
+
+- Moved result thumbnails to the left of snippet text while preserving the quote rail position.
+
 ## 0.2.5
 
 - Added compact thumbnails for local images associated with search-result passages.
