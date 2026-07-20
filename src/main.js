@@ -242,35 +242,44 @@ function renderHighlighted(parent, text, query, semanticPhrases = []) {
 
 class SemanticSearchModal extends SuggestModal {
   constructor(app, plugin, filePath = null) {
-    super(app); this.plugin = plugin; this.filePath = filePath; this.debounceTimer = null; this.lastResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null;
+    super(app); this.plugin = plugin; this.filePath = filePath; this.debounceTimer = null; this.highlightTimer = null; this.searchVersion = 0; this.lastResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null;
     const fileName = filePath ? filePath.split('/').pop().replace(/\.md$/i, '') : '';
     this.setPlaceholder(filePath ? `Search within ${fileName}…` : 'Search vault by meaning…');
     this.setInstructions([{ command: 'Type', purpose: 'to search' }, { command: '↑↓', purpose: 'to navigate' }, { command: '↵', purpose: 'to open' }, { command: 'esc', purpose: 'to dismiss' }]);
   }
   getSuggestions(query) {
-    if (!query || query.trim().length < 2) { this.lastResults = []; return []; }
+    if (!query || query.trim().length < 2) { clearTimeout(this.debounceTimer); clearTimeout(this.highlightTimer); this.searchVersion++; this.lastQuery = ''; this.lastResults = []; return []; }
     const trimmed = query.trim();
     if (trimmed !== this.lastQuery) { this.lastQuery = trimmed; this.visibleLimit = activeTweaks(this.plugin).topK; this.triggerSearch(trimmed); }
     return this.lastResults;
   }
-  triggerSearch(query) {
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+  triggerSearch(query, immediate = false) {
+    clearTimeout(this.debounceTimer); clearTimeout(this.highlightTimer); const version = ++this.searchVersion;
     this.debounceTimer = setTimeout(async () => {
       try {
         const tweaks = activeTweaks(this.plugin);
         const requested = Math.max(this.visibleLimit || tweaks.topK, tweaks.topK);
         const rawLimit = this.filePath ? Math.min(1000, requested + 10) : Math.min(1000, Math.max(requested * 4, 40));
-        const highlight = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, file: this.filePath };
-        const results = await this.plugin.search.search(query, this.filePath ? tweaks.topK : rawLimit, tweaks.minScore, highlight);
-        if (query === this.lastQuery) {
+        const options = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: false, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, file: this.filePath };
+        const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search);
+        const results = await runSearch(query, rawLimit, tweaks.minScore, options);
+        if (version === this.searchVersion && query === this.lastQuery) {
           const all = this.filePath ? passageSearchResults(results, query, results.length) : groupSearchResults(results, query, Number.MAX_SAFE_INTEGER);
           this.lastResults = all.slice(0, requested);
           this.canLoadMore = all.length > requested || (results.length === rawLimit && rawLimit < 1000);
           this.updateSuggestions();
           window.setTimeout(() => this.renderShowMore(), 0);
+          if (tweaks.semanticHighlights) this.highlightTimer = window.setTimeout(async () => {
+            try {
+              const enriched = await runSearch(query, rawLimit, tweaks.minScore, { ...options, semanticHighlights: true });
+              if (version !== this.searchVersion || query !== this.lastQuery) return;
+              const enrichedAll = this.filePath ? passageSearchResults(enriched, query, enriched.length) : groupSearchResults(enriched, query, Number.MAX_SAFE_INTEGER);
+              this.lastResults = enrichedAll.slice(0, requested); this.updateSuggestions(); window.setTimeout(() => this.renderShowMore(), 0);
+            } catch (error) { if (error?.name !== 'AbortError') this.plugin.reportOnce(error.message); }
+          }, 160);
         }
-      } catch (error) { this.plugin.reportOnce(error.message); }
-    }, 300);
+      } catch (error) { if (error?.name !== 'AbortError') this.plugin.reportOnce(error.message); }
+    }, immediate ? 0 : 75);
   }
   renderShowMore() {
     this.modalEl.querySelector('.gib-show-more')?.remove();
@@ -280,7 +289,7 @@ class SemanticSearchModal extends SuggestModal {
     const footer = resultsEl.createDiv({ cls: 'gib-show-more' });
     const button = footer.createEl('button', { text: 'Show 10 more results' });
     button.addEventListener('mousedown', event => event.preventDefault());
-    button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); button.disabled = true; button.textContent = 'Loading…'; this.visibleLimit += 10; this.triggerSearch(this.lastQuery); });
+    button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); button.disabled = true; button.textContent = 'Loading…'; this.visibleLimit += 10; this.triggerSearch(this.lastQuery, true); });
   }
   resolveSnippetImage(references, sourcePath) {
     for (const reference of references || []) {
@@ -343,7 +352,7 @@ class SemanticSearchModal extends SuggestModal {
     this.modalEl.addEventListener('keydown', this.navigationHandler, true);
   }
   onClose() {
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    clearTimeout(this.debounceTimer); clearTimeout(this.highlightTimer); this.searchVersion++;
     if (this.navigationHandler) this.modalEl.removeEventListener('keydown', this.navigationHandler, true);
     super.onClose();
   }
@@ -553,7 +562,7 @@ class SearchSettings extends PluginSettingTab {
     this.healthMessage.textContent = healthy ? 'The model is loaded, semantic queries are responding, and note changes are being watched.' : stoppedResponding ? `The indexer stopped responding ${formatElapsed(statusAge)} ago. Retry will resume from the latest checkpoint.` : activelyWorking ? (local.message || this.plugin.indexer.lastEvent) : (this.plugin.indexer.lastError || error || local.message || 'The semantic index is unavailable');
     const total = Number(local.totalFiles || local.vaultFiles || remote?.vaultFiles || 0), done = Number(local.processedFiles ?? local.fileCount ?? local.indexedFiles ?? remote?.indexedFiles ?? 0);
     const elapsedFrom = Number(local.phaseStartedAt || local.startedAt || 0); const indexBytes = this.plugin.search.storageBytes?.() || 0; const modelBytes = this.plugin.runtime.storageBytes?.() || 0;
-    this.healthFields = []; this.field('Phase', stoppedResponding ? 'stopped' : phase.replaceAll('_', ' ')); this.field('Progress', total ? `${done}/${total}` : 'Waiting'); this.field('Indexed', remote?.indexedFiles ?? local.indexedFiles ?? 0); this.field('Chunks', remote?.totalChunks ?? local.totalChunks ?? 0); this.field('Model', remote?.modelLoaded ? (MODEL_PROFILES[remote.modelProfile]?.label || remote.modelId || 'Loaded') : 'Not ready'); this.field('Index size', formatBytes(indexBytes)); if (!this.plugin.isMobile) this.field('Model cache', formatBytes(modelBytes)); this.field('Last success', formatWhen(local.lastSuccessfulIndexAt)); if (activelyWorking && elapsedFrom) this.field('Elapsed', formatElapsed(Date.now() - elapsedFrom)); this.healthGrid.textContent = this.healthFields.join(' · ');
+    this.healthFields = []; this.field('Phase', stoppedResponding ? 'stopped' : phase.replaceAll('_', ' ')); this.field('Progress', total ? `${done}/${total}` : 'Waiting'); this.field('Indexed', remote?.indexedFiles ?? local.indexedFiles ?? 0); this.field('Chunks', remote?.totalChunks ?? local.totalChunks ?? 0); const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || remote?.modelId || 'Loaded'; this.field('Model', remote?.modelLoaded ? `${modelLabel} (${String(remote.modelBackend || 'WASM').toUpperCase()})` : 'Not ready'); this.field('Index size', formatBytes(indexBytes)); if (!this.plugin.isMobile) this.field('Model cache', formatBytes(modelBytes)); this.field('Last success', formatWhen(local.lastSuccessfulIndexAt)); if (activelyWorking && elapsedFrom) this.field('Elapsed', formatElapsed(Date.now() - elapsedFrom)); this.healthGrid.textContent = this.healthFields.join(' · ');
     if (activelyWorking && total > 0) { this.healthProgress.style.display = ''; this.healthProgress.value = Math.min(100, done / total * 100); } else this.healthProgress.style.display = 'none';
     this.healthEvent.textContent = local.currentFile ? `Current file: ${local.currentFile}` : `Latest activity: ${this.plugin.indexer.lastEvent}`;
     if (this.retryButton?.buttonEl) this.retryButton.buttonEl.style.display = state === 'error' ? '' : 'none';
