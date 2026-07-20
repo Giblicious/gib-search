@@ -7,6 +7,7 @@ function loadDesktopModules() {
 }
 
 const EMBEDDED_RUNTIME = null;
+const RUNTIME_CHANNEL = 'v1';
 
 const GRAPH_VIEW = 'gib-search-graph';
 const MODEL_PROFILES = {
@@ -94,8 +95,9 @@ class SearchClient {
 }
 
 class RuntimeInstaller {
-  constructor(plugin) { this.plugin = plugin; this.process = null; this.sizeCache = { at: 0, bytes: 0 }; }
-  workerDir() { return path.join(this.plugin.pluginDir, 'worker'); }
+  constructor(plugin) { this.plugin = plugin; this.process = null; this.sizeCache = { at: 0, bytes: 0 }; this.installErrors = []; }
+  workerDir() { return path.join(this.plugin.pluginDir, 'runtime', RUNTIME_CHANNEL); }
+  modelDir() { const legacy = path.join(this.plugin.pluginDir, 'worker', 'models'); return this.plugin.settings.modelsPath || (fs.existsSync(legacy) ? legacy : path.join(this.plugin.pluginDir, 'models')); }
   ready() { return fs.existsSync(path.join(this.workerDir(), 'embed-server.mjs')) && fs.existsSync(path.join(this.workerDir(), 'node_modules', '@huggingface', 'transformers')); }
   materialize() {
     if (!EMBEDDED_RUNTIME) return;
@@ -117,24 +119,34 @@ class RuntimeInstaller {
   }
   install() {
     this.materialize(); if (this.ready()) return Promise.resolve(true); if (this.process) return this.installPromise;
+    this.installErrors = [];
     this.plugin.indexer.lastEvent = 'Installing the local search runtime…'; this.plugin.indexer.changed();
     this.installPromise = new Promise((resolve, reject) => {
       try {
         const install = this.installCommand(['ci', '--no-audit', '--no-fund']);
         this.process = spawn(install.command, install.args, { cwd: this.workerDir(), stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
-        this.process.stderr?.on('data', data => { const message = data.toString().trim().split(/\r?\n/).pop(); if (message) { this.plugin.indexer.lastEvent = message; this.plugin.logDiagnostic(`Runtime installer: ${message}`); this.plugin.indexer.changed(); } });
+        this.process.stderr?.on('data', data => { const lines = data.toString().trim().split(/\r?\n/).filter(Boolean); for (const message of lines) { this.installErrors.push(message); this.installErrors = this.installErrors.slice(-100); this.plugin.logDiagnostic(`Runtime installer: ${message}`); } const message = lines.at(-1); if (message) { this.plugin.indexer.lastEvent = message; this.plugin.indexer.changed(); } });
         this.process.on('error', error => { this.process = null; this.plugin.indexer.lastError = error.message; this.plugin.indexer.lastEvent = 'Runtime installation failed'; this.plugin.logDiagnostic(`Runtime installer error: ${error.stack || error.message}`); this.plugin.indexer.changed(); reject(error); });
-        this.process.on('exit', code => { this.process = null; this.plugin.logDiagnostic(`Runtime installer exited with code ${code}`); if (code === 0 && this.ready()) { this.plugin.indexer.lastEvent = 'Local search runtime installed'; this.plugin.indexer.changed(); resolve(true); } else reject(new Error(`Runtime installer exited with code ${code}`)); });
+        this.process.on('exit', code => { this.process = null; this.plugin.logDiagnostic(`Runtime installer exited with code ${code}`); if (code === 0 && this.ready()) { this.plugin.indexer.lastEvent = 'Local search runtime installed'; this.plugin.indexer.changed(); resolve(true); } else { const clean = value => value.replace(/^npm error\s*/i, '').trim(); const errorCode = this.installErrors.find(line => /npm error code\s+/i.test(line)); const errorPath = this.installErrors.find(line => /npm error path\s+/i.test(line)); const signedCode = Number(code) > 0x7fffffff ? Number(code) - 0x100000000 : code; const detail = [errorCode, errorPath].filter(Boolean).map(clean).join(' · '); reject(new Error(detail || `Runtime installer exited with code ${signedCode}`)); } });
       } catch (error) { this.process = null; reject(error); }
     });
     return this.installPromise;
   }
   stop() { this.process?.kill(); this.process = null; }
-  storageBytes() { if (Date.now() - this.sizeCache.at > 30000) this.sizeCache = { at: Date.now(), bytes: directorySize(path.join(this.workerDir(), 'models')) }; return this.sizeCache.bytes; }
+  storageBytes() { if (Date.now() - this.sizeCache.at > 30000) this.sizeCache = { at: Date.now(), bytes: directorySize(this.modelDir()) }; return this.sizeCache.bytes; }
+  cleanupLegacy() {
+    const legacy = path.join(this.plugin.pluginDir, 'worker');
+    for (const name of ['node_modules', 'lib', 'embed-server.mjs', 'package.json', 'package-lock.json']) {
+      const target = path.join(legacy, name);
+      try { if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 }); } catch (error) { this.plugin.logDiagnostic(`Could not remove obsolete runtime ${target}: ${error.message}`); }
+    }
+    const runtimeRoot = path.join(this.plugin.pluginDir, 'runtime');
+    try { for (const entry of fs.readdirSync(runtimeRoot, { withFileTypes: true })) if (entry.isDirectory() && entry.name !== RUNTIME_CHANNEL) fs.rmSync(path.join(runtimeRoot, entry.name), { recursive: true, force: true, maxRetries: 3, retryDelay: 250 }); } catch (error) { this.plugin.logDiagnostic(`Could not remove a superseded runtime: ${error.message}`); }
+  }
 }
 
 class Indexer {
-  constructor(plugin) { this.plugin = plugin; this.process = null; this.adoptedPid = null; this.lastError = ''; this.lastEvent = 'Not started in this session'; this.listeners = new Set(); this.stderrTail = ''; }
+  constructor(plugin) { this.plugin = plugin; this.process = null; this.lastError = ''; this.lastEvent = 'Not started in this session'; this.listeners = new Set(); this.stderrTail = ''; }
   onChange(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   changed() { for (const listener of this.listeners) listener(); }
   start() {
@@ -142,11 +154,10 @@ class Indexer {
     if (this.process) { this.lastEvent = 'Indexer is already running'; this.changed(); return false; }
     const existing = this.plugin.search.workerStatus();
     if (Number(existing.pid) > 0 && Number(existing.httpPort) > 0) {
-      try { process.kill(Number(existing.pid), 0); this.adoptedPid = Number(existing.pid); this.lastEvent = `Connected to worker PID ${this.adoptedPid}`; this.changed(); return false; } catch {}
+      try { process.kill(Number(existing.pid), 0); process.kill(Number(existing.pid)); this.plugin.logDiagnostic(`Stopped previous worker PID ${existing.pid} before update`); } catch {}
     }
-    const pluginDir = this.plugin.pluginDir;
-    const script = path.join(pluginDir, 'worker', 'embed-server.mjs');
-    const modelDir = this.plugin.settings.modelsPath || path.join(pluginDir, 'worker', 'models');
+    const script = path.join(this.plugin.runtime.workerDir(), 'embed-server.mjs');
+    const modelDir = this.plugin.runtime.modelDir();
     const args = [script, '--vault', this.plugin.vaultPath, '--models', modelDir, '--index', activeIndexDir(this.plugin), '--model', 'bge'];
     if (this.plugin.settings.verboseLogging) args.push('--verbose', '1');
     try {
@@ -170,8 +181,8 @@ class Indexer {
   }
   stop() {
     if (this.process) { const pid = this.process.pid; this.process._gibStopRequested = true; this.process.kill(); this.lastEvent = `Stopping worker PID ${pid}…`; this.changed(); return true; }
-    const pid = this.adoptedPid || Number(this.plugin.search.workerStatus().pid);
-    if (pid > 0) { try { process.kill(pid); this.adoptedPid = null; this.lastEvent = `Stopping worker PID ${pid}…`; this.plugin.search.writeStatus('offline', 'Semantic indexing is paused'); this.changed(); return true; } catch {} }
+    const pid = Number(this.plugin.search.workerStatus().pid);
+    if (pid > 0) { try { process.kill(pid); this.lastEvent = `Stopping worker PID ${pid}…`; this.plugin.search.writeStatus('offline', 'Semantic indexing is paused'); this.changed(); return true; } catch {} }
     this.lastEvent = 'No plugin-owned worker is running'; this.plugin.search.writeStatus('offline', 'Semantic indexing is paused'); this.changed(); return false;
   }
   restart() { this.stop(); setTimeout(() => this.start(), 500); }
@@ -670,7 +681,8 @@ module.exports = class GibSearch extends Plugin {
     this.addCommand({ id: 'semantic-graph', name: 'Open semantic graph', callback: () => this.openGraph() });
     this.addSettingTab(new SearchSettings(this.app, this));
     this.logDiagnostic(`Gib Search ${this.manifest.version} loaded on ${this.isMobile ? 'mobile' : process.platform}`);
-    if (this.runtime.ready()) this.indexer.start(); else this.runtime.install().then(() => this.indexer.start()).catch(error => this.reportOnce(`Could not install the local search runtime: ${error.message}`));
+    const startIndexer = () => { this.indexer.start(); if (!this.isMobile) window.setTimeout(() => this.runtime.cleanupLegacy(), 2500); };
+    if (this.runtime.ready()) startIndexer(); else this.runtime.install().then(startIndexer).catch(error => this.reportOnce(`Could not install the local search runtime: ${error.message}`));
   }
   async save() { await this.saveData(this.settings); }
   diagnosticLogPath() { return this.isMobile ? `${this.app.vault.configDir}/plugins/${this.manifest.id}/logs/gib-search.log` : path.join(this.pluginDir, 'logs', 'gib-search.log'); }
