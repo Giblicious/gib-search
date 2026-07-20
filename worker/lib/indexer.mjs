@@ -168,6 +168,8 @@ export class VaultIndexer {
     this.onIndexChanged = null;
     /** @type {((status: {processedFiles: number, totalFiles: number, currentFile: string}) => void) | null} */
     this.onIndexProgress = null;
+    /** @type {((message: string) => void) | null} */
+    this.onVerboseLog = null;
   }
 
   /**
@@ -217,7 +219,7 @@ export class VaultIndexer {
   /**
    * Save current index to disk.
    */
-  saveToDisk() {
+  saveToDisk(notify = true) {
     const metaPath = path.join(this.indexPath, META_FILE);
     const vectorsPath = path.join(this.indexPath, VECTORS_FILE);
 
@@ -233,7 +235,7 @@ export class VaultIndexer {
     fs.writeFileSync(vectorsPath, Buffer.from(buf.buffer));
     process.stderr.write(`[gib-search] Saved index: ${this.meta.length} chunks\n`);
 
-    if (this.onIndexChanged) {
+    if (notify && this.onIndexChanged) {
       const indexedFiles = new Set(this.meta.map((c) => c.file)).size;
       this.onIndexChanged({ indexedFiles, totalChunks: this.meta.length });
     }
@@ -276,6 +278,7 @@ export class VaultIndexer {
 
       this.staleFileCount = toReindex.length;
       let processedFiles = Math.max(0, vaultFiles.size - toReindex.length);
+      if (this.onVerboseLog) this.onVerboseLog(`Scan complete: ${vaultFiles.size} files; ${toReindex.length} need indexing; ${deletedFiles.size} deleted`);
       if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: '' });
 
       if (toReindex.length === 0 && deletedFiles.size === 0) {
@@ -299,19 +302,23 @@ export class VaultIndexer {
       }
 
       // Index new/changed files
+      let lastCheckpointAt = Date.now();
       for (const { filePath, mtime } of toReindex) {
+        const fileStartedAt = Date.now();
         if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: filePath });
         const absPath = path.join(this.vaultPath, filePath);
         let content;
         try {
           content = fs.readFileSync(absPath, 'utf-8');
         } catch {
+          if (this.onVerboseLog) this.onVerboseLog(`Skipped unreadable file: ${filePath}`);
           processedFiles++;
           if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: filePath });
           continue; // File may have been deleted between scan and read
         }
 
         const chunks = chunkMarkdown(content, filePath);
+        if (this.onVerboseLog) this.onVerboseLog(`Prepared ${filePath}: ${Buffer.byteLength(content, 'utf8')} bytes, ${chunks.length} chunks`);
         if (chunks.length === 0) {
           processedFiles++;
           if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: filePath });
@@ -319,6 +326,7 @@ export class VaultIndexer {
         }
 
         const texts = chunks.map((c) => buildEmbeddingText(filePath, c));
+        const embeddingStartedAt = Date.now();
         const embeddings = await this.engine.embedBatch(texts);
 
         for (let i = 0; i < chunks.length; i++) {
@@ -333,7 +341,12 @@ export class VaultIndexer {
           newVectors.push(embeddings[i]);
         }
         processedFiles++;
+        if (this.onVerboseLog) this.onVerboseLog(`Indexed ${filePath}: ${chunks.length} chunks in ${Date.now() - fileStartedAt} ms (embedding ${Date.now() - embeddingStartedAt} ms)`);
         if (this.onIndexProgress) this.onIndexProgress({ processedFiles, totalFiles: vaultFiles.size, currentFile: filePath });
+        if (Date.now() - lastCheckpointAt >= 30000) {
+          this.meta = newMeta; this.vectors = newVectors; this.saveToDisk(false); lastCheckpointAt = Date.now();
+          process.stderr.write(`[gib-search] Checkpoint saved at ${processedFiles}/${vaultFiles.size} files\n`);
+        }
       }
 
       this.meta = newMeta;
