@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+- Replaced isolated n-gram highlighting with query-aware contextual span attribution.
+- Selects the strongest sentence first, then discovers semantic seed words and readable one-to-three-word spans within it.
+- Uses lexical roots only to support obvious inflections and complete phrases; exact words are no longer highlighted independently.
+- Verifies finalist spans against their sentence context and supports semantic expressions such as scriptural idioms.
+- Added a bundled phrase-structure pass to reject incomplete or grammatically weak highlights.
+- Removed cross-result phrase propagation so every highlight is validated in its own context.
+
 ## 0.3.4
 
 - Coalesced vault file events into one serialized index update instead of launching overlapping full scans.

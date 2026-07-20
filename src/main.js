@@ -165,15 +165,6 @@ function semanticPhrasePool(results) {
   }
   return phrases;
 }
-function matchingSemanticPhrases(source, phrases) {
-  const lower = String(source || '').toLowerCase();
-  return phrases.filter(phrase => lower.includes(phrase.toLowerCase()));
-}
-function mergeSemanticPhrases(...lists) {
-  const merged = [];
-  for (const phrase of lists.flat()) if (phrase && !merged.some(existing => existing.toLowerCase() === phrase.toLowerCase())) merged.push(phrase);
-  return merged;
-}
 const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i;
 function extractImageReferences(source, anchorPhrases = []) {
   const value = String(source || '').replace(/```[\s\S]*?```/g, ' '); const found = []; const seen = new Set(); const lower = value.toLowerCase();
@@ -185,16 +176,15 @@ function extractImageReferences(source, anchorPhrases = []) {
   return found.sort((a, b) => a.distance - b.distance).map(({ distance, ...reference }) => reference);
 }
 function groupSearchResults(results, query, maxFiles) {
-  const sharedPhrases = semanticPhrasePool(results);
   const files = new Map();
   for (const hit of results) {
     let group = files.get(hit.file);
     const rankingScore = Number(hit.rankingScore ?? hit.score ?? 0);
     if (!group) { group = { file: hit.file, score: rankingScore, semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), snippets: [], filenameHighlights: [] }; files.set(hit.file, group); }
     if (rankingScore > group.score) { group.score = rankingScore; group.semanticScore = Number(hit.score || 0); group.filenameBoost = Number(hit.filenameBoost || 0); group.folderPathBoost = Number(hit.folderPathBoost || 0); }
-    const semanticHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.text, sharedPhrases), (hit.semanticHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean));
-    const filenameHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.file.replace(/\.md$/i, '').split('/').pop(), sharedPhrases), (hit.filenameHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean));
-    const headingHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.heading, sharedPhrases), (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean));
+    const semanticHighlights = (hit.semanticHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean);
+    const filenameHighlights = (hit.filenameHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean);
+    const headingHighlights = (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean);
     for (const phrase of filenameHighlights) if (!group.filenameHighlights.includes(phrase)) group.filenameHighlights.push(phrase);
     const text = distillSnippet(hit.text, query, semanticHighlights);
     if (text && !group.snippets.some(item => item.text === text) && group.snippets.length < 3) group.snippets.push({ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) });
@@ -205,40 +195,13 @@ function groupSearchResults(results, query, maxFiles) {
   return [...files.values()].filter(group => group.snippets.length).slice(0, maxFiles);
 }
 function passageSearchResults(results, query, maximum) {
-  const sharedPhrases = semanticPhrasePool(results);
-  return results.slice(0, maximum).map(hit => { const semanticHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.text, sharedPhrases), (hit.semanticHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); const filename = hit.file.replace(/\.md$/i, '').split('/').pop(); const filenameHighlights = mergeSemanticPhrases(matchingSemanticPhrases(filename, sharedPhrases), (hit.filenameHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); const headingHighlights = mergeSemanticPhrases(matchingSemanticPhrases(hit.heading, sharedPhrases), (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean)); return { file: hit.file, score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: [{ text: distillSnippet(hit.text, query, semanticHighlights), heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) }] }; }).filter(result => result.snippets[0].text);
-}
-function highlightForms(value) {
-  const word = String(value || '').trim();
-  if (!/^[\p{L}\p{N}'’.-]+$/u.test(word) || word.includes(' ')) return [word];
-  const forms = new Set([word]);
-  const lower = word.toLowerCase();
-  const irregular = { child: 'children', person: 'people', man: 'men', woman: 'women' };
-  if (irregular[lower]) forms.add(irregular[lower]);
-  if (lower.endsWith('ies') && lower.length > 4) forms.add(`${word.slice(0, -3)}y`);
-  else if (lower.endsWith('s') && !lower.endsWith('ss') && lower.length > 3) forms.add(word.slice(0, -1));
-  else if (/[^aeiou]y$/i.test(word)) forms.add(`${word.slice(0, -1)}ies`);
-  else if (/(?:s|x|z|ch|sh)$/i.test(word)) forms.add(`${word}es`);
-  else forms.add(`${word}s`);
-  if (/e$/i.test(word)) { forms.add(`${word.slice(0, -1)}ing`); forms.add(`${word}d`); }
-  else { forms.add(`${word}ing`); forms.add(`${word}ed`); }
-  return [...forms];
+  return results.slice(0, maximum).map(hit => { const semanticHighlights = (hit.semanticHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean); const filenameHighlights = (hit.filenameHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean); const headingHighlights = (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean); return { file: hit.file, score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: [{ text: distillSnippet(hit.text, query, semanticHighlights), heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) }] }; }).filter(result => result.snippets[0].text);
 }
 function renderHighlighted(parent, text, query, semanticPhrases = []) {
-  const phrases = semanticPhrases.filter(phrase => { const words = phrase.trim().split(/\s+/).length; return phrase.length >= 4 && phrase.length <= 60 && words >= 1 && words <= 3 && text.toLowerCase().includes(phrase.toLowerCase()); }).slice(0, 3);
-  const exactQuery = String(query || '').trim().replace(/\s+/g, ' ');
-  const queryWords = exactQuery.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*/gu) || [];
-  const queryPhrases = [];
-  for (let size = Math.min(3, queryWords.length); size >= 2; size--) for (let i = 0; i + size <= queryWords.length; i++) {
-    const candidate = queryWords.slice(i, i + size).join(' ');
-    if (text.toLowerCase().includes(candidate.toLowerCase())) queryPhrases.push(candidate);
-  }
-  const terms = queryTerms(query).sort((a, b) => b.length - a.length);
-  const semanticForms = new Set(phrases.flatMap(highlightForms).map(form => form.toLowerCase()));
-  const matches = [...new Set([...queryPhrases, ...phrases.flatMap(highlightForms), ...terms.flatMap(highlightForms)])].sort((a, b) => b.length - a.length);
+  const matches = [...new Set(semanticPhrases.filter(phrase => { const words = phrase.trim().split(/\s+/).length; return phrase.length >= 3 && phrase.length <= 60 && words >= 1 && words <= 3 && text.toLowerCase().includes(phrase.toLowerCase()); }))].sort((a, b) => b.length - a.length);
   if (!matches.length) { parent.setText(text); return; }
   const escaped = matches.map(match => match.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); const regex = new RegExp(`(?<![\\p{L}\\p{N}])(${escaped.join('|')})(?![\\p{L}\\p{N}])`, 'giu'); const normalized = new Set(matches.map(match => match.toLowerCase()));
-  for (const part of text.split(regex)) { if (!part) continue; if (normalized.has(part.toLowerCase())) parent.createEl('mark', { cls: semanticForms.has(part.toLowerCase()) ? 'gib-semantic-highlight gib-semantic-highlight-phrase' : 'gib-semantic-highlight', text: part }); else parent.appendText(part); }
+  for (const part of text.split(regex)) { if (!part) continue; if (normalized.has(part.toLowerCase())) parent.createEl('mark', { cls: 'gib-semantic-highlight gib-semantic-highlight-phrase', text: part }); else parent.appendText(part); }
 }
 
 class SemanticSearchModal extends SuggestModal {
