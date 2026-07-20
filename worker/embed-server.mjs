@@ -37,6 +37,7 @@ const VAULT_PATH = args.vault;
 const MODELS_PATH = args.models;
 const INDEX_PATH = args.index;
 const MODEL_PROFILE = args.model || 'bge';
+const VERBOSE = args.verbose === '1';
 
 if (!VAULT_PATH || !MODELS_PATH || !INDEX_PATH) {
   process.stderr.write(
@@ -67,6 +68,7 @@ indexer.onIndexChanged = ({ indexedFiles, totalChunks }) => {
 indexer.onIndexProgress = ({ processedFiles, totalFiles, currentFile }) => {
   status.indexing(processedFiles, totalFiles, currentFile);
 };
+if (VERBOSE) indexer.onVerboseLog = (message) => process.stderr.write(`[gib-search:verbose] ${message}\n`);
 
 // ---------------------------------------------------------------------------
 // HTTP Server

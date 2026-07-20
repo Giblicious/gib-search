@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4
+
+- Detects stale or unexpectedly stopped index workers instead of showing indefinite indexing.
+- Saves resumable index checkpoints every 30 seconds during large first builds.
+- Adds optional verbose diagnostic logging with per-file size, chunk count, timing, lifecycle, checkpoint, and error details.
+
 ## 0.2.3
 
 - Fixed first-run runtime installation on Windows with Node.js 24.

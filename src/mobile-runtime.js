@@ -126,15 +126,17 @@ export class MobileSearchRuntime {
     const indexed = new Map(this.meta.map(item => [item.file, item.mtime]));
     const changed = files.filter(file => force || indexed.get(file.path) !== file.stat.mtime); const present = new Set(files.map(file => file.path));
     const remove = new Set([...changed.map(file => file.path), ...this.meta.filter(item => !present.has(item.file)).map(item => item.file)]); this.staleFiles = changed.length;
+    this.plugin.logDiagnostic(`Mobile scan complete: ${files.length} files; ${changed.length} need indexing`);
     this.processedFiles = Math.max(0, files.length - changed.length);
     if (!remove.size) { this.staleFiles = 0; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`); return; }
     const meta = []; const vectors = []; for (let i = 0; i < this.meta.length; i++) if (!remove.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
     for (let fileIndex = 0; fileIndex < changed.length; fileIndex++) {
       if (this.cancelRequested || !this.enabled) return;
-      const file = changed[fileIndex]; this.currentFile = file.path; this.setState('indexing', `Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
+      const file = changed[fileIndex]; const fileStartedAt = Date.now(); this.currentFile = file.path; this.setState('indexing', `Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
       try {
-        const chunks = chunkMarkdown(await this.plugin.app.vault.cachedRead(file)); const embedded = await this.embedBatch(chunks.map(chunk => embeddingText(file.path, chunk)));
+        const content = await this.plugin.app.vault.cachedRead(file); const chunks = chunkMarkdown(content); const embedded = await this.embedBatch(chunks.map(chunk => embeddingText(file.path, chunk)));
         chunks.forEach((chunk, index) => { meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime }); vectors.push(embedded[index]); });
+        this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks.length} chunks in ${Date.now() - fileStartedAt} ms`);
       } catch (error) { this.plugin.reportOnce(`Could not index ${file.path}: ${error.message}`); }
       this.processedFiles++;
       await yieldToUi();
