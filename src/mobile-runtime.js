@@ -118,7 +118,7 @@ export class MobileSearchRuntime {
   changed() { for (const listener of this.listeners) listener(); }
   setState(phase, message) { if (phase !== this.phase) this.phaseStartedAt = Date.now(); this.phase = phase; this.message = message; this.lastEvent = message; this.lastError = phase === 'error' ? message : ''; this.changed(); }
   workerStatus() { return { phase: this.phase, message: this.message, pid: 'mobile', startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }; }
-  async health() { return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelLoaded: Boolean(this.pipe), modelProfile: 'bge', modelId: MODEL_ID, modelBackend: this.modelBackend }; }
+  async health() { return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), modelProfile: 'bge', modelId: MODEL_ID, modelBackend: this.isMobile ? this.modelBackend : 'worker-wasm' }; }
   async openDatabase() {
     if (this.database) return this.database;
     this.database = await new Promise((resolve, reject) => {
@@ -184,7 +184,9 @@ export class MobileSearchRuntime {
     }
   }
   async embedBatch(texts, query = false, preferredBatchSize = null) {
-    if (!texts.length) return []; await this.initializeModel(); const results = [];
+    if (!texts.length) return [];
+    if (!this.isMobile && this.plugin.desktopEmbedder) return this.plugin.desktopEmbedder.embedBatch(texts, query);
+    await this.initializeModel(); const results = [];
     const batchSize = preferredBatchSize || (query ? 8 : 2);
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize).map(text => query ? `${QUERY_PREFIX}${text}` : text);
