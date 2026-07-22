@@ -11,7 +11,7 @@ Gib Search indexes note content, headings, filenames, and optional folder-path s
 3. Enter `Giblicious/gib-search`.
 4. Enable **Gib Search** under Community plugins.
 
-Gib Search supports Obsidian on desktop and mobile. Its WebAssembly inference engine is bundled with the plugin; Node.js, npm, external services, and runtime installers are not required. Desktop inference runs in a dedicated local worker to keep Obsidian responsive.
+Gib Search supports Obsidian on desktop and mobile. Its WebAssembly inference engine is bundled with the plugin; Node.js, npm, external services, and runtime installers are not required. Desktop inference runs in an Electron Web Worker to keep the interface responsive.
 
 Each device builds its own local index. The first index can take several minutes, so keep Obsidian open until Settings reports that Gib Search is healthy.
 
