@@ -2,10 +2,12 @@ const { Plugin, PluginSettingTab, Setting, SuggestModal, ItemView, Notice, TFile
 const { MobileSearchRuntime } = require('./mobile-runtime');
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
-let fs, path, os, crypto;
+const EMBEDDED_DESKTOP_WORKER = null;
+let fs, path, os, crypto, Worker;
 function loadDesktopModules() {
   if (fs) return;
   fs = require('fs'); path = require('path'); os = require('os'); crypto = require('crypto');
+  ({ Worker } = require('node:worker_threads'));
 }
 
 const GRAPH_VIEW = 'gib-search-graph';
@@ -98,6 +100,29 @@ class DesktopIndexStore {
     await fs.promises.writeFile(path.join(this.directory, 'index.meta.json'), JSON.stringify(value.meta)); await fs.promises.writeFile(path.join(this.directory, 'index.vectors.bin'), Buffer.from(value.vectors));
     await fs.promises.writeFile(path.join(this.directory, 'index.state.json'), JSON.stringify({ lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null }));
   }
+}
+class DesktopEmbedder {
+  constructor(plugin) { this.plugin = plugin; this.worker = null; this.pending = new Map(); this.nextId = 1; this.ready = false; }
+  start() {
+    if (this.worker) return;
+    this.worker = new Worker(EMBEDDED_DESKTOP_WORKER, { eval: true });
+    this.worker.on('message', message => {
+      if (message.type === 'ready') { this.ready = true; this.plugin.search?.changed(); return; }
+      if (message.type === 'progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.setState('loading_model', `Downloading ${message.file}: ${percent}%`); return; }
+      const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id);
+      if (message.type === 'error') pending.reject(new Error(message.message));
+      else pending.resolve((message.buffers || []).map(buffer => new Float32Array(buffer)));
+    });
+    this.worker.on('error', error => this.fail(error));
+    this.worker.on('exit', code => { if (this.worker && code !== 0) this.fail(new Error(`Desktop embedding worker exited with code ${code}`)); });
+    this.worker.postMessage({ type: 'init', modelDir: this.plugin.modelDir, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP });
+  }
+  fail(error) { for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); this.ready = false; this.worker = null; this.plugin.reportOnce(`Desktop embedding worker failed: ${error.message}`); }
+  embedBatch(texts, query = false) {
+    this.start(); const id = this.nextId++;
+    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); this.worker.postMessage({ type: 'embed', id, texts, query }); });
+  }
+  stop() { const worker = this.worker; this.worker = null; this.ready = false; for (const pending of this.pending.values()) pending.reject(new Error('Desktop embedding worker stopped')); this.pending.clear(); worker?.terminate(); }
 }
 function activeTweaks(plugin) {
   return plugin.settings.modelTweaks.bge;
@@ -571,9 +596,9 @@ module.exports = class GibSearch extends Plugin {
     this.embeddedWasmModuleGzip = EMBEDDED_WASM_MODULE_GZIP;
     if (!this.isMobile) {
       loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id); this.cacheRoot = desktopCacheRoot(); this.vaultCacheKey = vaultCacheKey(this.vaultPath); restoreDesktopData(this);
-      this.modelDir = path.join(this.pluginDir, 'models'); this.modelCache = new FileModelCache(this.modelDir); this.desktopIndexStore = new DesktopIndexStore(activeIndexDir(this));
+      this.modelDir = path.join(this.pluginDir, 'models'); this.modelCache = new FileModelCache(this.modelDir); this.desktopIndexStore = new DesktopIndexStore(activeIndexDir(this)); this.desktopEmbedder = new DesktopEmbedder(this);
     }
-    this.search = this.indexer = new MobileSearchRuntime(this); this.runtime = { ready: () => true, install: async () => true, stop() {}, storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) }; this.indexer.watch();
+    this.search = this.indexer = new MobileSearchRuntime(this); this.runtime = { ready: () => true, install: async () => true, stop: () => this.desktopEmbedder?.stop(), storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) }; this.indexer.watch();
     this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this));
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: 'semantic-search', name: 'Semantic search', callback: () => new SemanticSearchModal(this.app, this).open() });

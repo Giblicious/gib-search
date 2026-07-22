@@ -28,6 +28,8 @@ if (!bundledModule.includes('n=false') || !bundledModule.includes('var isNode = 
 if (!bundledModule.includes('Xa??="embedded.wasm"')) throw new Error('Bundled WebAssembly loader still depends on its module URL');
 if (!builtMain.includes('wasmBinary = this.plugin.embeddedWasmBinary')) throw new Error('Bundled WebAssembly runtime is not connected to inference');
 if (!builtMain.includes('wasmPaths = { mjs: this.plugin.embeddedWasmModuleUrl }')) throw new Error('Bundled WebAssembly loader is not connected to inference');
+if (!builtMain.includes('Desktop embedding worker exited with code')) throw new Error('Desktop inference is not isolated in a worker');
+if (!builtMain.includes('worker-wasm')) throw new Error('Desktop worker health reporting is missing');
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic search debounce is missing');
 if (!builtMain.includes('if (this.indexRun)')) throw new Error('Serialized index scheduling is missing');
@@ -39,7 +41,7 @@ if (/device\s*:\s*["'](?:wasm|webgpu)["']/.test(builtMain)) throw new Error('Inf
 if (/process\?\.release\?\.name\s*===\s*["']node["']/.test(builtMain)) throw new Error('Release build still contains Electron Node runtime detection');
 
 const codeFiles = [
-  'main.js', 'src/main.js', 'src/mobile-runtime.js', 'styles.css',
+  'main.js', 'src/main.js', 'src/mobile-runtime.js', 'src/desktop-embed-worker.js', 'styles.css',
 ];
 const forbidden = [
   /\x62\x65\x74\x74\x65\x72\x20\x63\x6c\x61\x75\x64\x65/i,

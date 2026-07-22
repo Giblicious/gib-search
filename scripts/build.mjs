@@ -14,11 +14,21 @@ const wasmModule = fs.readFileSync(wasmModulePath, 'utf8')
   .replace('Xa??=e.locateFile?e.locateFile?e.locateFile("ort-wasm-simd-threaded.jsep.wasm",v):v+"ort-wasm-simd-threaded.jsep.wasm":(new URL("ort-wasm-simd-threaded.jsep.wasm",import.meta.url)).href', 'Xa??="embedded.wasm"');
 if (!wasmModule.includes('n=false') || !wasmModule.includes('var isNode = false;') || !wasmModule.includes('Xa??="embedded.wasm"')) throw new Error('Could not prepare the browser-only WASM module');
 const embeddedWasmModule = zlib.gzipSync(wasmModule, { level: 9 }).toString('base64');
+const workerBuild = await build({
+  entryPoints: [path.join(root, 'src', 'desktop-embed-worker.js')], bundle: true, write: false,
+  platform: 'browser', format: 'cjs', target: 'es2020',
+  external: ['node:worker_threads', 'node:fs', 'node:path', 'node:zlib'],
+  conditions: ['browser', 'module', 'import'], define: { global: 'globalThis', 'process.env.NODE_ENV': '"production"', 'process.release.name': '"browser"' },
+  logLevel: 'warning', legalComments: 'none',
+});
+const embeddedDesktopWorker = workerBuild.outputFiles[0].text;
 const marker = 'const EMBEDDED_WASM_GZIP = null;';
 const moduleMarker = 'const EMBEDDED_WASM_MODULE_GZIP = null;';
+const workerMarker = 'const EMBEDDED_DESKTOP_WORKER = null;';
 const source = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8')
   .replace(marker, `const EMBEDDED_WASM_GZIP = '${embeddedWasm}';`)
-  .replace(moduleMarker, `const EMBEDDED_WASM_MODULE_GZIP = '${embeddedWasmModule}';`);
+  .replace(moduleMarker, `const EMBEDDED_WASM_MODULE_GZIP = '${embeddedWasmModule}';`)
+  .replace(workerMarker, () => `const EMBEDDED_DESKTOP_WORKER = ${JSON.stringify(embeddedDesktopWorker)};`);
 await build({
   stdin: { contents: source, resolveDir: path.join(root, 'src'), sourcefile: 'main.js', loader: 'js' },
   outfile: path.join(root, 'main.js'), bundle: true, platform: 'browser', format: 'cjs', target: 'es2020',

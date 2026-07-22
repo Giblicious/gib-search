@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Moved desktop BGE inference into a dedicated background worker so indexing and semantic highlighting do not block Obsidian's interface.
+- Kept the existing mobile inference path and shared ranking and highlighting behavior unchanged.
+
 ## 0.4.0
 
 - Replaced isolated n-gram highlighting with query-aware contextual span attribution.
