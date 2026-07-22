@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.3
+
+- Replaced unsupported Node worker threads with an Electron-compatible Web Worker on desktop.
+- Keeps BGE inference off Obsidian's UI thread without launching another process or requiring Node.js.
+- Removed the duplicate model warm-up that could still stall Obsidian's UI before a desktop search.
+- Serialized background inference so indexing and semantic highlighting cannot race over the model.
+- Prevented the highlighter cache from evicting phrases still needed by the active result pass.
+- Kept every active highlight vector in a pass-local map, even when a large result set exceeds the global cache limit.
+- Added content fingerprints so sync tools changing file timestamps do not force unnecessary reindexing.
+- Verifies synced notes with uncached vault reads so external sync events cannot compare against stale text.
+- Retries and validates desktop index loading when a sync tool briefly replaces or locks the metadata/vector pair.
+- Ignores empty sentence candidates instead of aborting the entire semantic highlight pass.
+
 ## 0.4.2
 
 - Restored bounded, worker-optimized desktop inference batches so semantic highlighting does not wait on one oversized request or excessive small requests.

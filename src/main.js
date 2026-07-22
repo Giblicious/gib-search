@@ -3,11 +3,10 @@ const { MobileSearchRuntime } = require('./mobile-runtime');
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
-let fs, path, os, crypto, Worker;
+let fs, path, os, crypto;
 function loadDesktopModules() {
   if (fs) return;
   fs = require('fs'); path = require('path'); os = require('os'); crypto = require('crypto');
-  ({ Worker } = require('node:worker_threads'));
 }
 
 const GRAPH_VIEW = 'gib-search-graph';
@@ -93,7 +92,18 @@ class FileModelCache {
 class DesktopIndexStore {
   constructor(directory) { this.directory = directory; }
   async get() {
-    try { const meta = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.meta.json'), 'utf8')); const data = await fs.promises.readFile(path.join(this.directory, 'index.vectors.bin')); let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.state.json'), 'utf8')); } catch {} return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), ...state }; } catch { return undefined; }
+    if (!fs.existsSync(this.directory)) return undefined;
+    let lastError = null;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      try {
+        const meta = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.meta.json'), 'utf8')); const data = await fs.promises.readFile(path.join(this.directory, 'index.vectors.bin'));
+        if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index pair is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`);
+        let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.state.json'), 'utf8')); } catch {}
+        return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), ...state };
+      } catch (error) { lastError = error; if (attempt < 11) await new Promise(resolve => setTimeout(resolve, 250)); }
+    }
+    const hasIndexFiles = fs.existsSync(path.join(this.directory, 'index.meta.json')) || fs.existsSync(path.join(this.directory, 'index.vectors.bin'));
+    if (!hasIndexFiles) return undefined; throw lastError || new Error('Could not load the semantic index');
   }
   async put(value) {
     fs.mkdirSync(this.directory, { recursive: true });
@@ -102,27 +112,40 @@ class DesktopIndexStore {
   }
 }
 class DesktopEmbedder {
-  constructor(plugin) { this.plugin = plugin; this.worker = null; this.pending = new Map(); this.nextId = 1; this.ready = false; }
+  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; }
   start() {
     if (this.worker) return;
-    this.worker = new Worker(EMBEDDED_DESKTOP_WORKER, { eval: true });
-    this.worker.on('message', message => {
-      if (message.type === 'ready') { this.ready = true; this.plugin.search?.changed(); return; }
-      if (message.type === 'progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.setState('loading_model', `Downloading ${message.file}: ${percent}%`); return; }
-      const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id);
-      if (message.type === 'error') pending.reject(new Error(message.message));
-      else pending.resolve((message.buffers || []).map(buffer => new Float32Array(buffer)));
-    });
-    this.worker.on('error', error => this.fail(error));
-    this.worker.on('exit', code => { if (this.worker && code !== 0) this.fail(new Error(`Desktop embedding worker exited with code ${code}`)); });
-    this.worker.postMessage({ type: 'init', modelDir: this.plugin.modelDir, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP });
+    this.workerUrl = URL.createObjectURL(new Blob([EMBEDDED_DESKTOP_WORKER], { type: 'text/javascript' }));
+    const worker = new window.Worker(this.workerUrl, { name: 'gib-search-bge' }); this.worker = worker;
+    worker.onmessage = event => this.receive(event.data);
+    worker.onerror = event => this.fail(new Error(event.message || 'Desktop embedding worker failed'));
+    worker.onmessageerror = () => this.fail(new Error('Desktop embedding worker sent an unreadable message'));
+    worker.postMessage({ type: 'init', wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP });
   }
-  fail(error) { for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); this.ready = false; this.worker = null; this.plugin.reportOnce(`Desktop embedding worker failed: ${error.message}`); }
+  async receive(message) {
+    if (message.type === 'cache') { await this.cache(message); return; }
+    if (message.type === 'ready') { this.ready = true; this.plugin.search?.changed(); return; }
+    if (message.type === 'progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.setState('loading_model', `Downloading ${message.file}: ${percent}%`); return; }
+    const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id);
+    if (message.type === 'error') pending.reject(new Error(message.message));
+    else pending.resolve((message.buffers || []).map(buffer => new Float32Array(buffer)));
+  }
+  async cache(message) {
+    try {
+      if (message.action === 'match') {
+        const response = await this.plugin.modelCache.match(message.key); const buffer = response ? await response.arrayBuffer() : null;
+        if (buffer) this.worker?.postMessage({ type: 'cache-result', id: message.id, buffer }, [buffer]); else this.worker?.postMessage({ type: 'cache-result', id: message.id });
+      } else if (message.action === 'put') {
+        await this.plugin.modelCache.put(message.key, new Response(message.buffer)); this.worker?.postMessage({ type: 'cache-result', id: message.id });
+      }
+    } catch (error) { this.worker?.postMessage({ type: 'cache-result', id: message.id, error: error?.message || String(error) }); }
+  }
+  fail(error) { const worker = this.worker; this.worker = null; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); this.ready = false; this.plugin.reportOnce(`Desktop embedding worker failed: ${error.message}`); }
   embedBatch(texts, query = false) {
     this.start(); const id = this.nextId++;
-    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); this.worker.postMessage({ type: 'embed', id, texts, query }); });
+    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'embed', id, texts, query }); } catch (error) { this.pending.delete(id); reject(error); } });
   }
-  stop() { const worker = this.worker; this.worker = null; this.ready = false; for (const pending of this.pending.values()) pending.reject(new Error('Desktop embedding worker stopped')); this.pending.clear(); worker?.terminate(); }
+  stop() { const worker = this.worker; this.worker = null; this.ready = false; for (const pending of this.pending.values()) pending.reject(new Error('Desktop embedding worker stopped')); this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
 }
 function activeTweaks(plugin) {
   return plugin.settings.modelTweaks.bge;
@@ -625,7 +648,7 @@ module.exports = class GibSearch extends Plugin {
     } catch {}
   }
   async clearDiagnosticLog() { try { if (this.isMobile) localStorage.removeItem(this.diagnosticLogPath()); else { fs.mkdirSync(path.dirname(this.diagnosticLogPath()), { recursive: true }); fs.writeFileSync(this.diagnosticLogPath(), ''); } } catch {} }
-  reportOnce(message) { if (message !== this.lastError) { this.lastError = message; new Notice(`Gib Search: ${message}`); } }
+  reportOnce(message) { this.logDiagnostic(`Error: ${message}`, true); if (message !== this.lastError) { this.lastError = message; new Notice(`Gib Search: ${message}`); } }
   async openGraph() { let leaf = this.app.workspace.getLeavesOfType(GRAPH_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: GRAPH_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); }
   onunload() { this.runtime?.stop(); this.indexer?.stop(); }
 };

@@ -16,8 +16,7 @@ if (!wasmModule.includes('n=false') || !wasmModule.includes('var isNode = false;
 const embeddedWasmModule = zlib.gzipSync(wasmModule, { level: 9 }).toString('base64');
 const workerBuild = await build({
   entryPoints: [path.join(root, 'src', 'desktop-embed-worker.js')], bundle: true, write: false,
-  platform: 'browser', format: 'cjs', target: 'es2020',
-  external: ['node:worker_threads', 'node:fs', 'node:path', 'node:zlib'],
+  platform: 'browser', format: 'iife', target: 'es2020',
   conditions: ['browser', 'module', 'import'], define: { global: 'globalThis', 'process.env.NODE_ENV': '"production"', 'process.release.name': '"browser"' },
   logLevel: 'warning', legalComments: 'none',
 });
