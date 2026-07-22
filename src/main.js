@@ -260,10 +260,17 @@ class SemanticSearchModal extends SuggestModal {
           window.setTimeout(() => this.renderShowMore(), 0);
           if (tweaks.semanticHighlights) this.highlightTimer = window.setTimeout(async () => {
             try {
-              const enriched = await runSearch(query, rawLimit, tweaks.minScore, { ...options, semanticHighlights: true });
+              const quickLimit = Math.min(4, rawLimit);
+              const enriched = await runSearch(query, rawLimit, tweaks.minScore, { ...options, semanticHighlights: true, highlightLimit: quickLimit });
               if (version !== this.searchVersion || query !== this.lastQuery) return;
               const enrichedAll = this.filePath ? passageSearchResults(enriched, query, enriched.length) : groupSearchResults(enriched, query, Number.MAX_SAFE_INTEGER);
               this.lastResults = enrichedAll.slice(0, requested); this.updateSuggestions(); window.setTimeout(() => this.renderShowMore(), 0);
+              if (rawLimit > quickLimit) {
+                const completed = await runSearch(query, rawLimit, tweaks.minScore, { ...options, semanticHighlights: true, highlightLimit: 15 });
+                if (version !== this.searchVersion || query !== this.lastQuery) return;
+                const completedAll = this.filePath ? passageSearchResults(completed, query, completed.length) : groupSearchResults(completed, query, Number.MAX_SAFE_INTEGER);
+                this.lastResults = completedAll.slice(0, requested); this.updateSuggestions(); window.setTimeout(() => this.renderShowMore(), 0);
+              }
             } catch (error) { if (error?.name !== 'AbortError') this.plugin.reportOnce(error.message); }
           }, 160);
         }

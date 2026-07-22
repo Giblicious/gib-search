@@ -61,6 +61,10 @@ for (const relativePath of codeFiles) {
 }
 
 const { MobileSearchRuntime } = await import(pathToFileURL(path.join(root, 'src', 'mobile-runtime.js')).href);
+const desktopBatchSizes = [];
+const batchRuntime = new MobileSearchRuntime({ isMobile: false, manifest: { id: 'gib-search' }, app: { vault: { adapter: { getBasePath: () => 'batch-test' }, configDir: '.obsidian', getName: () => 'batch-test' } }, desktopEmbedder: { embedBatch: async texts => { desktopBatchSizes.push(texts.length); return texts.map(() => new Float32Array(384)); } } });
+const batchedVectors = await batchRuntime.embedBatch(Array.from({ length: 19 }, (_, index) => `passage ${index}`), false, 8);
+if (batchedVectors.length !== 19 || desktopBatchSizes.join(',') !== '8,8,3') throw new Error(`Desktop embedding batches are unbounded: ${desktopBatchSizes.join(',')}`);
 const mockPlugin = { isMobile: false, manifest: { id: 'gib-search' }, app: { vault: { adapter: { getBasePath: () => 'test' }, configDir: '.obsidian', getName: () => 'test' } } };
 const highlighter = new MobileSearchRuntime(mockPlugin);
 const mockScores = new Map([['i can feel the spirit.', .82], ['feel the spirit', .88], ['feel', .69], ['spirit', .76], ['i can', .28], ['i can the spirit.', .58], ['i can feel the.', .54], ['the lord warmed my bosom.', .77], ['warmed my bosom', .79], ['warmed', .66], ['bosom', .62], ['the lord.', .31]]);
