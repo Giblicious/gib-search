@@ -185,9 +185,13 @@ export class MobileSearchRuntime {
   }
   async embedBatch(texts, query = false, preferredBatchSize = null) {
     if (!texts.length) return [];
-    if (!this.isMobile && this.plugin.desktopEmbedder) return this.plugin.desktopEmbedder.embedBatch(texts, query);
-    await this.initializeModel(); const results = [];
     const batchSize = preferredBatchSize || (query ? 8 : 2);
+    if (!this.isMobile && this.plugin.desktopEmbedder) {
+      const results = [];
+      for (let i = 0; i < texts.length; i += batchSize) results.push(...await this.plugin.desktopEmbedder.embedBatch(texts.slice(i, i + batchSize), query));
+      return results;
+    }
+    await this.initializeModel(); const results = [];
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize).map(text => query ? `${QUERY_PREFIX}${text}` : text);
       const output = await this.pipe(batch, { pooling: 'mean', normalize: true }); const dim = output.dims.at(-1);
@@ -262,13 +266,14 @@ export class MobileSearchRuntime {
   async cachedPassageVectors(texts) {
     const unique = []; const seen = new Set();
     for (const text of texts) { const key = String(text || '').trim().toLowerCase(); if (key && !seen.has(key) && !this.phraseCache.has(key)) { seen.add(key); unique.push(String(text).trim()); } }
-    const vectors = await this.embedBatch(unique, false, 8); unique.forEach((text, index) => this.phraseCache.set(text.toLowerCase(), vectors[index]));
+    const vectors = await this.embedBatch(unique, false, this.isMobile ? 8 : 24); unique.forEach((text, index) => this.phraseCache.set(text.toLowerCase(), vectors[index]));
     if (this.phraseCache.size > 2200) for (const key of [...this.phraseCache.keys()].slice(0, this.phraseCache.size - 1800)) this.phraseCache.delete(key);
     return text => this.phraseCache.get(String(text || '').trim().toLowerCase());
   }
   async semanticHighlights(results, queryVector, options) {
+    const limit = Math.max(1, Math.min(15, Number(options.highlightLimit) || 15));
     const anchors = queryAnchors(options.query); const sentenceRecords = [];
-    results.slice(0, 15).forEach((result, resultIndex) => {
+    results.slice(0, limit).forEach((result, resultIndex) => {
       if (result.score < options.resultMinScore) return;
       const add = (field, source, maximum) => contextualSentences(source, maximum).forEach(sentence => sentenceRecords.push({ resultIndex, field, sentence, words: sentenceWords(sentence) }));
       add('filename', basename(result.file), 1); add('heading', result.heading, 2); add('body', result.text, 12);
@@ -276,7 +281,7 @@ export class MobileSearchRuntime {
     const sentenceVector = await this.cachedPassageVectors(sentenceRecords.map(item => item.sentence));
     sentenceRecords.forEach(item => { item.score = dot(queryVector, sentenceVector(item.sentence)); item.anchorCount = new Set(item.words.filter(word => anchors.has(word.lemma)).map(word => word.lemma)).size; });
     const selectedSentences = [];
-    for (let resultIndex = 0; resultIndex < Math.min(15, results.length); resultIndex++) for (const field of ['filename', 'heading', 'body']) {
+    for (let resultIndex = 0; resultIndex < Math.min(limit, results.length); resultIndex++) for (const field of ['filename', 'heading', 'body']) {
       const values = sentenceRecords.filter(item => item.resultIndex === resultIndex && item.field === field).sort((a, b) => (b.score + b.anchorCount * .04) - (a.score + a.anchorCount * .04));
       selectedSentences.push(...values.slice(0, field === 'body' ? 1 : 2));
     }
@@ -286,7 +291,7 @@ export class MobileSearchRuntime {
     const phraseVector = await this.cachedPassageVectors(candidates.map(item => item.phrase));
     candidates.forEach(item => { item.directScore = dot(queryVector, phraseVector(item.phrase)); item.structure = phraseStructure(item.phrase); item.preScore = item.directScore + item.anchorCount * .045 + (item.words > 1 ? .015 : 0) + item.structure.quality; });
     const finalists = [];
-    for (let resultIndex = 0; resultIndex < Math.min(15, results.length); resultIndex++) for (const field of ['filename', 'heading', 'body']) finalists.push(...candidates.filter(item => item.resultIndex === resultIndex && item.field === field).sort((a, b) => b.preScore - a.preScore).slice(0, field === 'body' ? 10 : 5));
+    for (let resultIndex = 0; resultIndex < Math.min(limit, results.length); resultIndex++) for (const field of ['filename', 'heading', 'body']) finalists.push(...candidates.filter(item => item.resultIndex === resultIndex && item.field === field).sort((a, b) => b.preScore - a.preScore).slice(0, field === 'body' ? 10 : 5));
     finalists.forEach(item => { item.masked = removePhrase(item.sentence, item.phrase) || 'unrelated text'; });
     const maskedVector = await this.cachedPassageVectors(finalists.map(item => item.masked));
     finalists.forEach(item => {
@@ -294,7 +299,7 @@ export class MobileSearchRuntime {
       item.confidence = item.directScore + Math.max(-.04, Math.min(.12, item.attribution * 1.75)) + item.anchorCount * .025;
       item.rankScore = item.confidence + item.anchorCount * .05 + (item.words > 1 ? .02 : 0) + item.words * .012 + item.structure.quality;
     });
-    for (let resultIndex = 0; resultIndex < Math.min(15, results.length); resultIndex++) {
+    for (let resultIndex = 0; resultIndex < Math.min(limit, results.length); resultIndex++) {
       const choose = (field, maximum) => { const chosen = []; for (const item of finalists.filter(value => value.resultIndex === resultIndex && value.field === field).sort((a, b) => b.rankScore - a.rankScore)) {
         const threshold = item.words === 1 ? options.singleWordMinScore : options.phraseMinScore; const contextualAnchor = item.anchorCount > 0 && item.sentenceScore >= options.resultMinScore && item.directScore >= threshold - .08;
         const contextualExpression = item.words > 1 && item.sentenceScore >= options.resultMinScore && item.directScore >= threshold - .14;
@@ -327,7 +332,7 @@ export class MobileSearchRuntime {
   }
   async search(query, topK, minScore, options = {}) {
     if (!this.vectors.length) throw new Error(this.message || 'The semantic index is not ready'); await this.initializeModel();
-    const cacheKey = JSON.stringify([String(query).trim().toLowerCase(), topK, minScore, options.scoreWindow, options.folderPathBoost, Boolean(options.semanticHighlights), options.resultMinScore, options.singleWordMinScore, options.phraseMinScore, options.maxPhrases, options.file || '']);
+    const cacheKey = JSON.stringify([String(query).trim().toLowerCase(), topK, minScore, options.scoreWindow, options.folderPathBoost, Boolean(options.semanticHighlights), options.resultMinScore, options.singleWordMinScore, options.phraseMinScore, options.maxPhrases, options.highlightLimit || 15, options.file || '']);
     const cached = this.resultCache.get(cacheKey); if (cached) { this.cacheResult(this.resultCache, cacheKey, cached, 80); return cached; }
     const queryVector = await this.queryVector(query); const queryTokens = [...new Set(tokens(query))]; const scores = [];
     for (let i = 0; i < this.vectors.length; i++) {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.2
+
+- Restored bounded, worker-optimized desktop inference batches so semantic highlighting does not wait on one oversized request or excessive small requests.
+- Highlights the top result passages first, then completes the remaining visible highlights progressively.
+
 ## 0.4.1
 
 - Moved desktop BGE inference into a dedicated background worker so indexing and semantic highlighting do not block Obsidian's interface.
