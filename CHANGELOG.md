@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.4
+
+- Waits for an existing desktop index and its directory when they are briefly unavailable during startup.
+- Fails safely instead of treating a transient desktop index read failure as an empty index to rebuild.
+- Keeps existing searchable entries available until each refreshed note has been embedded and replaced.
+- Waits for Obsidian's vault file list to settle before checking for deleted or changed notes.
+- Renders search results once, with semantic highlights already applied, instead of visibly adding highlights afterward.
+
 ## 0.4.3
 
 - Replaced unsupported Node worker threads with an Electron-compatible Web Worker on desktop.

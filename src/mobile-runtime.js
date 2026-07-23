@@ -222,7 +222,7 @@ export class MobileSearchRuntime {
       this.meta = stored.meta || []; this.lastSuccessfulIndexAt = stored.lastSuccessfulIndexAt || null; const all = new Float32Array(stored.vectors);
       if (all.length !== this.meta.length * DIMENSION) throw new Error('Index dimensions do not match BGE');
       this.packedVectors = all; this.vectors = this.meta.map((_, index) => all.subarray(index * DIMENSION, (index + 1) * DIMENSION)); this.refreshLexical();
-    } catch (error) { this.plugin.logDiagnostic(`Index load failed: ${error?.message || String(error)}`, true); this.meta = []; this.vectors = []; this.packedVectors = new Float32Array(); this.refreshLexical(); }
+    } catch (error) { this.plugin.logDiagnostic(`Index load failed: ${error?.message || String(error)}`, true); if (!this.isMobile) throw error; this.meta = []; this.vectors = []; this.packedVectors = new Float32Array(); this.refreshLexical(); }
   }
   async saveIndex() {
     const packed = new Float32Array(this.vectors.length * DIMENSION);
@@ -232,6 +232,14 @@ export class MobileSearchRuntime {
   }
   storageBytes() { return this.vectors.length * DIMENSION * 4 + new TextEncoder().encode(JSON.stringify(this.meta)).length; }
   files() { return this.plugin.app.vault.getFiles().filter(file => INDEXABLE.has(file.extension.toLowerCase())); }
+  async waitForVaultSettled() {
+    const minimumUntil = Date.now() + 4000; let previous = -1; let stable = 0;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const count = this.files().length; stable = count === previous ? stable + 1 : 0; previous = count;
+      if (Date.now() >= minimumUntil && stable >= 3) return;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
   async updateIndex(force = false) {
     if (this.indexRun) { this.indexAgain = true; this.indexForce ||= force; return this.indexRun; }
     this.indexRun = (async () => {
@@ -253,17 +261,18 @@ export class MobileSearchRuntime {
       await yieldToUi();
     }
     const present = new Set(files.map(file => file.path));
-    const remove = new Set([...changed.map(file => file.path), ...this.meta.filter(item => !present.has(item.file)).map(item => item.file)]); this.staleFiles = changed.length;
+    const deleted = new Set(this.meta.filter(item => !present.has(item.file)).map(item => item.file)); this.staleFiles = changed.length;
     this.plugin.logDiagnostic(`Scan complete: ${files.length} files; ${changed.length} need indexing`);
     this.processedFiles = Math.max(0, files.length - changed.length);
-    if (!remove.size) { this.staleFiles = 0; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); if (metadataChanged) await this.saveIndex(); this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`); return; }
-    const meta = []; const vectors = []; let checkpointAt = Date.now(); for (let i = 0; i < this.meta.length; i++) if (!remove.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
+    if (!changed.length && !deleted.size) { this.staleFiles = 0; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); if (metadataChanged) await this.saveIndex(); this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`); return; }
+    let meta = []; let vectors = []; let checkpointAt = Date.now(); for (let i = 0; i < this.meta.length; i++) if (!deleted.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
     for (let fileIndex = 0; fileIndex < changed.length; fileIndex++) {
       if (this.cancelRequested || !this.enabled) return;
       const file = changed[fileIndex]; const fileStartedAt = Date.now(); this.currentFile = file.path; this.setState('indexing', `Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
       try {
         const content = contentByPath.get(file.path) ?? await this.plugin.app.vault.read(file); const fingerprint = contentFingerprint(content); const chunks = chunkMarkdown(content); const embedded = await this.embedBatch(chunks.map(chunk => embeddingText(file.path, chunk)));
-        chunks.forEach((chunk, index) => { meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint }); vectors.push(embedded[index]); });
+        const retainedMeta = []; const retainedVectors = []; for (let i = 0; i < meta.length; i++) if (meta[i].file !== file.path) { retainedMeta.push(meta[i]); retainedVectors.push(vectors[i]); }
+        meta = retainedMeta; vectors = retainedVectors; chunks.forEach((chunk, index) => { meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint }); vectors.push(embedded[index]); });
         this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks.length} chunks in ${Date.now() - fileStartedAt} ms`);
       } catch (error) { this.plugin.reportOnce(`Could not index ${file.path}: ${error.message}`); }
       this.processedFiles++;
@@ -276,7 +285,7 @@ export class MobileSearchRuntime {
   start() {
     if (!this.plugin.settings.enabled) { this.setState('offline', 'Semantic index is disabled'); return false; }
     if (this.startPromise) return false; this.enabled = true; this.cancelRequested = false;
-    this.startPromise = (async () => { try { await this.loadIndex(); await this.cleanupLegacyGeneratedData(); await this.updateIndex(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
+    this.startPromise = (async () => { try { await this.loadIndex(); await this.cleanupLegacyGeneratedData(); this.setState('starting', 'Waiting for the vault to finish loading…'); await this.waitForVaultSettled(); await this.updateIndex(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
     return true;
   }
   stop() { this.cancelRequested = true; this.enabled = false; clearTimeout(this.updateTimer); this.updateTimer = null; if (this.livePending) { this.livePending.reject(staleSearchError()); this.livePending = null; } this.setState('offline', 'Semantic search is paused'); return true; }
