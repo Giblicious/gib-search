@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.5
+
+- Precomputes semantic phrase vectors during indexing so highlighted search results require no additional phrase inference.
+- Stores the phrase-vector index locally on desktop and mobile alongside the passage index.
+- Upgrades existing indexes in place while keeping old passages searchable until their replacements are ready.
+- Shows the indexed highlight-phrase count in semantic index health details.
+
 ## 0.4.4
 
 - Waits for an existing desktop index and its directory when they are briefly unavailable during startup.

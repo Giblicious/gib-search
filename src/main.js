@@ -98,8 +98,10 @@ class DesktopIndexStore {
       try {
         const meta = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.meta.json'), 'utf8')); const data = await fs.promises.readFile(path.join(this.directory, 'index.vectors.bin'));
         if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index pair is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`);
+        const highlightCount = meta.reduce((total, item) => total + (item.highlightCandidates?.length || 0), 0); let highlightData = Buffer.alloc(0);
+        if (highlightCount) { highlightData = await fs.promises.readFile(path.join(this.directory, 'index.highlights.bin')); if (highlightData.byteLength !== highlightCount * 384 * 2) throw new Error(`Highlight index is incomplete (${highlightCount} phrases, ${highlightData.byteLength} vector bytes)`); }
         let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.state.json'), 'utf8')); } catch {}
-        return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), ...state };
+        return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), highlightVectors: highlightData.buffer.slice(highlightData.byteOffset, highlightData.byteOffset + highlightData.byteLength), ...state };
       } catch (error) { lastError = error; if (attempt < 39) await new Promise(resolve => setTimeout(resolve, 250)); }
     }
     const hasIndexFiles = fs.existsSync(path.join(this.directory, 'index.meta.json')) || fs.existsSync(path.join(this.directory, 'index.vectors.bin'));
@@ -108,7 +110,7 @@ class DesktopIndexStore {
   }
   async put(value) {
     fs.mkdirSync(this.directory, { recursive: true });
-    await fs.promises.writeFile(path.join(this.directory, 'index.meta.json'), JSON.stringify(value.meta)); await fs.promises.writeFile(path.join(this.directory, 'index.vectors.bin'), Buffer.from(value.vectors));
+    await fs.promises.writeFile(path.join(this.directory, 'index.meta.json'), JSON.stringify(value.meta)); await fs.promises.writeFile(path.join(this.directory, 'index.vectors.bin'), Buffer.from(value.vectors)); await fs.promises.writeFile(path.join(this.directory, 'index.highlights.bin'), Buffer.from(value.highlightVectors || new ArrayBuffer(0)));
     await fs.promises.writeFile(path.join(this.directory, 'index.state.json'), JSON.stringify({ lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null }));
   }
 }
@@ -567,7 +569,7 @@ class SearchSettings extends PluginSettingTab {
     this.healthMessage.textContent = healthy ? `The semantic index is current and note changes are being watched.${remote?.modelLoaded ? '' : ' The model will load when it is needed.'}` : stoppedResponding ? `The indexer stopped responding ${formatElapsed(statusAge)} ago. Retry will resume from the latest checkpoint.` : activelyWorking ? (local.message || this.plugin.indexer.lastEvent) : (this.plugin.indexer.lastError || error || local.message || 'The semantic index is unavailable');
     const total = Number(local.totalFiles || local.vaultFiles || remote?.vaultFiles || 0), done = Number(local.processedFiles ?? local.fileCount ?? local.indexedFiles ?? remote?.indexedFiles ?? 0);
     const elapsedFrom = Number(local.phaseStartedAt || local.startedAt || 0); const indexBytes = this.plugin.search.storageBytes?.() || 0; const modelBytes = this.plugin.runtime.storageBytes?.() || 0;
-    this.healthFields = []; this.field('Phase', stoppedResponding ? 'stopped' : phase.replaceAll('_', ' ')); this.field('Progress', total ? `${done}/${total}` : 'Waiting'); this.field('Indexed', remote?.indexedFiles ?? local.indexedFiles ?? 0); this.field('Chunks', remote?.totalChunks ?? local.totalChunks ?? 0); const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || remote?.modelId || 'Loaded'; this.field('Model', remote?.modelLoaded ? `${modelLabel} (${String(remote.modelBackend || 'WASM').toUpperCase()})` : healthy ? 'Loads on demand' : 'Not ready'); this.field('Index size', formatBytes(indexBytes)); if (!this.plugin.isMobile) this.field('Model cache', formatBytes(modelBytes)); this.field('Last success', formatWhen(local.lastSuccessfulIndexAt)); if (activelyWorking && elapsedFrom) this.field('Elapsed', formatElapsed(Date.now() - elapsedFrom)); this.healthGrid.textContent = this.healthFields.join(' · ');
+    this.healthFields = []; this.field('Phase', stoppedResponding ? 'stopped' : phase.replaceAll('_', ' ')); this.field('Progress', total ? `${done}/${total}` : 'Waiting'); this.field('Indexed', remote?.indexedFiles ?? local.indexedFiles ?? 0); this.field('Chunks', remote?.totalChunks ?? local.totalChunks ?? 0); this.field('Highlight phrases', remote?.highlightPhrases ?? local.highlightPhrases ?? 0); const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || remote?.modelId || 'Loaded'; this.field('Model', remote?.modelLoaded ? `${modelLabel} (${String(remote.modelBackend || 'WASM').toUpperCase()})` : healthy ? 'Loads on demand' : 'Not ready'); this.field('Index size', formatBytes(indexBytes)); if (!this.plugin.isMobile) this.field('Model cache', formatBytes(modelBytes)); this.field('Last success', formatWhen(local.lastSuccessfulIndexAt)); if (activelyWorking && elapsedFrom) this.field('Elapsed', formatElapsed(Date.now() - elapsedFrom)); this.healthGrid.textContent = this.healthFields.join(' · ');
     if (activelyWorking && total > 0) { this.healthProgress.style.display = ''; this.healthProgress.value = Math.min(100, done / total * 100); } else this.healthProgress.style.display = 'none';
     this.healthEvent.textContent = local.currentFile ? `Current file: ${local.currentFile}` : `Latest activity: ${this.plugin.indexer.lastEvent}`;
     if (this.retryButton?.buttonEl) this.retryButton.buttonEl.style.display = state === 'error' ? '' : 'none';
