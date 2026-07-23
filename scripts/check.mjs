@@ -16,6 +16,7 @@ if (!/^0\.\d+\.\d+$/.test(manifest.version)) throw new Error('public beta versio
 if (manifest.isDesktopOnly) throw new Error('Gib Search must remain available on mobile');
 
 const builtMain = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+const runtimeSource = fs.readFileSync(path.join(root, 'src', 'mobile-runtime.js'), 'utf8'); const semanticSource = runtimeSource.slice(runtimeSource.indexOf('async semanticHighlights('), runtimeSource.indexOf('cacheResult(', runtimeSource.indexOf('async semanticHighlights(')));
 const embeddedWasm = builtMain.match(/EMBEDDED_WASM_GZIP\s*=\s*["']([^"']+)["']/);
 if (!embeddedWasm) throw new Error('main.js does not contain the bundled WebAssembly runtime');
 const embeddedWasmModule = builtMain.match(/EMBEDDED_WASM_MODULE_GZIP\s*=\s*["']([^"']+)["']/);
@@ -32,8 +33,9 @@ if (!builtMain.includes('new window.Worker')) throw new Error('Desktop inference
 if (!builtMain.includes('web-worker-wasm')) throw new Error('Desktop worker health reporting is missing');
 if (builtMain.includes("require('node:worker_threads')") || builtMain.includes("require('node:child_process')") || builtMain.includes('ELECTRON_RUN_AS_NODE')) throw new Error('Unsupported Node background runtime is still bundled');
 if (!builtMain.includes('embedQueue = embedQueue.then')) throw new Error('Desktop inference requests are not serialized');
-if (!builtMain.includes('this.phraseCache.delete(key)') || !builtMain.includes('this.phraseCache.set(key, vector)')) throw new Error('Semantic vector cache does not protect active phrases from eviction');
-if (!builtMain.includes('return (text) => active.get')) throw new Error('Active semantic highlight vectors still depend on the evictable global cache');
+if (!builtMain.includes('index.highlights.bin') || !builtMain.includes('highlightCandidates') || !builtMain.includes('packedHighlightVectors')) throw new Error('Precomputed semantic highlight index is missing');
+if (builtMain.includes('cachedPassageVectors')) throw new Error('Search-time phrase embedding is still bundled');
+if (/embedBatch|initializeModel|cachedPassageVectors/.test(semanticSource)) throw new Error('Semantic highlighting still performs search-time inference');
 if (!builtMain.includes('contentFingerprint(content)') || !builtMain.includes('sameChunks(previous')) throw new Error('Index change detection still depends only on file timestamps');
 if (!builtMain.includes('this.plugin.app.vault.read(file)')) throw new Error('Index verification still uses potentially stale cached vault reads');
 if (!builtMain.includes('Index pair is incomplete') || !builtMain.includes('attempt < 40')) throw new Error('Desktop index loading does not retry transient sync races');
@@ -43,14 +45,13 @@ if (!builtMain.includes('retainedMeta.push') || builtMain.includes('const remove
 if (!builtMain.includes('waitForVaultSettled') || !builtMain.includes('Waiting for the vault to finish loading')) throw new Error('Startup can still scan a partial Obsidian vault');
 if (builtMain.includes('this.highlightTimer') || builtMain.includes('quickLimit = Math.min(4')) throw new Error('Search results still render before semantic highlighting finishes');
 if (!builtMain.includes('semanticHighlights: tweaks.semanticHighlights')) throw new Error('Semantic highlighting is not part of the initial result render');
-if (!builtMain.includes('validSentenceRecords = sentenceRecords.filter')) throw new Error('Semantic highlighting does not reject empty sentence candidates');
 if (builtMain.includes("if (!this.vectors.length) throw new Error(this.message || 'The semantic index is not ready'); await this.initializeModel()")) throw new Error('Desktop search still warms BGE on the UI thread');
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic search debounce is missing');
 if (!builtMain.includes('if (this.indexRun)')) throw new Error('Serialized index scheduling is missing');
 if (!builtMain.includes('clearTimeout(this.updateTimer)')) throw new Error('Vault-wide index event coalescing is missing');
 if (builtMain.includes('this.pending.get(file.path)')) throw new Error('Per-file full-index timers must not be used');
-if (!builtMain.includes('contextualExpression') || !builtMain.includes('phraseStructure')) throw new Error('Contextual span attribution is missing');
+if (!builtMain.includes('contextualExpression') || !builtMain.includes('indexedHighlightCandidates')) throw new Error('Indexed contextual phrase scoring is missing');
 if (builtMain.includes('function phraseCandidates(')) throw new Error('Legacy isolated n-gram highlighting is still bundled');
 if (/device\s*:\s*["'](?:wasm|webgpu)["']/.test(builtMain)) throw new Error('Inference device must be selected by the host runtime');
 if (/process\?\.release\?\.name\s*===\s*["']node["']/.test(builtMain)) throw new Error('Release build still contains Electron Node runtime detection');
@@ -75,20 +76,27 @@ for (const relativePath of codeFiles) {
   if (/\.(?:js|mjs)$/.test(relativePath)) execFileSync(process.execPath, ['--check', path.join(root, relativePath)], { stdio: 'inherit' });
 }
 
-const { MobileSearchRuntime } = await import(pathToFileURL(path.join(root, 'src', 'mobile-runtime.js')).href);
+const { MobileSearchRuntime, buildHighlightCandidates } = await import(pathToFileURL(path.join(root, 'src', 'mobile-runtime.js')).href);
 const desktopBatchSizes = [];
 const batchRuntime = new MobileSearchRuntime({ isMobile: false, manifest: { id: 'gib-search' }, app: { vault: { adapter: { getBasePath: () => 'batch-test' }, configDir: '.obsidian', getName: () => 'batch-test' } }, desktopEmbedder: { embedBatch: async texts => { desktopBatchSizes.push(texts.length); return texts.map(() => new Float32Array(384)); } } });
 const batchedVectors = await batchRuntime.embedBatch(Array.from({ length: 19 }, (_, index) => `passage ${index}`), false, 8);
 if (batchedVectors.length !== 19 || desktopBatchSizes.join(',') !== '8,8,3') throw new Error(`Desktop embedding batches are unbounded: ${desktopBatchSizes.join(',')}`);
+let storedIndex = null; const storagePlugin = { isMobile: false, manifest: { id: 'gib-search' }, logDiagnostic() {}, desktopIndexStore: { put: async value => { storedIndex = value; }, get: async () => storedIndex }, app: { vault: { adapter: { getBasePath: () => 'storage-test' }, configDir: '.obsidian', getName: () => 'storage-test' } } };
+const storageRuntime = new MobileSearchRuntime(storagePlugin); storageRuntime.meta = [{ file: 'test.md', highlightCandidates: [{ phrase: 'free will', field: 'body' }] }]; storageRuntime.vectors = [new Float32Array(384).fill(.25)]; storageRuntime.highlightVectors = [[new Int16Array(384).fill(16384)]]; await storageRuntime.saveIndex();
+if (storedIndex.highlightVectors.byteLength !== 384 * 2) throw new Error('Highlight vectors were not persisted');
+const loadedRuntime = new MobileSearchRuntime(storagePlugin); await loadedRuntime.loadIndex();
+if (loadedRuntime.highlightVectors.length !== 1 || loadedRuntime.highlightVectors[0].length !== 1 || loadedRuntime.highlightVectors[0][0][0] !== 16384) throw new Error('Highlight vectors did not survive save/load');
+const coverage = buildHighlightCandidates('Topics/Agency and Parenting.md', { heading: 'Divine Sovereignty and Mans Will', text: "A parent's role is to teach the child. Raising children requires discipline and desire. Agency is opposed to determinism." });
+const coveragePhrases = new Set(coverage.map(item => item.phrase.toLowerCase()));
+for (const phrase of ['teach the child', 'raising children', 'divine sovereignty', 'agency', 'determinism', 'desire']) if (!coveragePhrases.has(phrase)) throw new Error(`Indexed highlighting missed ${phrase}: ${[...coveragePhrases].join(', ')}`);
+for (const phrase of coveragePhrases) if (phrase === 'idea' || phrase === 'thought') throw new Error(`Generic highlight candidate leaked into the index: ${phrase}`);
 const mockPlugin = { isMobile: false, manifest: { id: 'gib-search' }, app: { vault: { adapter: { getBasePath: () => 'test' }, configDir: '.obsidian', getName: () => 'test' } } };
-const highlighter = new MobileSearchRuntime(mockPlugin);
-const mockScores = new Map([['i can feel the spirit.', .82], ['feel the spirit', .88], ['feel', .69], ['spirit', .76], ['i can', .28], ['i can the spirit.', .58], ['i can feel the.', .54], ['the lord warmed my bosom.', .77], ['warmed my bosom', .79], ['warmed', .66], ['bosom', .62], ['the lord.', .31]]);
-highlighter.cachedPassageVectors = async () => text => new Float32Array([mockScores.get(String(text).toLowerCase()) ?? (/feel|spirit|warm|bosom/i.test(text) ? .57 : .2)]);
-const highlightResults = [{ file: 'direct.md', heading: '', text: 'I can feel the spirit.', score: .8 }, { file: 'expression.md', heading: '', text: 'The Lord warmed my bosom.', score: .75 }];
-await highlighter.semanticHighlights(highlightResults, new Float32Array([1]), { query: 'i felt the spirit', resultMinScore: .55, singleWordMinScore: .62, phraseMinScore: .56, maxPhrases: 5 });
-const directPhrases = highlightResults[0].semanticHighlights.map(item => item.phrase.toLowerCase()); const expressionPhrases = highlightResults[1].semanticHighlights.map(item => item.phrase.toLowerCase());
-if (!directPhrases.includes('feel the spirit') || directPhrases.includes('the spirit')) throw new Error(`Contextual phrase selection failed: ${directPhrases.join(', ')}`);
-if (!expressionPhrases.includes('warmed my bosom')) throw new Error(`Contextual expression selection failed: ${expressionPhrases.join(', ')}`);
+const highlighter = new MobileSearchRuntime(mockPlugin); const highlightCandidates = [{ phrase: 'agency', field: 'body', sentenceId: 0, start: 0, end: 0, words: 1, hasNoun: true, hasExpression: false, adjectiveOnly: false, quality: .04 }, { phrase: 'free will', field: 'body', sentenceId: 0, start: 2, end: 3, words: 2, hasNoun: true, hasExpression: false, adjectiveOnly: false, quality: .09 }];
+highlighter.highlightVectors = [[new Int16Array([Math.round(.68 * 32767)]), new Int16Array([Math.round(.84 * 32767)])]];
+const highlightResults = [{ file: 'agency.md', heading: '', text: 'Agency protects free will.', passageIndex: 0, semanticScore: .8, highlightCandidates }];
+await highlighter.semanticHighlights(highlightResults, new Float32Array([1]), { query: 'free will', resultMinScore: .55, singleWordMinScore: .62, phraseMinScore: .56, maxPhrases: 5 });
+const directPhrases = highlightResults[0].semanticHighlights.map(item => item.phrase.toLowerCase());
+if (!directPhrases.includes('agency') || !directPhrases.includes('free will')) throw new Error(`Precomputed semantic highlighting failed: ${directPhrases.join(', ')}`);
 
 for (const required of ['main.js', 'manifest.json', 'styles.css', 'versions.json', 'README.md', 'LICENSE', 'SECURITY.md']) {
   if (!fs.existsSync(path.join(root, required))) throw new Error(`Missing public release file: ${required}`);
