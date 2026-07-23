@@ -92,18 +92,19 @@ class FileModelCache {
 class DesktopIndexStore {
   constructor(directory) { this.directory = directory; }
   async get() {
-    if (!fs.existsSync(this.directory)) return undefined;
+    const existingDirectory = fs.existsSync(this.directory);
     let lastError = null;
-    for (let attempt = 0; attempt < 12; attempt++) {
+    for (let attempt = 0; attempt < 40; attempt++) {
       try {
         const meta = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.meta.json'), 'utf8')); const data = await fs.promises.readFile(path.join(this.directory, 'index.vectors.bin'));
         if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index pair is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`);
         let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.state.json'), 'utf8')); } catch {}
         return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), ...state };
-      } catch (error) { lastError = error; if (attempt < 11) await new Promise(resolve => setTimeout(resolve, 250)); }
+      } catch (error) { lastError = error; if (attempt < 39) await new Promise(resolve => setTimeout(resolve, 250)); }
     }
     const hasIndexFiles = fs.existsSync(path.join(this.directory, 'index.meta.json')) || fs.existsSync(path.join(this.directory, 'index.vectors.bin'));
-    if (!hasIndexFiles) return undefined; throw lastError || new Error('Could not load the semantic index');
+    if (!hasIndexFiles && !existingDirectory) return undefined;
+    if (!hasIndexFiles) throw new Error('Existing semantic index files are temporarily unavailable'); throw lastError || new Error('Could not load the semantic index');
   }
   async put(value) {
     fs.mkdirSync(this.directory, { recursive: true });
@@ -254,25 +255,25 @@ function renderHighlighted(parent, text, query, semanticPhrases = []) {
 
 class SemanticSearchModal extends SuggestModal {
   constructor(app, plugin, filePath = null) {
-    super(app); this.plugin = plugin; this.filePath = filePath; this.debounceTimer = null; this.highlightTimer = null; this.searchVersion = 0; this.lastResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null;
+    super(app); this.plugin = plugin; this.filePath = filePath; this.debounceTimer = null; this.searchVersion = 0; this.lastResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null;
     const fileName = filePath ? filePath.split('/').pop().replace(/\.md$/i, '') : '';
     this.setPlaceholder(filePath ? `Search within ${fileName}…` : 'Search vault by meaning…');
     this.setInstructions([{ command: 'Type', purpose: 'to search' }, { command: '↑↓', purpose: 'to navigate' }, { command: '↵', purpose: 'to open' }, { command: 'esc', purpose: 'to dismiss' }]);
   }
   getSuggestions(query) {
-    if (!query || query.trim().length < 2) { clearTimeout(this.debounceTimer); clearTimeout(this.highlightTimer); this.searchVersion++; this.lastQuery = ''; this.lastResults = []; return []; }
+    if (!query || query.trim().length < 2) { clearTimeout(this.debounceTimer); this.searchVersion++; this.lastQuery = ''; this.lastResults = []; return []; }
     const trimmed = query.trim();
     if (trimmed !== this.lastQuery) { this.lastQuery = trimmed; this.visibleLimit = activeTweaks(this.plugin).topK; this.triggerSearch(trimmed); }
     return this.lastResults;
   }
   triggerSearch(query, immediate = false) {
-    clearTimeout(this.debounceTimer); clearTimeout(this.highlightTimer); const version = ++this.searchVersion;
+    clearTimeout(this.debounceTimer); const version = ++this.searchVersion;
     this.debounceTimer = setTimeout(async () => {
       try {
         const tweaks = activeTweaks(this.plugin);
         const requested = Math.max(this.visibleLimit || tweaks.topK, tweaks.topK);
         const rawLimit = this.filePath ? Math.min(1000, requested + 10) : Math.min(1000, Math.max(requested * 4, 40));
-        const options = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: false, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, file: this.filePath };
+        const options = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 15, file: this.filePath };
         const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search);
         const results = await runSearch(query, rawLimit, tweaks.minScore, options);
         if (version === this.searchVersion && query === this.lastQuery) {
@@ -281,21 +282,6 @@ class SemanticSearchModal extends SuggestModal {
           this.canLoadMore = all.length > requested || (results.length === rawLimit && rawLimit < 1000);
           this.updateSuggestions();
           window.setTimeout(() => this.renderShowMore(), 0);
-          if (tweaks.semanticHighlights) this.highlightTimer = window.setTimeout(async () => {
-            try {
-              const quickLimit = Math.min(4, rawLimit);
-              const enriched = await runSearch(query, rawLimit, tweaks.minScore, { ...options, semanticHighlights: true, highlightLimit: quickLimit });
-              if (version !== this.searchVersion || query !== this.lastQuery) return;
-              const enrichedAll = this.filePath ? passageSearchResults(enriched, query, enriched.length) : groupSearchResults(enriched, query, Number.MAX_SAFE_INTEGER);
-              this.lastResults = enrichedAll.slice(0, requested); this.updateSuggestions(); window.setTimeout(() => this.renderShowMore(), 0);
-              if (rawLimit > quickLimit) {
-                const completed = await runSearch(query, rawLimit, tweaks.minScore, { ...options, semanticHighlights: true, highlightLimit: 15 });
-                if (version !== this.searchVersion || query !== this.lastQuery) return;
-                const completedAll = this.filePath ? passageSearchResults(completed, query, completed.length) : groupSearchResults(completed, query, Number.MAX_SAFE_INTEGER);
-                this.lastResults = completedAll.slice(0, requested); this.updateSuggestions(); window.setTimeout(() => this.renderShowMore(), 0);
-              }
-            } catch (error) { if (error?.name !== 'AbortError') this.plugin.reportOnce(error.message); }
-          }, 160);
         }
       } catch (error) { if (error?.name !== 'AbortError') this.plugin.reportOnce(error.message); }
     }, immediate ? 0 : 75);
@@ -371,7 +357,7 @@ class SemanticSearchModal extends SuggestModal {
     this.modalEl.addEventListener('keydown', this.navigationHandler, true);
   }
   onClose() {
-    clearTimeout(this.debounceTimer); clearTimeout(this.highlightTimer); this.searchVersion++;
+    clearTimeout(this.debounceTimer); this.searchVersion++;
     if (this.navigationHandler) this.modalEl.removeEventListener('keydown', this.navigationHandler, true);
     super.onClose();
   }

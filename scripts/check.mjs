@@ -36,7 +36,13 @@ if (!builtMain.includes('this.phraseCache.delete(key)') || !builtMain.includes('
 if (!builtMain.includes('return (text) => active.get')) throw new Error('Active semantic highlight vectors still depend on the evictable global cache');
 if (!builtMain.includes('contentFingerprint(content)') || !builtMain.includes('sameChunks(previous')) throw new Error('Index change detection still depends only on file timestamps');
 if (!builtMain.includes('this.plugin.app.vault.read(file)')) throw new Error('Index verification still uses potentially stale cached vault reads');
-if (!builtMain.includes('Index pair is incomplete') || !builtMain.includes('attempt < 12')) throw new Error('Desktop index loading does not retry transient sync races');
+if (!builtMain.includes('Index pair is incomplete') || !builtMain.includes('attempt < 40')) throw new Error('Desktop index loading does not retry transient sync races');
+if (builtMain.includes('if (!existingDirectory) return undefined')) throw new Error('Desktop index loading skips retries when sync temporarily removes the index directory');
+if (!builtMain.includes("if (!this.isMobile) throw error")) throw new Error('Desktop index load failures can still trigger an empty rebuild');
+if (!builtMain.includes('retainedMeta.push') || builtMain.includes('const remove = new Set([...changed.map')) throw new Error('Index refresh can still discard changed files before their replacements are ready');
+if (!builtMain.includes('waitForVaultSettled') || !builtMain.includes('Waiting for the vault to finish loading')) throw new Error('Startup can still scan a partial Obsidian vault');
+if (builtMain.includes('this.highlightTimer') || builtMain.includes('quickLimit = Math.min(4')) throw new Error('Search results still render before semantic highlighting finishes');
+if (!builtMain.includes('semanticHighlights: tweaks.semanticHighlights')) throw new Error('Semantic highlighting is not part of the initial result render');
 if (!builtMain.includes('validSentenceRecords = sentenceRecords.filter')) throw new Error('Semantic highlighting does not reject empty sentence candidates');
 if (builtMain.includes("if (!this.vectors.length) throw new Error(this.message || 'The semantic index is not ready'); await this.initializeModel()")) throw new Error('Desktop search still warms BGE on the UI thread');
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
