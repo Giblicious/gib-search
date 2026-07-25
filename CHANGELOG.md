@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Adds an optional semantic map beside search results, with relevance expressed by distance and result relationships expressed spatially.
+- Links hover and selection between result cards and map nodes without adding another embedding pass.
+- Adds a live, pinnable Note Neighborhood side pane for exploring notes related to the active note.
+- Adapts the map into a dedicated view on narrow mobile screens.
+
 ## 0.4.5
 
 - Precomputes semantic phrase vectors during indexing so highlighted search results require no additional phrase inference.
