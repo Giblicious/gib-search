@@ -71365,8 +71365,9 @@ var init_mobile_runtime = __esm({
         const center = vectors.get(file);
         if (!center) return { center: file, nodes: [], edges: [] };
         const ranked = [...vectors.entries()].filter(([id2]) => id2 !== file).map(([id2, entry]) => ({ id: id2, label: basename(id2), score: dot(center.vector, entry.vector) })).sort((a2, b) => b.score - a2.score).slice(0, Math.max(1, Math.min(40, limit)));
-        const positions = semanticProjection(file, center.vector, ranked.map((node) => ({ id: node.id, vector: vectors.get(node.id).vector })));
-        return { center: file, nodes: ranked.map((node) => ({ ...node, ...positions.get(node.id) || {} })), edges: [] };
+        const positions = semanticProjection(file, center.vector, ranked.map((node) => ({ id: node.id, vector: vectors.get(node.id).vector }))), edges = [];
+        for (let first = 0; first < ranked.length; first++) for (let second = first + 1; second < ranked.length; second++) edges.push({ source: ranked[first].id, target: ranked[second].id, score: dot(vectors.get(ranked[first].id).vector, vectors.get(ranked[second].id).vector) });
+        return { center: file, nodes: ranked.map((node) => ({ ...node, ...positions.get(node.id) || {} })), edges };
       }
       async graph(k3 = 5, maxEdges = 2e3) {
         const groups = /* @__PURE__ */ new Map();
@@ -72119,6 +72120,243 @@ var SemanticMapCanvas = class {
     this.resizeObserver?.disconnect();
   }
 };
+function solveElevationSystem(matrix, values) {
+  const size = values.length, rows = matrix.map((row, index3) => [...row, values[index3]]);
+  for (let column = 0; column < size; column++) {
+    let pivot = column;
+    for (let row = column + 1; row < size; row++) if (Math.abs(rows[row][column]) > Math.abs(rows[pivot][column])) pivot = row;
+    if (Math.abs(rows[pivot][column]) < 1e-10) continue;
+    [rows[column], rows[pivot]] = [rows[pivot], rows[column]];
+    const divisor = rows[column][column];
+    for (let item = column; item <= size; item++) rows[column][item] /= divisor;
+    for (let row = 0; row < size; row++) {
+      if (row === column) continue;
+      const amount = rows[row][column];
+      if (!amount) continue;
+      for (let item = column; item <= size; item++) rows[row][item] -= amount * rows[column][item];
+    }
+  }
+  return rows.map((row, index3) => Number.isFinite(row[size]) ? row[size] : index3 < size - 3 ? 0 : 0.035);
+}
+function elevationKernel(distanceSquared) {
+  return distanceSquared < 1e-8 ? 0 : distanceSquared * Math.log(Math.sqrt(distanceSquared));
+}
+function buildSmoothElevation(points, size = 190) {
+  if (points.length < 3) return null;
+  const perimeter = Array.from({ length: 24 }, (_2, index3) => {
+    const angle = index3 / 24 * Math.PI * 2, x = Math.cos(angle), y = Math.sin(angle), edge = Math.max(Math.abs(x), Math.abs(y));
+    return { x: x / edge * 1.08, y: y / edge * 1.08, z: 0.035 };
+  }), samples = [...points, ...perimeter], count = samples.length, order = count + 3, matrix = Array.from({ length: order }, () => new Float64Array(order)), values = new Float64Array(order);
+  for (let row = 0; row < count; row++) {
+    values[row] = samples[row].z;
+    for (let column = 0; column < count; column++) matrix[row][column] = elevationKernel((samples[row].x - samples[column].x) ** 2 + (samples[row].y - samples[column].y) ** 2) + (row === column ? 4e-5 : 0);
+    matrix[row][count] = matrix[count][row] = 1;
+    matrix[row][count + 1] = matrix[count + 1][row] = samples[row].x;
+    matrix[row][count + 2] = matrix[count + 2][row] = samples[row].y;
+  }
+  const coefficients = solveElevationSystem(matrix, values), field = new Float32Array(size * size), extent = 1.08;
+  for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
+    const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
+    let elevation = coefficients[count] + coefficients[count + 1] * x + coefficients[count + 2] * y;
+    for (let point = 0; point < count; point++) elevation += coefficients[point] * elevationKernel((x - samples[point].x) ** 2 + (y - samples[point].y) ** 2);
+    field[row * size + column] = Math.max(0, Math.min(1, elevation));
+  }
+  return { size, field, extent };
+}
+var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
+  constructor(host, app, options = {}) {
+    super(host, app, options);
+    cancelAnimationFrame(this.animationFrame);
+    this.animationFrame = null;
+    this.simulationFrame = null;
+    this.alpha = 0;
+    this.lastTerrainAt = 0;
+  }
+  setGraph(center, values, edges = []) {
+    const sameCenter = this.center?.label === center?.label, previous = sameCenter ? this.byId : /* @__PURE__ */ new Map(), scores = values.map((value) => Number(value.score || 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(1e-3, high - low), vaultFiles = this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path)), vaultSizes = vaultFiles.map((file) => Math.log1p(Number(file.stat?.size || 0))), vaultLow = vaultSizes.length ? Math.min(...vaultSizes) : 0, vaultHigh = vaultSizes.length ? Math.max(...vaultSizes) : 1, vaultSpread = Math.max(1e-3, vaultHigh - vaultLow), vaultScale = new Map(vaultFiles.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - vaultLow) / vaultSpread]));
+    this.center = center;
+    this.edges = edges;
+    this.nodes = values.map((value, order) => {
+      const relevance = spread > 1e-3 && Number.isFinite(Number(value.score)) ? (Number(value.score) - low) / spread : 1 - order / Math.max(1, values.length), preferredRadius = 0.14 + (1 - relevance) * 0.67, projected = Number.isFinite(value.x) && Number.isFinite(value.y), angle = projected ? Math.atan2(value.y, value.x) : stableMapAngle(value.id), old = previous.get(value.id);
+      return { ...value, fileScale: value.fileScale ?? vaultScale.get(value.id) ?? 0.35, order, relevance, elevation: 0.12 + relevance * 0.76, preferredRadius, x: old?.x ?? Math.cos(angle) * preferredRadius, y: old?.y ?? Math.sin(angle) * preferredRadius, vx: old?.vx || 0, vy: old?.vy || 0 };
+    });
+    const similarities = edges.map((edge) => Number(edge.score || 0)), similarityLow = similarities.length ? Math.min(...similarities) : 0, similarityHigh = similarities.length ? Math.max(...similarities) : 1, similaritySpread = Math.max(1e-3, similarityHigh - similarityLow);
+    this.forceStrength = new Map(edges.map((edge) => [mapEdgeKey(edge.source, edge.target), (Number(edge.score || similarityLow) - similarityLow) / similaritySpread]));
+    for (let step = 0; step < 24; step++) this.physicsStep(0.9);
+    this.byId = new Map(this.nodes.map((node) => [node.id, node]));
+    this.selected = this.byId.has(this.selected) ? this.selected : null;
+    this.hovered = this.byId.has(this.hovered) ? this.hovered : null;
+    this.statusEl.textContent = `${this.nodes.length} note${this.nodes.length === 1 ? "" : "s"}`;
+    this.terrain = null;
+    this.startSimulation(0.9);
+    this.updateDetail();
+  }
+  physicsStep(alpha2) {
+    for (let first = 0; first < this.nodes.length; first++) for (let second = first + 1; second < this.nodes.length; second++) {
+      const a2 = this.nodes[first], b = this.nodes[second];
+      let dx = b.x - a2.x, dy = b.y - a2.y;
+      const distance = Math.max(0.025, Math.hypot(dx, dy));
+      dx /= distance;
+      dy /= distance;
+      const similarity = this.forceStrength.get(mapEdgeKey(a2.id, b.id)) || 0, desired = 0.12 + (1 - similarity) * 0.61, spring = (distance - desired) * (16e-4 + similarity * 75e-4) * alpha2, collision = distance < 0.115 ? -(0.115 - distance) * 0.1 * alpha2 : 0, force = spring + collision;
+      if (a2 !== this.dragging) {
+        a2.vx += dx * force;
+        a2.vy += dy * force;
+      }
+      if (b !== this.dragging) {
+        b.vx -= dx * force;
+        b.vy -= dy * force;
+      }
+    }
+    for (const node of this.nodes) {
+      if (node === this.dragging) {
+        node.vx = node.vy = 0;
+        continue;
+      }
+      const distance = Math.max(1e-3, Math.hypot(node.x, node.y)), radial = (node.preferredRadius - distance) * 0.025 * alpha2;
+      node.vx += node.x / distance * radial;
+      node.vy += node.y / distance * radial;
+      node.vx *= 0.885;
+      node.vy *= 0.885;
+      node.x += node.vx;
+      node.y += node.vy;
+      const extent = Math.hypot(node.x, node.y);
+      if (extent > 0.94) {
+        node.x *= 0.94 / extent;
+        node.y *= 0.94 / extent;
+      }
+    }
+  }
+  startSimulation(alpha2 = 0.7) {
+    this.alpha = Math.max(this.alpha, alpha2);
+    if (this.simulationFrame) return;
+    const tick = (time) => {
+      this.simulationFrame = null;
+      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) this.physicsStep(this.alpha);
+      this.alpha *= 0.985;
+      if (!this.terrain || time - this.lastTerrainAt > 72) {
+        this.terrain = buildSmoothElevation([{ x: 0, y: 0, z: 1 }, ...this.nodes.map((node) => ({ x: node.x, y: node.y, z: node.elevation }))], this.alpha < 0.08 ? 200 : 125);
+        this.lastTerrainAt = time;
+      }
+      this.draw();
+      if (this.alpha > 0.012 || this.dragging) this.simulationFrame = requestAnimationFrame(tick);
+      else {
+        this.terrain = buildSmoothElevation([{ x: 0, y: 0, z: 1 }, ...this.nodes.map((node) => ({ x: node.x, y: node.y, z: node.elevation }))], 220);
+        this.draw();
+      }
+    };
+    this.simulationFrame = requestAnimationFrame(tick);
+  }
+  coordinates(node, width, height) {
+    const scale = Math.max(20, Math.min(width, height) / 2 - 68);
+    return [width / 2 + Number(node.x) * scale, height / 2 + Number(node.y) * scale];
+  }
+  drawContours(ctx, width, height, colors2) {
+    if (!this.terrain) return;
+    const { size, field, extent } = this.terrain, scale = Math.max(20, Math.min(width, height) / 2 - 68), toCanvas = (column, row) => [width / 2 + (column / (size - 1) * 2 - 1) * extent * scale, height / 2 + (row / (size - 1) * 2 - 1) * extent * scale];
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (let step = 1; step <= 9; step++) {
+      const level = step / 10, major = step % 2 === 0;
+      ctx.beginPath();
+      for (let row = 0; row < size - 1; row++) for (let column = 0; column < size - 1; column++) {
+        const corners = [field[row * size + column], field[row * size + column + 1], field[(row + 1) * size + column + 1], field[(row + 1) * size + column]], crossings = [];
+        const cross = (first, second, x1, y1, x2, y2) => {
+          if (first < level === second < level || first === second) return;
+          const amount = (level - first) / (second - first);
+          crossings.push(toCanvas(x1 + (x2 - x1) * amount, y1 + (y2 - y1) * amount));
+        };
+        cross(corners[0], corners[1], column, row, column + 1, row);
+        cross(corners[1], corners[2], column + 1, row, column + 1, row + 1);
+        cross(corners[2], corners[3], column + 1, row + 1, column, row + 1);
+        cross(corners[3], corners[0], column, row + 1, column, row);
+        if (crossings.length === 2) {
+          ctx.moveTo(crossings[0][0], crossings[0][1]);
+          ctx.lineTo(crossings[1][0], crossings[1][1]);
+        } else if (crossings.length === 4) {
+          ctx.moveTo(crossings[0][0], crossings[0][1]);
+          ctx.lineTo(crossings[1][0], crossings[1][1]);
+          ctx.moveTo(crossings[2][0], crossings[2][1]);
+          ctx.lineTo(crossings[3][0], crossings[3][1]);
+        }
+      }
+      ctx.globalAlpha = major ? 0.36 : 0.21;
+      ctx.strokeStyle = major ? colors2.normal : colors2.muted;
+      ctx.lineWidth = major ? 1.08 : 0.72;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  draw() {
+    const rect = this.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const dpr = window.devicePixelRatio || 1;
+    this.canvas.width = Math.round(rect.width * dpr);
+    this.canvas.height = Math.round(rect.height * dpr);
+    const ctx = this.canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    const colors2 = this.colors(), cx = rect.width / 2, cy = rect.height / 2;
+    this.drawContours(ctx, rect.width, rect.height, colors2);
+    const focused = this.hovered || this.selected;
+    this.hit = [];
+    for (const node of this.nodes) {
+      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, radius = 3.2 + Math.max(0, Math.min(1, Number(node.fileScale ?? 0.35))) * 4.8 + (active ? 1.2 : 0);
+      ctx.globalAlpha = focused && !active ? 0.45 : active ? 1 : 0.72 + node.relevance * 0.2;
+      ctx.fillStyle = active || node.id === this.selected ? colors2.accent : colors2.normal;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      if (active || node.order < 4) this.label(ctx, node.label, x + radius + 5, y + 4, colors2, active);
+      this.hit.push({ node, x, y, radius: radius + 11 });
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = colors2.background;
+    ctx.strokeStyle = colors2.accent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    this.label(ctx, this.center?.label || "", cx, cy + 29, colors2, true, true);
+  }
+  pointerDown(event) {
+    const node = this.hitAt(event);
+    if (!node) return;
+    event.preventDefault();
+    this.dragging = node;
+    this.canvas.style.cursor = "grabbing";
+    this.canvas.setPointerCapture?.(event.pointerId);
+    this.setSelected(node.id);
+    this.startSimulation(0.45);
+  }
+  pointerMove(event) {
+    if (this.dragging) {
+      const rect = this.canvas.getBoundingClientRect(), scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68);
+      this.dragging.x = (event.clientX - rect.left - rect.width / 2) / scale;
+      this.dragging.y = (event.clientY - rect.top - rect.height / 2) / scale;
+      this.dragging.vx = this.dragging.vy = 0;
+      this.terrain = null;
+      this.startSimulation(0.38);
+      return;
+    }
+    const node = this.hitAt(event);
+    this.canvas.style.cursor = node ? "grab" : "default";
+    this.setHover(node?.id || null, true);
+  }
+  pointerUp(event) {
+    if (!this.dragging) return;
+    this.dragging = null;
+    this.canvas.style.cursor = "default";
+    this.canvas.releasePointerCapture?.(event.pointerId);
+    this.startSimulation(0.78);
+  }
+  destroy() {
+    cancelAnimationFrame(this.simulationFrame);
+    cancelAnimationFrame(this.animationFrame);
+    this.resizeObserver?.disconnect();
+  }
+};
 var SemanticSearchModal = class extends SuggestModal {
   constructor(app, plugin6, filePath = null) {
     super(app);
@@ -72321,7 +72559,7 @@ var SemanticSearchModal = class extends SuggestModal {
         this.applyMapState();
       });
     }
-    this.map = new SemanticMapCanvas(panel, this.app, { title: "Search map", onHover: (file) => this.hoverResult(file), onSelect: (file) => this.focusResult(file), onOpen: (file) => this.openFile(file), onExplore: (file) => {
+    this.map = new LivingSemanticMapCanvas(panel, this.app, { title: "Search map", onHover: (file) => this.hoverResult(file), onSelect: (file) => this.focusResult(file), onOpen: (file) => this.openFile(file), onExplore: (file) => {
       this.close();
       this.plugin.openNeighborhood(file, true);
     } });
@@ -72414,7 +72652,7 @@ var NeighborhoodView = class extends ItemView {
       this.pinButton.setAttribute("title", this.pinned ? "Follow active note" : "Pin current note");
     });
     const mapHost = this.contentEl.createDiv({ cls: "gib-neighborhood-map" });
-    this.map = new SemanticMapCanvas(mapHost, this.app, { title: "Closest notes", onSelect: (file) => this.openFile(file), onOpen: (file) => this.openFile(file) });
+    this.map = new LivingSemanticMapCanvas(mapHost, this.app, { title: "Closest notes", onSelect: (file) => this.openFile(file), onOpen: (file) => this.openFile(file) });
     this.fileOpenRef = this.app.workspace.on("file-open", (file) => {
       if (!this.pinned && file instanceof TFile) this.centerOn(file.path);
     });
