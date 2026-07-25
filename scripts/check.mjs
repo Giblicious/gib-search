@@ -50,6 +50,10 @@ if (builtMain.includes("if (!this.vectors.length) throw new Error(this.message |
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('SemanticMapCanvas') || !builtMain.includes('Open note neighborhood') || !builtMain.includes('Explore from note')) throw new Error('Semantic search map or note neighborhood UI is missing');
 if (!builtMain.includes('semanticTerrain(query, files)') || !builtMain.includes('semanticNeighbors(file')) throw new Error('Local semantic terrain data is missing');
+if (!builtMain.includes('triangulateTerrain') || !builtMain.includes('terrain.edges || []')) throw new Error('Score-derived contour terrain or note gravity is missing');
+if (!builtMain.includes('Math.log1p(Number(file.stat?.size || 0))')) throw new Error('Vault-wide file-size node scaling is missing');
+if (builtMain.includes('buildTerrain()') || builtMain.includes('terrainImage(colors)')) throw new Error('Decorative Gaussian terrain is still bundled');
+if (fs.readFileSync(path.join(root, 'styles.css'), 'utf8').includes('background:radial-gradient')) throw new Error('Semantic terrain must not use decorative background shading');
 if (!modalSource.includes('this.resultContainerEl') || !modalSource.includes("querySelector('.prompt-results')") || modalSource.includes("querySelector('.suggestion-container')")) throw new Error('Search map is not mounted to the current Obsidian SuggestModal result container');
 if (!fs.readFileSync(path.join(root, 'styles.css'), 'utf8').includes('.is-map-visible .prompt-results')) throw new Error('Desktop semantic map layout is not applied to Obsidian prompt results');
 if (!builtMain.includes('topographicMapIntroduced')) throw new Error('Desktop semantic map introduction migration is missing');
@@ -106,6 +110,7 @@ if (!directPhrases.includes('agency') || !directPhrases.includes('free will')) t
 const mapRuntime = new MobileSearchRuntime(mockPlugin); mapRuntime.meta = [{ file: 'A.md' }, { file: 'B.md' }, { file: 'C.md' }]; mapRuntime.vectors = [new Float32Array(384), new Float32Array(384), new Float32Array(384)]; mapRuntime.vectors[0][0] = 1; mapRuntime.vectors[1][0] = .9; mapRuntime.vectors[1][1] = .1; mapRuntime.vectors[2][1] = 1;
 const semanticMap = mapRuntime.semanticMap(['A.md', 'B.md', 'C.md']); if (semanticMap.nodes.length !== 3 || !semanticMap.edges.some(edge => new Set([edge.source, edge.target]).has('A.md') && new Set([edge.source, edge.target]).has('B.md'))) throw new Error('Semantic map does not preserve close note relationships');
 const neighborhood = mapRuntime.semanticNeighbors('A.md', 2); if (neighborhood.nodes[0]?.id !== 'B.md') throw new Error('Note neighborhood does not rank the closest note first'); if (!neighborhood.nodes.every(node => Number.isFinite(node.x) && Number.isFinite(node.y))) throw new Error('Semantic terrain projection did not produce stable coordinates'); if (Math.hypot(neighborhood.nodes[0].x, neighborhood.nodes[0].y) >= Math.hypot(neighborhood.nodes[1].x, neighborhood.nodes[1].y)) throw new Error('Semantic terrain does not place the closest note nearer its center');
+mapRuntime.queryVector = async () => mapRuntime.vectors[0]; const terrain = await mapRuntime.semanticTerrain('A', ['A.md', 'B.md', 'C.md']); if (terrain.edges.length !== 3 || !terrain.nodes.every(node => Number.isFinite(node.semanticScore))) throw new Error('Semantic terrain does not expose complete note gravity');
 
 for (const required of ['main.js', 'manifest.json', 'styles.css', 'versions.json', 'README.md', 'LICENSE', 'SECURITY.md']) {
   if (!fs.existsSync(path.join(root, required))) throw new Error(`Missing public release file: ${required}`);

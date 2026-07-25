@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.2
+
+- Grounds map distance and elevation in the same total relevance score shown beside each search result.
+- Uses note-to-note semantic similarity as a physical clustering force while preserving relevance-based distance from the query.
+- Replaces generated hills with contours interpolated directly between the query and result elevations.
+- Sizes note markers by their file size across the whole vault, with logarithmic scaling for readable differences.
+- Adds fluid note dragging and removes terrain shading, decorative hover rings, and the map background tint.
+
 ## 0.5.1
 
 - Replaces the radial node layout with an embedding-derived topographical semantic terrain.
