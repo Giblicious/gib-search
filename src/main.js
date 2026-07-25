@@ -10,13 +10,14 @@ function loadDesktopModules() {
 }
 
 const GRAPH_VIEW = 'gib-search-graph';
+const NEIGHBORHOOD_VIEW = 'gib-search-neighborhood';
 const MODEL_PROFILES = {
   bge: { label: 'BGE Small English v1.5', indexFolder: 'bge-small-en-v1.5' },
 };
 const MODEL_TWEAK_DEFAULTS = {
   bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 },
 };
-const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
+const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
 function activeIndexDir(plugin) {
   return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
 }
@@ -255,9 +256,69 @@ function renderHighlighted(parent, text, query, semanticPhrases = []) {
   for (const part of text.split(regex)) { if (!part) continue; if (normalized.has(part.toLowerCase())) parent.createEl('mark', { cls: 'gib-semantic-highlight gib-semantic-highlight-phrase', text: part }); else parent.appendText(part); }
 }
 
+function stableMapAngle(value) {
+  let hash = 2166136261; for (const character of String(value || '')) { hash ^= character.codePointAt(0); hash = Math.imul(hash, 16777619); }
+  return ((hash >>> 0) / 4294967295) * Math.PI * 2;
+}
+function mapEdgeKey(a, b) { return [a, b].sort().join('\0'); }
+class SemanticMapCanvas {
+  constructor(host, app, options = {}) {
+    this.host = host; this.app = app; this.options = options; this.nodes = []; this.edges = []; this.byId = new Map(); this.hovered = null; this.selected = null; this.animationFrame = null;
+    host.empty(); const heading = host.createDiv({ cls: 'gib-search-map-heading' }); this.titleEl = heading.createSpan({ cls: 'gib-search-map-title', text: options.title || 'Semantic map' }); this.statusEl = heading.createSpan({ cls: 'gib-search-map-status' });
+    this.stage = host.createDiv({ cls: 'gib-search-map-stage' }); this.canvas = this.stage.createEl('canvas', { cls: 'gib-search-map-canvas' });
+    this.detail = host.createDiv({ cls: 'gib-search-map-detail' }); this.detailText = this.detail.createDiv({ cls: 'gib-search-map-detail-text' });
+    if (options.onExplore) { const explore = this.detail.createEl('button', { text: 'Explore from note' }); explore.addEventListener('click', () => { if (this.selected) options.onExplore(this.selected); }); }
+    this.canvas.addEventListener('pointermove', event => this.pointerMove(event)); this.canvas.addEventListener('pointerleave', () => this.setHover(null, true)); this.canvas.addEventListener('click', event => this.click(event)); this.canvas.addEventListener('dblclick', event => this.open(event));
+    this.resizeObserver = new ResizeObserver(() => this.draw()); this.resizeObserver.observe(this.stage); this.detail.hide();
+  }
+  setTitle(value) { this.titleEl.textContent = value || this.options.title || 'Semantic map'; }
+  setGraph(center, values, edges = []) {
+    const previous = this.byId; const scores = values.map(value => Number(value.score || 0)); const low = Math.min(...scores, 0), high = Math.max(...scores, 1); const spread = Math.max(.001, high - low);
+    this.center = center; this.edges = edges; this.nodes = values.map((value, order) => {
+      const relevance = Number.isFinite(Number(value.score)) ? (Number(value.score) - low) / spread : 1 - order / Math.max(1, values.length); const radius = .24 + (1 - relevance) * .63; const angle = stableMapAngle(value.id); const old = previous.get(value.id);
+      return { ...value, order, relevance, radius, x: old?.x ?? 0, y: old?.y ?? 0, targetX: Math.cos(angle) * radius, targetY: Math.sin(angle) * radius };
+    });
+    this.settleLayout(); this.byId = new Map(this.nodes.map(node => [node.id, node])); this.selected = this.byId.has(this.selected) ? this.selected : null; this.hovered = this.byId.has(this.hovered) ? this.hovered : null; this.statusEl.textContent = `${this.nodes.length} note${this.nodes.length === 1 ? '' : 's'}`; this.animationStarted = performance.now(); this.animate(); this.updateDetail();
+  }
+  settleLayout() {
+    const strength = new Map(this.edges.map(edge => [mapEdgeKey(edge.source, edge.target), Number(edge.score || 0)])); const velocity = this.nodes.map(() => ({ x: 0, y: 0 }));
+    for (let step = 0; step < 90; step++) {
+      for (let i = 0; i < this.nodes.length; i++) for (let j = i + 1; j < this.nodes.length; j++) {
+        const a = this.nodes[i], b = this.nodes[j]; let dx = b.targetX - a.targetX, dy = b.targetY - a.targetY; const distance = Math.max(.03, Math.hypot(dx, dy)); dx /= distance; dy /= distance;
+        const similarity = strength.get(mapEdgeKey(a.id, b.id)) || 0; let force = distance < .16 ? -(0.16 - distance) * .08 : 0; if (similarity > .45) { const desired = .18 + (1 - similarity) * .42; force += (distance - desired) * (.012 + (similarity - .45) * .025); }
+        velocity[i].x += dx * force; velocity[i].y += dy * force; velocity[j].x -= dx * force; velocity[j].y -= dy * force;
+      }
+      this.nodes.forEach((node, index) => {
+        const distance = Math.max(.001, Math.hypot(node.targetX, node.targetY)); const radial = (node.radius - distance) * .075; velocity[index].x += node.targetX / distance * radial; velocity[index].y += node.targetY / distance * radial;
+        velocity[index].x *= .68; velocity[index].y *= .68; node.targetX += velocity[index].x; node.targetY += velocity[index].y;
+      });
+    }
+  }
+  animate() { cancelAnimationFrame(this.animationFrame); const duration = matchMedia('(prefers-reduced-motion: reduce)').matches ? 1 : 280; const tick = () => { const progress = Math.min(1, (performance.now() - this.animationStarted) / duration); const eased = 1 - Math.pow(1 - progress, 3); for (const node of this.nodes) { node.renderX = node.x + (node.targetX - node.x) * eased; node.renderY = node.y + (node.targetY - node.y) * eased; } this.draw(); if (progress < 1) this.animationFrame = requestAnimationFrame(tick); else for (const node of this.nodes) { node.x = node.targetX; node.y = node.targetY; } }; tick(); }
+  colors() { const style = getComputedStyle(this.host); const value = name => style.getPropertyValue(name).trim(); return { accent: value('--text-accent') || '#8b6cff', normal: value('--text-normal') || '#ddd', muted: value('--text-muted') || '#999', faint: value('--text-faint') || '#666', background: value('--background-primary') || '#202020', border: value('--background-modifier-border') || '#444' }; }
+  coordinates(node, width, height) { const scale = Math.max(20, Math.min(width, height) / 2 - 42); return [width / 2 + Number(node.renderX ?? node.targetX) * scale, height / 2 + Number(node.renderY ?? node.targetY) * scale]; }
+  draw() {
+    const rect = this.canvas.getBoundingClientRect(); if (!rect.width || !rect.height) return; const dpr = window.devicePixelRatio || 1; this.canvas.width = Math.round(rect.width * dpr); this.canvas.height = Math.round(rect.height * dpr); const ctx = this.canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, rect.width, rect.height); const colors = this.colors(), cx = rect.width / 2, cy = rect.height / 2;
+    const focused = this.hovered || this.selected; const related = new Set(); if (focused) for (const edge of this.edges.filter(edge => edge.source === focused || edge.target === focused).sort((a, b) => b.score - a.score).slice(0, 3)) related.add(edge.source === focused ? edge.target : edge.source);
+    ctx.lineWidth = 1; for (const node of this.nodes.slice(0, 7)) { const [x, y] = this.coordinates(node, rect.width, rect.height); ctx.globalAlpha = focused && node.id !== focused ? .025 : .105; ctx.strokeStyle = colors.border; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.stroke(); }
+    if (focused) for (const edge of this.edges.filter(edge => edge.source === focused || edge.target === focused).sort((a, b) => b.score - a.score).slice(0, 3)) { const a = this.byId.get(edge.source), b = this.byId.get(edge.target); if (!a || !b) continue; const [ax, ay] = this.coordinates(a, rect.width, rect.height), [bx, by] = this.coordinates(b, rect.width, rect.height); ctx.globalAlpha = .28; ctx.strokeStyle = colors.accent; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); }
+    this.hit = []; for (const node of this.nodes) { const [x, y] = this.coordinates(node, rect.width, rect.height); const active = node.id === focused, connected = related.has(node.id); const radius = 4.2 + node.relevance * 3.4 + (active ? 2 : 0); ctx.globalAlpha = focused && !active && !connected ? .3 : active ? 1 : .72 + node.relevance * .24; ctx.fillStyle = active || node.id === this.selected ? colors.accent : colors.muted; ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill(); if (active || node.order < 4) this.label(ctx, node.label, x + radius + 5, y + 4, colors, active); this.hit.push({ node, x, y, radius: radius + 10 }); }
+    ctx.globalAlpha = 1; ctx.fillStyle = colors.background; ctx.strokeStyle = colors.accent; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, 11, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.globalAlpha = .22; ctx.strokeStyle = colors.accent; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, 17, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; this.label(ctx, this.center?.label || '', cx, cy + 31, colors, true, true);
+  }
+  label(ctx, value, x, y, colors, active, centered = false) { const text = String(value || ''); const clipped = text.length > 28 ? `${text.slice(0, 27)}…` : text; ctx.font = `${active ? 600 : 500} 11px -apple-system, BlinkMacSystemFont, sans-serif`; ctx.fillStyle = active ? colors.normal : colors.muted; ctx.textAlign = centered ? 'center' : 'left'; ctx.fillText(clipped, x, y); }
+  hitAt(event) { const rect = this.canvas.getBoundingClientRect(), x = event.clientX - rect.left, y = event.clientY - rect.top; return this.hit?.find(item => Math.hypot(item.x - x, item.y - y) <= item.radius)?.node || null; }
+  pointerMove(event) { const node = this.hitAt(event); this.canvas.style.cursor = node ? 'pointer' : 'default'; this.setHover(node?.id || null, true); }
+  setHover(id, notify = false) { if (id === this.hovered) return; this.hovered = id; this.draw(); if (notify) this.options.onHover?.(id); }
+  setSelected(id) { this.selected = this.byId.has(id) ? id : null; this.updateDetail(); this.draw(); }
+  click(event) { const node = this.hitAt(event); this.setSelected(node?.id || null); if (node) this.options.onSelect?.(node.id); }
+  open(event) { const node = this.hitAt(event); if (node) this.options.onOpen?.(node.id); }
+  updateDetail() { const node = this.byId.get(this.selected); if (!node) { this.detail.hide(); return; } this.detail.show(); const folder = node.id.includes('/') ? node.id.slice(0, node.id.lastIndexOf('/')) : 'Vault'; this.detailText.empty(); this.detailText.createDiv({ cls: 'gib-search-map-detail-title', text: node.label }); this.detailText.createDiv({ cls: 'gib-search-map-detail-folder', text: folder }); }
+  destroy() { cancelAnimationFrame(this.animationFrame); this.resizeObserver?.disconnect(); }
+}
+
 class SemanticSearchModal extends SuggestModal {
   constructor(app, plugin, filePath = null) {
-    super(app); this.plugin = plugin; this.filePath = filePath; this.debounceTimer = null; this.searchVersion = 0; this.lastResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null;
+    super(app); this.plugin = plugin; this.filePath = filePath; this.debounceTimer = null; this.searchVersion = 0; this.lastResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null; this.map = null; this.mapVersion = 0;
     const fileName = filePath ? filePath.split('/').pop().replace(/\.md$/i, '') : '';
     this.setPlaceholder(filePath ? `Search within ${fileName}…` : 'Search vault by meaning…');
     this.setInstructions([{ command: 'Type', purpose: 'to search' }, { command: '↑↓', purpose: 'to navigate' }, { command: '↵', purpose: 'to open' }, { command: 'esc', purpose: 'to dismiss' }]);
@@ -283,7 +344,7 @@ class SemanticSearchModal extends SuggestModal {
           this.lastResults = all.slice(0, requested);
           this.canLoadMore = all.length > requested || (results.length === rawLimit && rawLimit < 1000);
           this.updateSuggestions();
-          window.setTimeout(() => this.renderShowMore(), 0);
+          window.setTimeout(() => { this.renderShowMore(); this.updateMap(); }, 0);
         }
       } catch (error) { if (error?.name !== 'AbortError') this.plugin.reportOnce(error.message); }
     }, immediate ? 0 : 75);
@@ -315,6 +376,7 @@ class SemanticSearchModal extends SuggestModal {
     return null;
   }
   renderSuggestion(result, el) {
+    el.dataset.gibFile = result.file; el.addEventListener('pointerenter', () => this.map?.setHover(result.file)); el.addEventListener('pointerleave', () => this.map?.setHover(null));
     const pathParts = result.file.replace(/\.md$/i, '').split('/'); const fileName = pathParts.pop() || result.file.replace(/\.md$/i, '');
     const container = el.createDiv({ cls: 'gib-semantic-result' });
     const folder = container.createDiv({ cls: 'gib-semantic-result-folder' });
@@ -350,6 +412,7 @@ class SemanticSearchModal extends SuggestModal {
   }
   onOpen() {
     super.onOpen();
+    this.setupMap();
     this.navigationHandler = event => {
       if (event.key === 'Tab') {
         event.preventDefault(); event.stopImmediatePropagation();
@@ -361,8 +424,25 @@ class SemanticSearchModal extends SuggestModal {
   onClose() {
     clearTimeout(this.debounceTimer); this.searchVersion++;
     if (this.navigationHandler) this.modalEl.removeEventListener('keydown', this.navigationHandler, true);
+    this.map?.destroy(); this.map = null; this.selectionObserver?.disconnect();
     super.onClose();
   }
+  setupMap() {
+    if (this.filePath) return; this.modalEl.addClass('gib-search-modal'); const suggestions = this.modalEl.querySelector('.suggestion-container'); if (!suggestions?.parentElement) return;
+    const shell = document.createElement('div'); shell.className = 'gib-search-results-shell'; suggestions.parentElement.insertBefore(shell, suggestions); shell.appendChild(suggestions); const panel = shell.createDiv({ cls: 'gib-search-map-panel' });
+    const inputContainer = this.modalEl.querySelector('.prompt-input-container') || this.inputEl.parentElement; this.mapToggle = inputContainer?.createEl('button', { cls: 'gib-search-map-toggle', attr: { type: 'button', 'aria-label': 'Toggle semantic map', title: 'Toggle semantic map' } }); if (this.mapToggle) { setIcon(this.mapToggle, 'waypoints'); this.mapToggle.addEventListener('mousedown', event => event.preventDefault()); this.mapToggle.addEventListener('click', async event => { event.preventDefault(); event.stopPropagation(); this.plugin.settings.searchMapEnabled = !this.plugin.settings.searchMapEnabled; await this.plugin.save(); this.applyMapState(); }); }
+    this.map = new SemanticMapCanvas(panel, this.app, { title: 'Search map', onHover: file => this.hoverResult(file), onSelect: file => this.focusResult(file), onOpen: file => this.openFile(file), onExplore: file => { this.close(); this.plugin.openNeighborhood(file, true); } });
+    this.selectionObserver = new MutationObserver(() => { const selected = suggestions.querySelector('.suggestion-item.is-selected')?.dataset.gibFile; if (selected) this.map?.setHover(selected); }); this.selectionObserver.observe(suggestions, { subtree: true, attributes: true, attributeFilter: ['class'] }); this.applyMapState();
+  }
+  applyMapState() { const enabled = Boolean(this.plugin.settings.searchMapEnabled); this.modalEl.toggleClass('is-map-visible', enabled); this.mapToggle?.toggleClass('is-active', enabled); this.mapToggle?.setAttribute('aria-pressed', String(enabled)); this.mapToggle?.setAttribute('title', enabled ? 'Hide semantic map' : 'Show semantic map'); if (enabled) this.updateMap(); }
+  async updateMap() {
+    if (!this.map || !this.plugin.settings.searchMapEnabled) return; const version = ++this.mapVersion; const results = this.lastResults.slice(0, 40); this.map.setTitle(this.lastQuery ? `“${this.lastQuery}”` : 'Search map');
+    if (!this.lastQuery || !results.length) { this.map.setGraph({ label: this.lastQuery || 'Search' }, [], []); return; }
+    const graph = this.plugin.search.semanticMap(results.map(result => result.file)); if (version !== this.mapVersion) return; const byFile = new Map(results.map(result => [result.file, result])); this.map.setGraph({ label: this.lastQuery }, graph.nodes.map(node => ({ ...node, score: byFile.get(node.id)?.score || 0 })), graph.edges);
+  }
+  hoverResult(file) { for (const item of this.modalEl.querySelectorAll('.suggestion-item.is-map-hovered')) item.removeClass('is-map-hovered'); if (!file) return; const escaped = globalThis.CSS?.escape ? CSS.escape(file) : file.replace(/["\\]/g, '\\$&'); const item = this.modalEl.querySelector(`.suggestion-item[data-gib-file="${escaped}"]`); item?.addClass('is-map-hovered'); item?.scrollIntoView({ block: 'nearest' }); }
+  focusResult(file) { const index = this.lastResults.findIndex(result => result.file === file); if (index < 0) return; if (this.chooser?.setSelectedItem) this.chooser.setSelectedItem(index, true); else { const items = [...this.modalEl.querySelectorAll('.suggestion-item')]; items.forEach(item => item.removeClass('is-selected')); items[index]?.addClass('is-selected'); items[index]?.scrollIntoView({ block: 'nearest' }); } }
+  async openFile(filePath) { const file = this.app.vault.getAbstractFileByPath(filePath); if (file instanceof TFile) { this.close(); await this.app.workspace.getLeaf(false).openFile(file); } }
 }
 
 class SemanticInNoteSearch {
@@ -457,6 +537,27 @@ class SemanticInNoteSearch {
   close() {
     clearTimeout(this.timer); clearTimeout(this.paintTimer); this.queryVersion++; this.observer?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
   }
+}
+
+class NeighborhoodView extends ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.filePath = null; this.pinned = false; this.loadVersion = 0; }
+  getViewType() { return NEIGHBORHOOD_VIEW; }
+  getDisplayText() { return 'Note neighborhood'; }
+  getIcon() { return 'orbit'; }
+  async onOpen() {
+    this.contentEl.empty(); this.contentEl.addClass('gib-neighborhood-view'); const toolbar = this.contentEl.createDiv({ cls: 'gib-neighborhood-toolbar' }); const heading = toolbar.createDiv({ cls: 'gib-neighborhood-heading' }); heading.createDiv({ cls: 'gib-neighborhood-kicker', text: 'Gib Search' }); this.noteTitle = heading.createDiv({ cls: 'gib-neighborhood-note', text: 'Note neighborhood' });
+    this.pinButton = toolbar.createEl('button', { cls: 'gib-neighborhood-pin', attr: { type: 'button', 'aria-label': 'Pin current note', title: 'Pin current note' } }); setIcon(this.pinButton, 'pin'); this.pinButton.addEventListener('click', () => { this.pinned = !this.pinned; this.pinButton.toggleClass('is-active', this.pinned); this.pinButton.setAttribute('aria-pressed', String(this.pinned)); this.pinButton.setAttribute('title', this.pinned ? 'Follow active note' : 'Pin current note'); });
+    const mapHost = this.contentEl.createDiv({ cls: 'gib-neighborhood-map' }); this.map = new SemanticMapCanvas(mapHost, this.app, { title: 'Closest notes', onSelect: file => this.openFile(file), onOpen: file => this.openFile(file) });
+    this.fileOpenRef = this.app.workspace.on('file-open', file => { if (!this.pinned && file instanceof TFile) this.centerOn(file.path); }); const active = this.app.workspace.getActiveFile(); if (active) await this.centerOn(active.path); else this.empty('Open a note to see its semantic neighborhood');
+  }
+  async centerOn(filePath, pin = this.pinned) {
+    const file = this.app.vault.getAbstractFileByPath(filePath); if (!(file instanceof TFile)) return; this.filePath = file.path; this.pinned = Boolean(pin); this.pinButton?.toggleClass('is-active', this.pinned); this.pinButton?.setAttribute('aria-pressed', String(this.pinned)); this.pinButton?.setAttribute('title', this.pinned ? 'Follow active note' : 'Pin current note'); this.noteTitle.textContent = file.basename; const version = ++this.loadVersion;
+    try { const graph = this.plugin.search.semanticNeighbors(file.path, 18); if (version !== this.loadVersion) return; this.map.setGraph({ id: file.path, label: file.basename }, graph.nodes, graph.edges); }
+    catch (error) { if (version === this.loadVersion) this.empty(error.message); }
+  }
+  empty(message) { this.map?.setTitle(message); this.map?.setGraph({ label: 'Note' }, [], []); }
+  async openFile(filePath) { const file = this.app.vault.getAbstractFileByPath(filePath); if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file); }
+  async onClose() { this.loadVersion++; if (this.fileOpenRef) this.app.workspace.offref(this.fileOpenRef); this.map?.destroy(); }
 }
 
 class GraphView extends ItemView {
@@ -617,9 +718,10 @@ module.exports = class GibSearch extends Plugin {
       this.modelDir = path.join(this.pluginDir, 'models'); this.modelCache = new FileModelCache(this.modelDir); this.desktopIndexStore = new DesktopIndexStore(activeIndexDir(this)); this.desktopEmbedder = new DesktopEmbedder(this);
     }
     this.search = this.indexer = new MobileSearchRuntime(this); this.runtime = { ready: () => true, install: async () => true, stop: () => this.desktopEmbedder?.stop(), storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) }; this.indexer.watch();
-    this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this));
+    this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this)); this.registerView(NEIGHBORHOOD_VIEW, leaf => new NeighborhoodView(leaf, this));
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: 'semantic-search', name: 'Semantic search', callback: () => new SemanticSearchModal(this.app, this).open() });
+    this.addCommand({ id: 'note-neighborhood', name: 'Open note neighborhood', callback: () => this.openNeighborhood(this.app.workspace.getActiveFile()?.path) });
     this.addCommand({ id: 'semantic-graph', name: 'Open semantic graph', callback: () => this.openGraph() });
     this.addSettingTab(new SearchSettings(this.app, this));
     this.logDiagnostic(`Gib Search ${this.manifest.version} loaded on ${this.isMobile ? 'mobile' : process.platform}`);
@@ -638,5 +740,6 @@ module.exports = class GibSearch extends Plugin {
   async clearDiagnosticLog() { try { if (this.isMobile) localStorage.removeItem(this.diagnosticLogPath()); else { fs.mkdirSync(path.dirname(this.diagnosticLogPath()), { recursive: true }); fs.writeFileSync(this.diagnosticLogPath(), ''); } } catch {} }
   reportOnce(message) { this.logDiagnostic(`Error: ${message}`, true); if (message !== this.lastError) { this.lastError = message; new Notice(`Gib Search: ${message}`); } }
   async openGraph() { let leaf = this.app.workspace.getLeavesOfType(GRAPH_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: GRAPH_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); }
+  async openNeighborhood(filePath, pin = false) { let leaf = this.app.workspace.getLeavesOfType(NEIGHBORHOOD_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: NEIGHBORHOOD_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); if (filePath && leaf.view instanceof NeighborhoodView) await leaf.view.centerOn(filePath, pin); }
   onunload() { this.runtime?.stop(); this.indexer?.stop(); }
 };

@@ -366,6 +366,30 @@ export class MobileSearchRuntime {
     if (options.semanticHighlights && results.length) await this.semanticHighlights(results, queryVector, { ...options, query }); return this.cacheResult(this.resultCache, cacheKey, results, 80);
   }
   async scores(query) { const vector = await this.queryVector(query); const scores = {}; this.meta.forEach((item, index) => { const score = dotPacked(vector, this.packedVectors, index * DIMENSION); scores[item.file] = Math.max(scores[item.file] || -1, score); }); return scores; }
+  fileVectors(files = null) {
+    const requested = files ? new Set(files) : null; const groups = new Map();
+    this.meta.forEach((item, index) => {
+      if (requested && !requested.has(item.file)) return;
+      let entry = groups.get(item.file); if (!entry) { entry = { vector: new Float32Array(DIMENSION), count: 0 }; groups.set(item.file, entry); }
+      const vector = this.vectors[index]; if (!vector) return; for (let dimension = 0; dimension < DIMENSION; dimension++) entry.vector[dimension] += vector[dimension]; entry.count++;
+    });
+    for (const entry of groups.values()) { const norm = Math.sqrt(dot(entry.vector, entry.vector)) || 1; for (let dimension = 0; dimension < DIMENSION; dimension++) entry.vector[dimension] /= norm; }
+    return groups;
+  }
+  semanticMap(files) {
+    const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 60); const vectors = this.fileVectors(ordered); const nodes = ordered.filter(id => vectors.has(id)).map(id => ({ id, label: basename(id) })); const edges = []; const seen = new Set();
+    for (let i = 0; i < nodes.length; i++) {
+      const nearby = []; for (let j = 0; j < nodes.length; j++) if (i !== j) nearby.push({ source: nodes[i].id, target: nodes[j].id, score: dot(vectors.get(nodes[i].id).vector, vectors.get(nodes[j].id).vector) });
+      nearby.sort((a, b) => b.score - a.score);
+      for (const edge of nearby.slice(0, 3)) { const key = [edge.source, edge.target].sort().join('\0'); if (seen.has(key)) continue; seen.add(key); edges.push(edge); }
+    }
+    return { nodes, edges };
+  }
+  semanticNeighbors(file, limit = 18) {
+    const vectors = this.fileVectors(); const center = vectors.get(file); if (!center) return { center: file, nodes: [], edges: [] };
+    const ranked = [...vectors.entries()].filter(([id]) => id !== file).map(([id, entry]) => ({ id, label: basename(id), score: dot(center.vector, entry.vector) })).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(40, limit)));
+    const map = this.semanticMap(ranked.map(node => node.id)); const scores = new Map(ranked.map(node => [node.id, node.score])); return { center: file, nodes: map.nodes.map(node => ({ ...node, score: scores.get(node.id) || 0 })), edges: map.edges };
+  }
   async graph(k = 5, maxEdges = 2000) {
     const groups = new Map(); this.meta.forEach((item, index) => { const group = groups.get(item.file) || []; group.push(this.vectors[index]); groups.set(item.file, group); });
     const nodes = [...groups].map(([id, vectors]) => { const vector = new Float32Array(DIMENSION); vectors.forEach(value => value.forEach((number, index) => vector[index] += number)); let norm = Math.sqrt(dot(vector, vector)) || 1; vector.forEach((_, index) => vector[index] /= norm); return { id, label: basename(id), vector }; });
