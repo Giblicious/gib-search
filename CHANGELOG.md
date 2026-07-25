@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.3
+
+- Replaces the fixed radial settlement with a continuous, damped semantic spring simulation.
+- Lets note similarity pull and separate notes while relevance remains the dominant radial force.
+- Uses a smooth elevation interpolation for curved, high-resolution landscape contours.
+- Adds a low-elevation perimeter so contour lines close naturally inside the map instead of clipping at the data boundary.
+- Extends the living terrain and semantic forces to the Note Neighborhood pane.
+
 ## 0.5.2
 
 - Grounds map distance and elevation in the same total relevance score shown beside each search result.

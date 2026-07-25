@@ -403,7 +403,7 @@ export class MobileSearchRuntime {
   semanticNeighbors(file, limit = 18) {
     const vectors = this.fileVectors(); const center = vectors.get(file); if (!center) return { center: file, nodes: [], edges: [] };
     const ranked = [...vectors.entries()].filter(([id]) => id !== file).map(([id, entry]) => ({ id, label: basename(id), score: dot(center.vector, entry.vector) })).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(40, limit)));
-    const positions = semanticProjection(file, center.vector, ranked.map(node => ({ id: node.id, vector: vectors.get(node.id).vector }))); return { center: file, nodes: ranked.map(node => ({ ...node, ...(positions.get(node.id) || {}) })), edges: [] };
+    const positions = semanticProjection(file, center.vector, ranked.map(node => ({ id: node.id, vector: vectors.get(node.id).vector }))), edges = []; for (let first = 0; first < ranked.length; first++) for (let second = first + 1; second < ranked.length; second++) edges.push({ source: ranked[first].id, target: ranked[second].id, score: dot(vectors.get(ranked[first].id).vector, vectors.get(ranked[second].id).vector) }); return { center: file, nodes: ranked.map(node => ({ ...node, ...(positions.get(node.id) || {}) })), edges };
   }
   async graph(k = 5, maxEdges = 2000) {
     const groups = new Map(); this.meta.forEach((item, index) => { const group = groups.get(item.file) || []; group.push(this.vectors[index]); groups.set(item.file, group); });
