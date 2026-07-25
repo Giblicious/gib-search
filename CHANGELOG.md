@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1
+
+- Replaces the radial node layout with an embedding-derived topographical semantic terrain.
+- Uses contour lines, elevation, and ridges to express result relevance, density, and semantic neighborhoods without graph edges.
+- Correctly mounts the map beside Obsidian's current desktop prompt result container.
+- Adds a visible Map control to the search field and introduces the desktop terrain in its expanded state.
+- Keeps the terrain query-local and reuses the query embedding already produced by search.
+
 ## 0.5.0
 
 - Adds an optional semantic map beside search results, with relevance expressed by distance and result relationships expressed spatially.

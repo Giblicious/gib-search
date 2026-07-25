@@ -17,6 +17,7 @@ if (manifest.isDesktopOnly) throw new Error('Gib Search must remain available on
 
 const builtMain = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const runtimeSource = fs.readFileSync(path.join(root, 'src', 'mobile-runtime.js'), 'utf8'); const semanticSource = runtimeSource.slice(runtimeSource.indexOf('async semanticHighlights('), runtimeSource.indexOf('cacheResult(', runtimeSource.indexOf('async semanticHighlights(')));
+const mainSource = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8'); const modalSource = mainSource.slice(mainSource.indexOf('class SemanticSearchModal'), mainSource.indexOf('class SemanticInNoteSearch'));
 const embeddedWasm = builtMain.match(/EMBEDDED_WASM_GZIP\s*=\s*["']([^"']+)["']/);
 if (!embeddedWasm) throw new Error('main.js does not contain the bundled WebAssembly runtime');
 const embeddedWasmModule = builtMain.match(/EMBEDDED_WASM_MODULE_GZIP\s*=\s*["']([^"']+)["']/);
@@ -48,7 +49,10 @@ if (!builtMain.includes('semanticHighlights: tweaks.semanticHighlights')) throw 
 if (builtMain.includes("if (!this.vectors.length) throw new Error(this.message || 'The semantic index is not ready'); await this.initializeModel()")) throw new Error('Desktop search still warms BGE on the UI thread');
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('SemanticMapCanvas') || !builtMain.includes('Open note neighborhood') || !builtMain.includes('Explore from note')) throw new Error('Semantic search map or note neighborhood UI is missing');
-if (!builtMain.includes('semanticMap(files)') || !builtMain.includes('semanticNeighbors(file')) throw new Error('Local semantic map data is missing');
+if (!builtMain.includes('semanticTerrain(query, files)') || !builtMain.includes('semanticNeighbors(file')) throw new Error('Local semantic terrain data is missing');
+if (!modalSource.includes('this.resultContainerEl') || !modalSource.includes("querySelector('.prompt-results')") || modalSource.includes("querySelector('.suggestion-container')")) throw new Error('Search map is not mounted to the current Obsidian SuggestModal result container');
+if (!fs.readFileSync(path.join(root, 'styles.css'), 'utf8').includes('.is-map-visible .prompt-results')) throw new Error('Desktop semantic map layout is not applied to Obsidian prompt results');
+if (!builtMain.includes('topographicMapIntroduced')) throw new Error('Desktop semantic map introduction migration is missing');
 if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic search debounce is missing');
 if (!builtMain.includes('if (this.indexRun)')) throw new Error('Serialized index scheduling is missing');
 if (!builtMain.includes('clearTimeout(this.updateTimer)')) throw new Error('Vault-wide index event coalescing is missing');
@@ -101,7 +105,7 @@ const directPhrases = highlightResults[0].semanticHighlights.map(item => item.ph
 if (!directPhrases.includes('agency') || !directPhrases.includes('free will')) throw new Error(`Precomputed semantic highlighting failed: ${directPhrases.join(', ')}`);
 const mapRuntime = new MobileSearchRuntime(mockPlugin); mapRuntime.meta = [{ file: 'A.md' }, { file: 'B.md' }, { file: 'C.md' }]; mapRuntime.vectors = [new Float32Array(384), new Float32Array(384), new Float32Array(384)]; mapRuntime.vectors[0][0] = 1; mapRuntime.vectors[1][0] = .9; mapRuntime.vectors[1][1] = .1; mapRuntime.vectors[2][1] = 1;
 const semanticMap = mapRuntime.semanticMap(['A.md', 'B.md', 'C.md']); if (semanticMap.nodes.length !== 3 || !semanticMap.edges.some(edge => new Set([edge.source, edge.target]).has('A.md') && new Set([edge.source, edge.target]).has('B.md'))) throw new Error('Semantic map does not preserve close note relationships');
-const neighborhood = mapRuntime.semanticNeighbors('A.md', 2); if (neighborhood.nodes[0]?.id !== 'B.md') throw new Error('Note neighborhood does not rank the closest note first');
+const neighborhood = mapRuntime.semanticNeighbors('A.md', 2); if (neighborhood.nodes[0]?.id !== 'B.md') throw new Error('Note neighborhood does not rank the closest note first'); if (!neighborhood.nodes.every(node => Number.isFinite(node.x) && Number.isFinite(node.y))) throw new Error('Semantic terrain projection did not produce stable coordinates'); if (Math.hypot(neighborhood.nodes[0].x, neighborhood.nodes[0].y) >= Math.hypot(neighborhood.nodes[1].x, neighborhood.nodes[1].y)) throw new Error('Semantic terrain does not place the closest note nearer its center');
 
 for (const required of ['main.js', 'manifest.json', 'styles.css', 'versions.json', 'README.md', 'LICENSE', 'SECURITY.md']) {
   if (!fs.existsSync(path.join(root, required))) throw new Error(`Missing public release file: ${required}`);
