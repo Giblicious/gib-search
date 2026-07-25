@@ -70438,6 +70438,60 @@ function dotPacked(query, packed, offset2) {
   for (let i3 = 0; i3 < DIMENSION; i3 += 4) score += query[i3] * packed[offset2 + i3] + query[i3 + 1] * packed[offset2 + i3 + 1] + query[i3 + 2] * packed[offset2 + i3 + 2] + query[i3 + 3] * packed[offset2 + i3 + 3];
   return score;
 }
+function semanticProjection(centerId, centerVector, entries) {
+  const points = [{ id: centerId, vector: centerVector }, ...entries];
+  const count = points.length;
+  if (count < 2) return /* @__PURE__ */ new Map();
+  const distances = Array.from({ length: count }, () => new Float64Array(count));
+  for (let row = 0; row < count; row++) for (let column = row + 1; column < count; column++) {
+    const squared = Math.max(0, 2 - 2 * Math.max(-1, Math.min(1, dot(points[row].vector, points[column].vector))));
+    distances[row][column] = squared;
+    distances[column][row] = squared;
+  }
+  const means = distances.map((row) => row.reduce((sum, value) => sum + value, 0) / count);
+  const total = means.reduce((sum, value) => sum + value, 0) / count;
+  const gram = Array.from({ length: count }, (_2, row) => Float64Array.from({ length: count }, (_3, column) => -0.5 * (distances[row][column] - means[row] - means[column] + total)));
+  const multiply = (vector) => Float64Array.from({ length: count }, (_2, row) => gram[row].reduce((sum, value, column) => sum + value * vector[column], 0));
+  const component = (seed, previous = null) => {
+    let vector = Float64Array.from({ length: count }, (_2, index3) => Math.sin((index3 + 1) * seed) + Math.cos((index3 + 1) * (seed + 0.71)));
+    for (let iteration = 0; iteration < 80; iteration++) {
+      vector = multiply(vector);
+      if (previous) {
+        const overlap = vector.reduce((sum, value, index3) => sum + value * previous[index3], 0);
+        vector.forEach((value, index3) => {
+          vector[index3] = value - overlap * previous[index3];
+        });
+      }
+      const norm = Math.hypot(...vector) || 1;
+      vector.forEach((value, index3) => {
+        vector[index3] = value / norm;
+      });
+    }
+    const projected = multiply(vector);
+    const eigenvalue = Math.max(0, vector.reduce((sum, value, index3) => sum + value * projected[index3], 0));
+    return { vector, scale: Math.sqrt(eigenvalue) };
+  };
+  const first = component(1.37), second = component(2.91, first.vector);
+  const raw = points.map((point, index3) => ({ id: point.id, x: first.vector[index3] * first.scale, y: second.vector[index3] * second.scale }));
+  const origin = raw[0];
+  raw.forEach((point) => {
+    point.x -= origin.x;
+    point.y -= origin.y;
+  });
+  const anchor = raw[1];
+  const rotation = anchor ? -Math.PI / 2 - Math.atan2(anchor.y, anchor.x) : 0;
+  raw.forEach((point) => {
+    const x = point.x * Math.cos(rotation) - point.y * Math.sin(rotation), y = point.x * Math.sin(rotation) + point.y * Math.cos(rotation);
+    point.x = x;
+    point.y = y;
+  });
+  if (raw[2]?.x < 0) raw.forEach((point) => {
+    point.x *= -1;
+  });
+  const extent = Math.max(...raw.slice(1).map((point) => Math.hypot(point.x, point.y)), 1e-3);
+  const scale = 0.86 / extent;
+  return new Map(raw.slice(1).map((point) => [point.id, { x: point.x * scale, y: point.y * scale }]));
+}
 function contentFingerprint(source) {
   const value = String(source || "");
   let first = 2166136261, second = 2246822507;
@@ -71298,14 +71352,19 @@ var init_mobile_runtime = __esm({
         }
         return { nodes, edges };
       }
+      async semanticTerrain(query, files) {
+        const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 50), vectors = this.fileVectors(ordered), queryVector = await this.queryVector(query);
+        const entries = ordered.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector }));
+        const positions = semanticProjection("__query__", queryVector, entries);
+        return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), score: dot(queryVector, entry.vector), ...positions.get(entry.id) || {} })) };
+      }
       semanticNeighbors(file, limit = 18) {
         const vectors = this.fileVectors();
         const center = vectors.get(file);
         if (!center) return { center: file, nodes: [], edges: [] };
         const ranked = [...vectors.entries()].filter(([id2]) => id2 !== file).map(([id2, entry]) => ({ id: id2, label: basename(id2), score: dot(center.vector, entry.vector) })).sort((a2, b) => b.score - a2.score).slice(0, Math.max(1, Math.min(40, limit)));
-        const map2 = this.semanticMap(ranked.map((node) => node.id));
-        const scores = new Map(ranked.map((node) => [node.id, node.score]));
-        return { center: file, nodes: map2.nodes.map((node) => ({ ...node, score: scores.get(node.id) || 0 })), edges: map2.edges };
+        const positions = semanticProjection(file, center.vector, ranked.map((node) => ({ id: node.id, vector: vectors.get(node.id).vector })));
+        return { center: file, nodes: ranked.map((node) => ({ ...node, ...positions.get(node.id) || {} })), edges: [] };
       }
       async graph(k3 = 5, maxEdges = 2e3) {
         const groups = /* @__PURE__ */ new Map();
@@ -71791,18 +71850,19 @@ var SemanticMapCanvas = class {
   setGraph(center, values, edges = []) {
     const previous = this.byId;
     const scores = values.map((value) => Number(value.score || 0));
-    const low = Math.min(...scores, 0), high = Math.max(...scores, 1);
+    const low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1;
     const spread = Math.max(1e-3, high - low);
     this.center = center;
     this.edges = edges;
     this.nodes = values.map((value, order) => {
-      const relevance = Number.isFinite(Number(value.score)) ? (Number(value.score) - low) / spread : 1 - order / Math.max(1, values.length);
+      const relevance = spread > 1e-3 && Number.isFinite(Number(value.score)) ? (Number(value.score) - low) / spread : 1 - order / Math.max(1, values.length);
       const radius = 0.24 + (1 - relevance) * 0.63;
       const angle = stableMapAngle(value.id);
-      const old = previous.get(value.id);
-      return { ...value, order, relevance, radius, x: old?.x ?? 0, y: old?.y ?? 0, targetX: Math.cos(angle) * radius, targetY: Math.sin(angle) * radius };
+      const old = previous.get(value.id), projected = Number.isFinite(value.x) && Number.isFinite(value.y);
+      return { ...value, order, relevance, radius, x: old?.x ?? 0, y: old?.y ?? 0, targetX: projected ? value.x : Math.cos(angle) * radius, targetY: projected ? value.y : Math.sin(angle) * radius, projected };
     });
-    this.settleLayout();
+    if (!this.nodes.every((node) => node.projected)) this.settleLayout();
+    this.buildTerrain();
     this.byId = new Map(this.nodes.map((node) => [node.id, node]));
     this.selected = this.byId.has(this.selected) ? this.selected : null;
     this.hovered = this.byId.has(this.hovered) ? this.hovered : null;
@@ -71872,6 +71932,80 @@ var SemanticMapCanvas = class {
     const scale = Math.max(20, Math.min(width, height) / 2 - 42);
     return [width / 2 + Number(node.renderX ?? node.targetX) * scale, height / 2 + Number(node.renderY ?? node.targetY) * scale];
   }
+  buildTerrain() {
+    const size = 88, values = new Float32Array(size * size), peaks = [{ x: 0, y: 0, amplitude: 1.15, sigma: 0.115 }, ...this.nodes.map((node) => ({ x: node.targetX, y: node.targetY, amplitude: 0.34 + node.relevance * 0.68, sigma: 0.105 + (1 - node.relevance) * 0.035 }))];
+    let maximum = 0;
+    for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
+      const x = column / (size - 1) * 2 - 1, y = row / (size - 1) * 2 - 1;
+      let density = 0;
+      for (const peak of peaks) {
+        const distance = (x - peak.x) ** 2 + (y - peak.y) ** 2;
+        density += peak.amplitude * Math.exp(-distance / (2 * peak.sigma ** 2));
+      }
+      const height = 1 - Math.exp(-density);
+      values[row * size + column] = height;
+      maximum = Math.max(maximum, height);
+    }
+    this.terrain = { size, values, maximum };
+    this.terrainTexture = null;
+    this.terrainColorKey = "";
+  }
+  terrainImage(colors2) {
+    if (!this.terrain) return null;
+    const colorKey = `${colors2.muted}|${colors2.normal}`;
+    if (this.terrainTexture && this.terrainColorKey === colorKey) return this.terrainTexture;
+    const { size, values, maximum } = this.terrain, texture = document.createElement("canvas");
+    texture.width = 600;
+    texture.height = 600;
+    const ctx = texture.getContext("2d"), shade = document.createElement("canvas");
+    shade.width = size;
+    shade.height = size;
+    const shadeContext = shade.getContext("2d");
+    shadeContext.fillStyle = colors2.muted;
+    for (let row = 1; row < size - 1; row++) for (let column = 1; column < size - 1; column++) {
+      const index3 = row * size + column, normalized = values[index3] / Math.max(1e-3, maximum), gx = values[index3 + 1] - values[index3 - 1], gy = values[index3 + size] - values[index3 - size];
+      shadeContext.globalAlpha = Math.max(0, Math.min(0.13, 0.018 + normalized * 0.055 + (gy - gx) * 0.045));
+      shadeContext.fillRect(column, row, 1, 1);
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(shade, 0, 0, texture.width, texture.height);
+    const levels = [0.1, 0.16, 0.23, 0.31, 0.4, 0.5, 0.61, 0.73, 0.84].map((level) => level * maximum);
+    const scale = texture.width / (size - 1);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    levels.forEach((level, levelIndex) => {
+      ctx.beginPath();
+      for (let row = 0; row < size - 1; row++) for (let column = 0; column < size - 1; column++) {
+        const corners = [values[row * size + column], values[row * size + column + 1], values[(row + 1) * size + column + 1], values[(row + 1) * size + column]], points = [];
+        const cross = (first, second, x1, y1, x2, y2) => {
+          if (first < level === second < level || first === second) return;
+          const amount = (level - first) / (second - first);
+          points.push([x1 + (x2 - x1) * amount, y1 + (y2 - y1) * amount]);
+        };
+        cross(corners[0], corners[1], column, row, column + 1, row);
+        cross(corners[1], corners[2], column + 1, row, column + 1, row + 1);
+        cross(corners[2], corners[3], column + 1, row + 1, column, row + 1);
+        cross(corners[3], corners[0], column, row + 1, column, row);
+        if (points.length === 2) {
+          ctx.moveTo(points[0][0] * scale, points[0][1] * scale);
+          ctx.lineTo(points[1][0] * scale, points[1][1] * scale);
+        } else if (points.length === 4) {
+          ctx.moveTo(points[0][0] * scale, points[0][1] * scale);
+          ctx.lineTo(points[1][0] * scale, points[1][1] * scale);
+          ctx.moveTo(points[2][0] * scale, points[2][1] * scale);
+          ctx.lineTo(points[3][0] * scale, points[3][1] * scale);
+        }
+      }
+      ctx.globalAlpha = levelIndex % 3 === 0 ? 0.34 : 0.2;
+      ctx.strokeStyle = levelIndex % 3 === 0 ? colors2.normal : colors2.muted;
+      ctx.lineWidth = levelIndex % 3 === 0 ? 1.15 : 0.72;
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+    this.terrainTexture = texture;
+    this.terrainColorKey = colorKey;
+    return texture;
+  }
   draw() {
     const rect = this.canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -71882,42 +72016,40 @@ var SemanticMapCanvas = class {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
     const colors2 = this.colors(), cx = rect.width / 2, cy = rect.height / 2;
+    const terrain = this.terrainImage(colors2), scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 42);
+    if (terrain) {
+      ctx.globalAlpha = 0.92;
+      ctx.drawImage(terrain, cx - scale, cy - scale, scale * 2, scale * 2);
+      ctx.globalAlpha = 1;
+    }
     const focused = this.hovered || this.selected;
-    const related = /* @__PURE__ */ new Set();
-    if (focused) for (const edge of this.edges.filter((edge2) => edge2.source === focused || edge2.target === focused).sort((a2, b) => b.score - a2.score).slice(0, 3)) related.add(edge.source === focused ? edge.target : edge.source);
-    ctx.lineWidth = 1;
-    for (const node of this.nodes.slice(0, 7)) {
-      const [x, y] = this.coordinates(node, rect.width, rect.height);
-      ctx.globalAlpha = focused && node.id !== focused ? 0.025 : 0.105;
-      ctx.strokeStyle = colors2.border;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(x, y);
-      ctx.stroke();
-    }
-    if (focused) for (const edge of this.edges.filter((edge2) => edge2.source === focused || edge2.target === focused).sort((a2, b) => b.score - a2.score).slice(0, 3)) {
-      const a2 = this.byId.get(edge.source), b = this.byId.get(edge.target);
-      if (!a2 || !b) continue;
-      const [ax, ay] = this.coordinates(a2, rect.width, rect.height), [bx, by] = this.coordinates(b, rect.width, rect.height);
-      ctx.globalAlpha = 0.28;
-      ctx.strokeStyle = colors2.accent;
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-    }
     this.hit = [];
     for (const node of this.nodes) {
       const [x, y] = this.coordinates(node, rect.width, rect.height);
-      const active = node.id === focused, connected = related.has(node.id);
-      const radius = 4.2 + node.relevance * 3.4 + (active ? 2 : 0);
-      ctx.globalAlpha = focused && !active && !connected ? 0.3 : active ? 1 : 0.72 + node.relevance * 0.24;
-      ctx.fillStyle = active || node.id === this.selected ? colors2.accent : colors2.muted;
+      const active = node.id === focused;
+      const radius = 3.4 + node.relevance * 2.8 + (active ? 1.4 : 0);
+      if (active) {
+        const seed = stableMapAngle(node.id);
+        ctx.strokeStyle = colors2.accent;
+        [12, 19, 27].forEach((ring, index3) => {
+          ctx.globalAlpha = 0.34 - index3 * 0.08;
+          ctx.lineWidth = index3 ? 0.8 : 1.2;
+          ctx.beginPath();
+          for (let point = 0; point <= 48; point++) {
+            const angle = point / 48 * Math.PI * 2, contour = ring * (1 + Math.sin(angle * 3 + seed) * 0.035 + Math.sin(angle * 5 - seed * 0.7) * 0.022), px = x + Math.cos(angle) * contour, py = y + Math.sin(angle) * contour;
+            point ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        });
+      }
+      ctx.globalAlpha = focused && !active ? 0.42 : active ? 1 : 0.68 + node.relevance * 0.25;
+      ctx.fillStyle = active || node.id === this.selected ? colors2.accent : colors2.normal;
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();
       if (active || node.order < 4) this.label(ctx, node.label, x + radius + 5, y + 4, colors2, active);
-      this.hit.push({ node, x, y, radius: radius + 10 });
+      this.hit.push({ node, x, y, radius: radius + 11 });
     }
     ctx.globalAlpha = 1;
     ctx.fillStyle = colors2.background;
@@ -72053,7 +72185,7 @@ var SemanticSearchModal = class extends SuggestModal {
   renderShowMore() {
     this.modalEl.querySelector(".gib-show-more")?.remove();
     if (!this.canLoadMore || !this.lastQuery) return;
-    const resultsEl = this.modalEl.querySelector(".suggestion-container");
+    const resultsEl = this.resultContainerEl || this.modalEl.querySelector(".prompt-results");
     if (!resultsEl) return;
     const footer = resultsEl.createDiv({ cls: "gib-show-more" });
     const button = footer.createEl("button", { text: "Show 10 more results" });
@@ -72170,7 +72302,7 @@ var SemanticSearchModal = class extends SuggestModal {
   setupMap() {
     if (this.filePath) return;
     this.modalEl.addClass("gib-search-modal");
-    const suggestions = this.modalEl.querySelector(".suggestion-container");
+    const suggestions = this.resultContainerEl || this.modalEl.querySelector(".prompt-results");
     if (!suggestions?.parentElement) return;
     const shell = document.createElement("div");
     shell.className = "gib-search-results-shell";
@@ -72180,7 +72312,9 @@ var SemanticSearchModal = class extends SuggestModal {
     const inputContainer = this.modalEl.querySelector(".prompt-input-container") || this.inputEl.parentElement;
     this.mapToggle = inputContainer?.createEl("button", { cls: "gib-search-map-toggle", attr: { type: "button", "aria-label": "Toggle semantic map", title: "Toggle semantic map" } });
     if (this.mapToggle) {
-      setIcon(this.mapToggle, "waypoints");
+      const mapIcon = this.mapToggle.createSpan({ cls: "gib-search-map-toggle-icon" });
+      setIcon(mapIcon, "map");
+      this.mapToggle.createSpan({ text: "Map" });
       this.mapToggle.addEventListener("mousedown", (event) => event.preventDefault());
       this.mapToggle.addEventListener("click", async (event) => {
         event.preventDefault();
@@ -72213,15 +72347,15 @@ var SemanticSearchModal = class extends SuggestModal {
     if (!this.map || !this.plugin.settings.searchMapEnabled) return;
     const version2 = ++this.mapVersion;
     const results = this.lastResults.slice(0, 40);
-    this.map.setTitle(this.lastQuery ? `\u201C${this.lastQuery}\u201D` : "Search map");
+    this.map.setTitle("Semantic terrain");
     if (!this.lastQuery || !results.length) {
       this.map.setGraph({ label: this.lastQuery || "Search" }, [], []);
       return;
     }
-    const graph = this.plugin.search.semanticMap(results.map((result) => result.file));
+    const terrain = await this.plugin.search.semanticTerrain(this.lastQuery, results.map((result) => result.file));
     if (version2 !== this.mapVersion) return;
     const byFile = new Map(results.map((result) => [result.file, result]));
-    this.map.setGraph({ label: this.lastQuery }, graph.nodes.map((node) => ({ ...node, score: byFile.get(node.id)?.score || 0 })), graph.edges);
+    this.map.setGraph({ label: this.lastQuery }, terrain.nodes.map((node) => ({ ...node, score: byFile.get(node.id)?.score || node.score || 0 })), []);
   }
   hoverResult(file) {
     for (const item2 of this.modalEl.querySelectorAll(".suggestion-item.is-map-hovered")) item2.removeClass("is-map-hovered");
@@ -72710,6 +72844,11 @@ module.exports = class GibSearch extends Plugin {
     }
     if (!loaded.bgeOnlySettingsMigrated) {
       this.settings.bgeOnlySettingsMigrated = true;
+      await this.save();
+    }
+    if (!loaded.topographicMapIntroduced) {
+      this.settings.searchMapEnabled = !this.isMobile;
+      this.settings.topographicMapIntroduced = true;
       await this.save();
     }
     this.lastError = "";

@@ -25,6 +25,16 @@ function dot(a, b) {
   let score = 0; for (let i = 0; i < a.length; i++) score += a[i] * b[i]; return score;
 }
 function dotPacked(query, packed, offset) { let score = 0; for (let i = 0; i < DIMENSION; i += 4) score += query[i] * packed[offset + i] + query[i + 1] * packed[offset + i + 1] + query[i + 2] * packed[offset + i + 2] + query[i + 3] * packed[offset + i + 3]; return score; }
+function semanticProjection(centerId, centerVector, entries) {
+  const points = [{ id: centerId, vector: centerVector }, ...entries]; const count = points.length; if (count < 2) return new Map(); const distances = Array.from({ length: count }, () => new Float64Array(count));
+  for (let row = 0; row < count; row++) for (let column = row + 1; column < count; column++) { const squared = Math.max(0, 2 - 2 * Math.max(-1, Math.min(1, dot(points[row].vector, points[column].vector)))); distances[row][column] = squared; distances[column][row] = squared; }
+  const means = distances.map(row => row.reduce((sum, value) => sum + value, 0) / count); const total = means.reduce((sum, value) => sum + value, 0) / count; const gram = Array.from({ length: count }, (_, row) => Float64Array.from({ length: count }, (_, column) => -.5 * (distances[row][column] - means[row] - means[column] + total)));
+  const multiply = vector => Float64Array.from({ length: count }, (_, row) => gram[row].reduce((sum, value, column) => sum + value * vector[column], 0));
+  const component = (seed, previous = null) => { let vector = Float64Array.from({ length: count }, (_, index) => Math.sin((index + 1) * seed) + Math.cos((index + 1) * (seed + .71))); for (let iteration = 0; iteration < 80; iteration++) { vector = multiply(vector); if (previous) { const overlap = vector.reduce((sum, value, index) => sum + value * previous[index], 0); vector.forEach((value, index) => { vector[index] = value - overlap * previous[index]; }); } const norm = Math.hypot(...vector) || 1; vector.forEach((value, index) => { vector[index] = value / norm; }); } const projected = multiply(vector); const eigenvalue = Math.max(0, vector.reduce((sum, value, index) => sum + value * projected[index], 0)); return { vector, scale: Math.sqrt(eigenvalue) }; };
+  const first = component(1.37), second = component(2.91, first.vector); const raw = points.map((point, index) => ({ id: point.id, x: first.vector[index] * first.scale, y: second.vector[index] * second.scale })); const origin = raw[0]; raw.forEach(point => { point.x -= origin.x; point.y -= origin.y; });
+  const anchor = raw[1]; const rotation = anchor ? -Math.PI / 2 - Math.atan2(anchor.y, anchor.x) : 0; raw.forEach(point => { const x = point.x * Math.cos(rotation) - point.y * Math.sin(rotation), y = point.x * Math.sin(rotation) + point.y * Math.cos(rotation); point.x = x; point.y = y; }); if (raw[2]?.x < 0) raw.forEach(point => { point.x *= -1; });
+  const extent = Math.max(...raw.slice(1).map(point => Math.hypot(point.x, point.y)), .001); const scale = .86 / extent; return new Map(raw.slice(1).map(point => [point.id, { x: point.x * scale, y: point.y * scale }]));
+}
 function contentFingerprint(source) {
   const value = String(source || ''); let first = 2166136261, second = 2246822507;
   for (let index = 0; index < value.length; index++) { const code = value.charCodeAt(index); first = Math.imul(first ^ code, 16777619); second = Math.imul(second ^ code, 3266489909); }
@@ -385,10 +395,14 @@ export class MobileSearchRuntime {
     }
     return { nodes, edges };
   }
+  async semanticTerrain(query, files) {
+    const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 50), vectors = this.fileVectors(ordered), queryVector = await this.queryVector(query); const entries = ordered.filter(id => vectors.has(id)).map(id => ({ id, vector: vectors.get(id).vector })); const positions = semanticProjection('__query__', queryVector, entries);
+    return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), score: dot(queryVector, entry.vector), ...(positions.get(entry.id) || {}) })) };
+  }
   semanticNeighbors(file, limit = 18) {
     const vectors = this.fileVectors(); const center = vectors.get(file); if (!center) return { center: file, nodes: [], edges: [] };
     const ranked = [...vectors.entries()].filter(([id]) => id !== file).map(([id, entry]) => ({ id, label: basename(id), score: dot(center.vector, entry.vector) })).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(40, limit)));
-    const map = this.semanticMap(ranked.map(node => node.id)); const scores = new Map(ranked.map(node => [node.id, node.score])); return { center: file, nodes: map.nodes.map(node => ({ ...node, score: scores.get(node.id) || 0 })), edges: map.edges };
+    const positions = semanticProjection(file, center.vector, ranked.map(node => ({ id: node.id, vector: vectors.get(node.id).vector }))); return { center: file, nodes: ranked.map(node => ({ ...node, ...(positions.get(node.id) || {}) })), edges: [] };
   }
   async graph(k = 5, maxEdges = 2000) {
     const groups = new Map(); this.meta.forEach((item, index) => { const group = groups.get(item.file) || []; group.push(this.vectors[index]); groups.set(item.file, group); });
