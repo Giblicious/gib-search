@@ -71790,14 +71790,14 @@ var init_mobile_runtime = __esm({
         const item = this.meta.find((value) => value.file === file);
         return item?.contentHash || `${file}:${item?.mtime || 0}`;
       }
-      async conceptFacets(query, files) {
-        return this.conceptFacetsFromVector(await this.queryVector(this.correctQuery(query)), files);
+      async conceptFacets(query, files, evidence = /* @__PURE__ */ new Map()) {
+        return this.conceptFacetsFromVector(await this.queryVector(this.correctQuery(query)), files, evidence, query);
       }
       conceptFacetsFromFile(file, files) {
         const vector = this.fileVectors([file]).get(file)?.vector;
         return vector ? this.conceptFacetsFromVector(vector, files) : /* @__PURE__ */ new Map();
       }
-      conceptFacetsFromVector(queryVector, files) {
+      conceptFacetsFromVector(queryVector, files, evidence = /* @__PURE__ */ new Map(), query = "") {
         const ordered = [...new Set((files || []).filter(Boolean))], vectors = this.fileVectors(ordered), entries = ordered.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: residualVector(vectors.get(id2).vector, queryVector) }));
         if (!entries.length) return /* @__PURE__ */ new Map();
         const neighbors = entries.map((entry, first) => entries.map((other, second) => first === second ? null : { second, score: dot(entry.vector, other.vector) }).filter(Boolean).sort((a2, b) => b.score - a2.score).slice(0, Math.min(4, Math.max(1, entries.length - 1)))), directed = neighbors.map((list4) => new Map(list4.map((item) => [item.second, item.score]))), edges = [];
@@ -71813,22 +71813,33 @@ var init_mobile_runtime = __esm({
           group.push(entry.id);
           groups.set(id2, group);
         }
-        const labels = /* @__PURE__ */ new Map();
+        const queryWords = new Set(tokens(query)), candidateSets = /* @__PURE__ */ new Map(), documentFrequency = /* @__PURE__ */ new Map();
+        for (const file of ordered) {
+          const source = `${evidence.get(file) || ""} ${basename(file)}`, words = (source.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) || []).filter((word) => word.length > 2 && !STOP_WORDS.has(word) && !GENERIC_CONCEPTS.has(word) && !queryWords.has(word) && !/^\d+$/.test(word)), candidates = new Set([...entitySets.get(file) || []].filter((value) => !queryWords.has(value) && !GENERIC_CONCEPTS.has(value)));
+          for (const word of words) candidates.add(word);
+          for (let index3 = 0; index3 < words.length - 1; index3++) candidates.add(`${words[index3]} ${words[index3 + 1]}`);
+          candidateSets.set(file, candidates);
+          for (const candidate of candidates) documentFrequency.set(candidate, (documentFrequency.get(candidate) || 0) + 1);
+        }
+        const centroids = /* @__PURE__ */ new Map(), labels = /* @__PURE__ */ new Map();
         for (const [community, members] of groups) {
-          const counts = /* @__PURE__ */ new Map();
-          for (const file of members) for (const entity2 of entitySets.get(file) || []) counts.set(entity2, (counts.get(entity2) || 0) + 1);
-          const ranked = [...counts].map(([value, count]) => ({ value, score: count * Math.log(1 + entries.length / Math.max(1, entityFrequency.get(value) || 1)) })).sort((a2, b) => b.score - a2.score || a2.value.localeCompare(b.value));
-          let label = ranked[0]?.value;
-          if (!label) {
-            const words = /* @__PURE__ */ new Map();
-            for (const file of members) for (const token of tokens(basename(file))) if (!STOP_WORDS.has(token) && !GENERIC_CONCEPTS.has(token) && !/^\d+$/.test(token)) words.set(token, (words.get(token) || 0) + 1);
-            label = [...words].sort((a2, b) => b[1] - a2[1] || a2[0].localeCompare(b[0]))[0]?.[0] || `Facet ${community + 1}`;
+          const centroid = new Float32Array(DIMENSION);
+          for (const file of members) {
+            const vector = entries.find((entry) => entry.id === file)?.vector;
+            if (vector) for (let dimension = 0; dimension < DIMENSION; dimension++) centroid[dimension] += vector[dimension];
           }
-          labels.set(community, String(label).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()));
+          const norm = Math.sqrt(dot(centroid, centroid)) || 1;
+          for (let dimension = 0; dimension < DIMENSION; dimension++) centroid[dimension] /= norm;
+          centroids.set(community, centroid);
+          const counts = /* @__PURE__ */ new Map();
+          for (const file of members) for (const candidate of candidateSets.get(file) || []) counts.set(candidate, (counts.get(candidate) || 0) + 1);
+          const ranked = [...counts].map(([value, count]) => ({ value, score: count * Math.log(1 + entries.length / Math.max(1, documentFrequency.get(value) || 1)) * (value.includes(" ") ? 1.18 : 1) })).sort((a2, b) => b.score - a2.score || a2.value.localeCompare(b.value));
+          const best = ranked[0], runnerUp = ranked[1], labelConfidence = best ? Math.min(1, 0.34 + best.score / Math.max(1e-3, best.score + Number(runnerUp?.score || 0)) * 0.5 + Math.min(0.16, members.length / entries.length * 0.3)) : 0;
+          labels.set(community, { label: best ? String(best.value).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "", confidence: labelConfidence });
         }
         return new Map(entries.map((entry) => {
-          const facet = communities.get(entry.id) ?? 0;
-          return [entry.id, { facet, label: labels.get(facet) || `Facet ${facet + 1}` }];
+          const scored = [...centroids].map(([facet2, centroid]) => ({ facet: facet2, score: Math.max(1e-3, (dot(entry.vector, centroid) + 1) / 2) ** 5 })), total = scored.reduce((sum, item) => sum + item.score, 0) || 1, affinities = Object.fromEntries(scored.map((item) => [item.facet, item.score / total])), orderedScores = scored.map((item) => ({ ...item, affinity: item.score / total })).sort((a2, b) => b.affinity - a2.affinity), facet = orderedScores[0]?.facet ?? communities.get(entry.id) ?? 0, margin = Number(orderedScores[0]?.affinity || 0) - Number(orderedScores[1]?.affinity || 0), label = labels.get(facet) || { label: "", confidence: 0 }, confidence = Math.min(label.confidence, 0.3 + Number(orderedScores[0]?.affinity || 0) * 0.45 + margin * 0.55);
+          return [entry.id, { facet, label: label.label, confidence, affinities }];
         }));
       }
       contextScores(files) {
@@ -71885,7 +71896,7 @@ var init_mobile_runtime = __esm({
         const basis = this.topicBasis(), trimmed = String(query || "").trim(), centerFile = String(options.centerFile || ""), fileCenter = centerFile ? this.fileVectors([centerFile]).get(centerFile)?.vector : null, conditioned = Boolean(trimmed || fileCenter);
         let center = fileCenter ? Float32Array.from(fileCenter) : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
         if (!conditioned) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
-        const topics = topicCoordinates(entries, center, basis.axes), residuals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
+        const topics = topicCoordinates(entries, center, basis.axes), residuals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), conceptEntries = entries.map((entry) => ({ id: entry.id, vector: residuals.get(entry.id) })), conceptBasis = semanticTopicBasis(conceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
         for (const entities of entitySets.values()) for (const entity2 of entities) frequency.set(entity2, (frequency.get(entity2) || 0) + 1);
         const entitySimilarity = (first, second) => {
           const a2 = entitySets.get(first) || /* @__PURE__ */ new Set(), b = entitySets.get(second) || /* @__PURE__ */ new Set();
@@ -71904,20 +71915,38 @@ var init_mobile_runtime = __esm({
         const semanticScores = entries.map((entry) => dot(center, entry.vector)), low = Math.min(...semanticScores), high = Math.max(...semanticScores), spread = Math.max(1e-3, high - low), relevance = new Map(entries.map((entry, index3) => {
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
-        })), ids = ["__center__", ...entries.map((entry) => entry.id)], distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "concepts", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = { relevance: { semantic: 0.34, residual: 0.42, entity: 0.08, angular: 0.1, community: 0.06, relation: 0 }, concepts: { semantic: 0.2, residual: 0.28, entity: 0.12, angular: 0.08, community: 0.32, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
-        for (let index3 = 1; index3 < ids.length; index3++) {
+        })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = { relevance: { semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
+        if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
           distances[index3][0] = value;
         }
         for (let first = 0; first < entries.length; first++) for (let second = first + 1; second < entries.length; second++) {
-          const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), firstTopic = topics.get(a2.id), secondTopic = topics.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, community = firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1, relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + 1, column = second + 1;
+          const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? conceptTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
           distances[row][column] = distance;
           distances[column][row] = distance;
         }
-        const layout = classicalDistanceLayout(ids, distances, topics);
+        const layout = classicalDistanceLayout(ids, distances, conditioned ? conceptTopics : topics);
         layout.delete("__center__");
+        if (conditioned) {
+          const positioned = /* @__PURE__ */ new Map();
+          for (const entry of entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1)) {
+            const point = layout.get(entry.id), topic = conceptTopics.get(entry.id), angle = point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : Number(topic?.topicAngle || stableAngle(entry.id)), radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
+            positioned.set(entry.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+          }
+          const later = entries.filter((entry) => Number(nodeById.get(entry.id)?.generation || 1) > 1).sort((a2, b) => Number(nodeById.get(a2.id)?.generation || 1) - Number(nodeById.get(b.id)?.generation || 1));
+          for (const entry of later) {
+            const node = nodeById.get(entry.id), parent = positioned.get(node?.parent) || layout.get(node?.parent) || { x: 0, y: 0 }, topicAngle = Number(conceptTopics.get(entry.id)?.topicAngle ?? stableAngle(entry.id)), parentAngle = Math.atan2(parent.y, parent.x), blendX = Math.cos(topicAngle) * 0.68 + Math.cos(parentAngle) * 0.32, blendY = Math.sin(topicAngle) * 0.68 + Math.sin(parentAngle) * 0.32, jitter = (stableAngle(entry.id) / (Math.PI * 2) - 0.5) * 0.32, angle = Math.atan2(blendY, blendX) + jitter, step = 0.13 + (1 - Math.max(0, Math.min(1, Number(node?.relationScore || 0.5)))) * 0.1;
+            positioned.set(entry.id, { x: parent.x + Math.cos(angle) * step, y: parent.y + Math.sin(angle) * step });
+          }
+          return positioned;
+        }
+        const points = [...layout.values()], meanX = points.reduce((sum, point) => sum + point.x, 0) / Math.max(1, points.length), meanY = points.reduce((sum, point) => sum + point.y, 0) / Math.max(1, points.length), extent = Math.max(1e-3, ...points.map((point) => Math.hypot(point.x - meanX, point.y - meanY)));
+        for (const point of layout.values()) {
+          point.x = (point.x - meanX) / extent * 0.82;
+          point.y = (point.y - meanY) / extent * 0.82;
+        }
         return layout;
       }
       semanticMap(files) {
@@ -72108,13 +72137,12 @@ var MODEL_TWEAK_DEFAULTS = {
   bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 }
 };
 var SEARCH_LENSES = {
-  relevance: { label: "Relevance", description: "Rank by overall relevance to the search." },
-  concepts: { label: "Concepts", description: "Group results into distinct conceptual facets." },
+  relevance: { label: "Relevance", description: "Rank by relevance and reveal the concepts within the results." },
   arguments: { label: "Arguments", description: "Organize results by support, tension, and related argument." },
   context: { label: "Context", description: "Favor results that connect strongly to the wider vault." }
 };
 function validSearchLens(value) {
-  return SEARCH_LENSES[value] ? value : "relevance";
+  return value === "concepts" ? "relevance" : SEARCH_LENSES[value] ? value : "relevance";
 }
 var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
 function activeIndexDir(plugin6) {
@@ -73335,25 +73363,19 @@ var SemanticSearchModal = class extends SuggestModal {
     this.lensRelationships = /* @__PURE__ */ new Map();
     this.lensRelationshipEdges = [];
     if (!query || !source.length) return;
-    this.lensSelect?.toggleClass("is-working", lens !== "relevance");
+    this.lensSelect?.toggleClass("is-working", true);
     try {
-      if (lens === "relevance") return this.commitLensResults(source, version2);
       const files = source.map((result) => result.file);
-      if (lens === "concepts") {
-        const facets = await this.plugin.search.conceptFacets(query, files);
+      if (lens === "relevance") {
+        const evidence = new Map(source.map((result) => [result.file, result.snippets.map((snippet) => `${snippet.heading || ""} ${snippet.text || ""}`).join(" ")]));
+        const facets = await this.plugin.search.conceptFacets(query, files, evidence);
         if (version2 !== this.lensVersion) return;
-        const strongest2 = /* @__PURE__ */ new Map();
-        for (const result of source) {
-          const facet = facets.get(result.file)?.facet ?? Number.MAX_SAFE_INTEGER;
-          strongest2.set(facet, Math.max(strongest2.get(facet) || 0, Number(result.score || 0)));
-        }
-        const facetOrder = new Map([...strongest2].sort((a2, b) => b[1] - a2[1]).map(([facet], index3) => [facet, index3]));
         for (const result of source) {
           const info = facets.get(result.file);
           result.facet = info?.facet;
-          result.lensLabel = info?.label || "Other";
+          result.conceptAffinities = info?.affinities;
+          result.lensLabel = info?.confidence >= 0.44 ? info.label : "";
         }
-        source.sort((a2, b) => (facetOrder.get(a2.facet ?? Number.MAX_SAFE_INTEGER) ?? 999) - (facetOrder.get(b.facet ?? Number.MAX_SAFE_INTEGER) ?? 999) || b.score - a2.score);
         return this.commitLensResults(source, version2);
       }
       if (lens === "context") {
@@ -73614,7 +73636,7 @@ var SemanticSearchModal = class extends SuggestModal {
     const byFile = new Map(results.map((result) => [result.file, result])), rankingScores = results.map((result) => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = generations.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
     const graphNodes = graph.nodes.map((node) => {
       const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
-      return { ...node, generation: generation?.generation || 1, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : semanticRelevance, fileScale: fileScale.get(node.id) ?? 0.35, facet: result?.facet, contextScore: result?.contextScore };
+      return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : semanticRelevance, fileScale: fileScale.get(node.id) ?? 0.35, facet: result?.facet, conceptAffinities: result?.conceptAffinities, contextScore: result?.contextScore };
     }), layoutOptions = { magic: this.plugin.settings.magicGraphEnabled, lens: this.lens }, initialLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, this.lens === "arguments" ? this.lensRelationships : /* @__PURE__ */ new Map(), layoutOptions);
     if (version2 !== this.mapVersion) return;
     for (const node of graphNodes) {
@@ -73717,9 +73739,9 @@ var NeighborhoodView = class extends ItemView {
       const graph = this.plugin.search.semanticNeighbors(file.path, 18);
       if (version2 !== this.loadVersion) return;
       let nodes = graph.nodes.map((node) => ({ ...node, semanticScore: Number(node.score || 0) })), relationships = /* @__PURE__ */ new Map(), edges = graph.edges, intelligenceMessage = "";
-      if (this.lens === "concepts") {
+      if (this.lens === "relevance") {
         const facets = this.plugin.search.conceptFacetsFromFile(file.path, nodes.map((node) => node.id));
-        nodes = nodes.map((node) => ({ ...node, facet: facets.get(node.id)?.facet }));
+        nodes = nodes.map((node) => ({ ...node, facet: facets.get(node.id)?.facet, conceptAffinities: facets.get(node.id)?.affinities }));
       }
       if (this.lens === "context") {
         const context = this.plugin.search.contextScores(nodes.map((node) => node.id));
