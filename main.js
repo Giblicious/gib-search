@@ -73167,28 +73167,31 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     return [width / 2 + (Number(node.x) - this.cameraX) * scale + this.panX, height / 2 + (Number(node.y) - this.cameraY) * scale + this.panY];
   }
   semanticDensityField(width, height) {
-    const step = 6, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
+    const step = 6, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), clusterBase = new Float32Array(columns * rows), peaks = /* @__PURE__ */ new Map(), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
       const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
     })), zoom = Math.max(0.65, Math.min(2.4, this.cameraZoom * this.userZoom)), sigma = Math.max(20, Math.min(54, 27 * zoom));
-    const addMass = (x, y, radius, amplitude) => {
+    const addMass = (field, x, y, radius, amplitude, combine2 = "max") => {
       const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
-        const dx = column * step - x, dy = row * step - y;
-        values[row * columns + column] += amplitude * Math.exp(-(dx * dx + dy * dy) / divisor);
+        const dx = column * step - x, dy = row * step - y, index3 = row * columns + column, height2 = amplitude * Math.exp(-(dx * dx + dy * dy) / divisor);
+        field[index3] = combine2 === "sum" ? field[index3] + height2 : Math.max(field[index3], height2);
       }
     };
     const addRidge = (source, target, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((Math.min(source.x, target.x) - reach) / step)), right = Math.min(columns - 1, Math.ceil((Math.max(source.x, target.x) + reach) / step)), top = Math.max(0, Math.floor((Math.min(source.y, target.y) - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((Math.max(source.y, target.y) + reach) / step)), dx = target.x - source.x, dy = target.y - source.y, lengthSquared = Math.max(1, dx * dx + dy * dy), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
-        const x = column * step, y = row * step, along = Math.max(0, Math.min(1, ((x - source.x) * dx + (y - source.y) * dy) / lengthSquared)), nearestX = source.x + dx * along, nearestY = source.y + dy * along, distanceX = x - nearestX, distanceY = y - nearestY, taper = Math.sin(Math.PI * along) ** 0.6;
-        values[row * columns + column] += amplitude * taper * Math.exp(-(distanceX * distanceX + distanceY * distanceY) / divisor);
+        const x = column * step, y = row * step, along = Math.max(0, Math.min(1, ((x - source.x) * dx + (y - source.y) * dy) / lengthSquared)), nearestX = source.x + dx * along, nearestY = source.y + dy * along, distanceX = x - nearestX, distanceY = y - nearestY, endpointTaper = Math.min(1, along / 0.16, (1 - along) / 0.16), height2 = amplitude * endpointTaper * Math.exp(-(distanceX * distanceX + distanceY * distanceY) / divisor), index3 = row * columns + column;
+        values[index3] = Math.max(values[index3], height2);
       }
     };
     for (const { node, x, y } of points.values()) {
       const generationWeight = node.generation === 1 ? 1 : node.generation === 2 ? 0.58 : 0.36, amplitude = node.visibility * generationWeight * (0.82 + Math.max(0, Math.min(1, node.relevance)) * 0.18);
-      addMass(x, y, sigma, amplitude);
+      peaks.set(node.id, amplitude);
+      addMass(values, x, y, sigma, amplitude);
+      addMass(clusterBase, x, y, sigma * 1.45, amplitude * 0.16, "sum");
     }
+    for (let index3 = 0; index3 < values.length; index3++) values[index3] = Math.max(values[index3], Math.min(0.28, clusterBase[index3]));
     const degree = /* @__PURE__ */ new Map(), ridges = (this.activeEdges || []).filter((edge) => !edge.crossCommunity && edge.strength > 0.14 && points.has(edge.source) && points.has(edge.target)).sort((a2, b) => b.strength - a2.strength).filter((edge) => {
       const source = degree.get(edge.source) || 0, target = degree.get(edge.target) || 0;
       if (source >= 2 || target >= 2) return false;
@@ -73196,12 +73199,15 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       degree.set(edge.target, target + 1);
       return true;
     }).slice(0, 28), ridgeRadius = sigma * 0.58;
-    for (const edge of ridges) addRidge(points.get(edge.source), points.get(edge.target), ridgeRadius, 0.12 + Math.min(1, edge.strength) * 0.2);
+    for (const edge of ridges) {
+      const endpointPeak = Math.min(peaks.get(edge.source) || 0, peaks.get(edge.target) || 0);
+      addRidge(points.get(edge.source), points.get(edge.target), ridgeRadius, endpointPeak * (0.46 + Math.min(1, edge.strength) * 0.14));
+    }
     if (this.hasQuery && this.queryPresence > 0.04) {
       const [centerX, centerY] = this.coordinates(this.queryNode, width, height), center = { x: centerX, y: centerY }, directResults = [...points.values()].filter(({ node }) => node.matched && node.generation === 1).sort((first, second) => second.node.relevance - first.node.relevance).slice(0, 5);
-      for (const target of directResults) addRidge(center, target, sigma * 0.46, this.queryPresence * target.node.visibility * (0.07 + Math.max(0, Math.min(1, target.node.relevance)) * 0.11));
+      for (const target of directResults) addRidge(center, target, sigma * 0.46, this.queryPresence * (peaks.get(target.node.id) || 0) * 0.54);
       const supportMaximum = Math.max(0, ...values);
-      addMass(centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
+      addMass(values, centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
     }
     return { values, columns, rows, step };
   }
