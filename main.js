@@ -72872,6 +72872,7 @@ var SemanticMapCanvas = class {
   setHover(id2, notify = false) {
     if (id2 === this.hovered) return;
     this.hovered = id2;
+    this.updateDetail();
     this.draw();
     if (notify) this.options.onHover?.(id2);
   }
@@ -72890,7 +72891,7 @@ var SemanticMapCanvas = class {
     if (node) this.options.onOpen?.(node.id);
   }
   updateDetail() {
-    const node = this.byId.get(this.selected);
+    const node = this.byId.get(this.hovered) || this.byId.get(this.selected);
     if (!node) {
       this.detail.hide();
       return;
@@ -72968,6 +72969,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     this.queryNode.layoutX = 0;
     this.queryNode.layoutY = 0;
+    this.lastTerrainAt = 0;
     this.startSimulation(0.82);
   }
   setupViewportControls() {
@@ -72997,6 +72999,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.panX = relativeX - (relativeX - this.panX) * factor;
     this.panY = relativeY - (relativeY - this.panY) * factor;
     this.userZoom = next;
+    this.lastTerrainAt = 0;
     this.draw();
   }
   zoomBy(factor) {
@@ -73006,6 +73009,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.userZoom = 1;
     this.panX = 0;
     this.panY = 0;
+    this.lastTerrainAt = 0;
     this.draw();
   }
   wheel(event) {
@@ -73014,6 +73018,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.setUserZoom(this.userZoom * factor, event.clientX - rect.left, event.clientY - rect.top);
   }
   setGraph(center, values, edges = []) {
+    this.lastTerrainAt = 0;
     const previous = this.byId || /* @__PURE__ */ new Map(), previousQuery = this.queryNode, hasQuery = Boolean(center?.hasQuery), semanticScores = values.map((value) => Number(value.semanticScore || 0)), low = semanticScores.length ? Math.min(...semanticScores) : 0, high = semanticScores.length ? Math.max(...semanticScores) : 1, spread = Math.max(1e-3, high - low);
     this.center = center;
     this.edges = edges;
@@ -73159,6 +73164,94 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const scale = Math.max(20, Math.min(width, height) / 2 - 68) * this.cameraZoom * this.userZoom;
     return [width / 2 + (Number(node.x) - this.cameraX) * scale + this.panX, height / 2 + (Number(node.y) - this.cameraY) * scale + this.panY];
   }
+  semanticDensityField(width, height) {
+    const step = 6, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
+      const [x, y] = this.coordinates(node, width, height);
+      return [node.id, { node, x, y }];
+    })), zoom = Math.max(0.65, Math.min(2.4, this.cameraZoom * this.userZoom)), sigma = Math.max(20, Math.min(54, 27 * zoom));
+    const addMass = (x, y, radius, amplitude) => {
+      const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
+      for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
+        const dx = column * step - x, dy = row * step - y;
+        values[row * columns + column] += amplitude * Math.exp(-(dx * dx + dy * dy) / divisor);
+      }
+    };
+    for (const { node, x, y } of points.values()) {
+      const generationWeight = node.generation === 1 ? 1 : node.generation === 2 ? 0.58 : 0.36, amplitude = node.visibility * generationWeight * (0.82 + Math.max(0, Math.min(1, node.relevance)) * 0.18);
+      addMass(x, y, sigma, amplitude);
+    }
+    const degree = /* @__PURE__ */ new Map(), ridges = (this.activeEdges || []).filter((edge) => !edge.crossCommunity && edge.strength > 0.14 && points.has(edge.source) && points.has(edge.target)).sort((a2, b) => b.strength - a2.strength).filter((edge) => {
+      const source = degree.get(edge.source) || 0, target = degree.get(edge.target) || 0;
+      if (source >= 2 || target >= 2) return false;
+      degree.set(edge.source, source + 1);
+      degree.set(edge.target, target + 1);
+      return true;
+    }).slice(0, 28), ridgeRadius = sigma * 0.58;
+    for (const edge of ridges) {
+      const source = points.get(edge.source), target = points.get(edge.target), reach = ridgeRadius * 3, left = Math.max(0, Math.floor((Math.min(source.x, target.x) - reach) / step)), right = Math.min(columns - 1, Math.ceil((Math.max(source.x, target.x) + reach) / step)), top = Math.max(0, Math.floor((Math.min(source.y, target.y) - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((Math.max(source.y, target.y) + reach) / step)), dx = target.x - source.x, dy = target.y - source.y, lengthSquared = Math.max(1, dx * dx + dy * dy), amplitude = 0.12 + Math.min(1, edge.strength) * 0.2, divisor = 2 * ridgeRadius * ridgeRadius;
+      for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
+        const x = column * step, y = row * step, along = Math.max(0, Math.min(1, ((x - source.x) * dx + (y - source.y) * dy) / lengthSquared)), nearestX = source.x + dx * along, nearestY = source.y + dy * along, distanceX = x - nearestX, distanceY = y - nearestY, taper = Math.sin(Math.PI * along) ** 0.6;
+        values[row * columns + column] += amplitude * taper * Math.exp(-(distanceX * distanceX + distanceY * distanceY) / divisor);
+      }
+    }
+    return { values, columns, rows, step };
+  }
+  paintDensityTerrain(ctx, width, height, colors2) {
+    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= 48;
+    if (refresh) {
+      const field = this.semanticDensityField(width, height), maximum = Math.max(0, ...field.values);
+      if (!this.terrainCanvas) this.terrainCanvas = document.createElement("canvas");
+      if (!this.terrainMask) this.terrainMask = document.createElement("canvas");
+      const terrain = this.terrainCanvas, mask = this.terrainMask;
+      terrain.width = Math.ceil(width);
+      terrain.height = Math.ceil(height);
+      mask.width = field.columns;
+      mask.height = field.rows;
+      const terrainContext = terrain.getContext("2d"), maskContext = mask.getContext("2d"), image = maskContext.createImageData(field.columns, field.rows);
+      maskContext.fillStyle = colors2.normal;
+      maskContext.fillRect(0, 0, 1, 1);
+      const sample = maskContext.getImageData(0, 0, 1, 1).data;
+      for (let index3 = 0; index3 < field.values.length; index3++) {
+        const alpha2 = Math.round(Math.max(0, Math.min(0.055, (field.values[index3] - 0.14) / 3 * 0.055)) * 255), offset2 = index3 * 4;
+        image.data[offset2] = sample[0];
+        image.data[offset2 + 1] = sample[1];
+        image.data[offset2 + 2] = sample[2];
+        image.data[offset2 + 3] = alpha2;
+      }
+      maskContext.putImageData(image, 0, 0);
+      terrainContext.clearRect(0, 0, terrain.width, terrain.height);
+      if (maximum >= 0.16) {
+        terrainContext.imageSmoothingEnabled = true;
+        terrainContext.drawImage(mask, 0, 0, field.columns, field.rows, 0, 0, field.columns * field.step, field.rows * field.step);
+        const levels = [0.35, 0.62, 0.95, 1.35, 1.9, 2.6];
+        levels.forEach((level, index3) => {
+          if (maximum < level) return;
+          this.traceDensityLevel(terrainContext, field, level);
+          terrainContext.strokeStyle = colors2.muted;
+          terrainContext.globalAlpha = 0.14 + index3 * 0.035;
+          terrainContext.lineWidth = index3 === levels.length - 1 ? 1.05 : 0.72;
+          terrainContext.stroke();
+        });
+        terrainContext.globalAlpha = 1;
+      }
+      this.lastTerrainAt = now;
+      this.terrainColorKey = colorKey;
+    }
+    if (this.terrainCanvas) ctx.drawImage(this.terrainCanvas, 0, 0, width, height);
+  }
+  traceDensityLevel(ctx, field, level) {
+    const { values, columns, rows, step } = field, interpolate = (first, second) => Math.max(0, Math.min(1, Math.abs(second - first) < 1e-6 ? 0.5 : (level - first) / (second - first)));
+    ctx.beginPath();
+    for (let row = 0; row < rows - 1; row++) for (let column = 0; column < columns - 1; column++) {
+      const topLeft = values[row * columns + column], topRight = values[row * columns + column + 1], bottomRight = values[(row + 1) * columns + column + 1], bottomLeft = values[(row + 1) * columns + column], mask = (topLeft >= level ? 1 : 0) | (topRight >= level ? 2 : 0) | (bottomRight >= level ? 4 : 0) | (bottomLeft >= level ? 8 : 0);
+      if (mask === 0 || mask === 15) continue;
+      const x = column * step, y = row * step, points = { top: [x + interpolate(topLeft, topRight) * step, y], right: [x + step, y + interpolate(topRight, bottomRight) * step], bottom: [x + interpolate(bottomLeft, bottomRight) * step, y + step], left: [x, y + interpolate(topLeft, bottomLeft) * step] }, centerHigh = (topLeft + topRight + bottomRight + bottomLeft) / 4 >= level, pairs3 = mask === 1 || mask === 14 ? [["left", "top"]] : mask === 2 || mask === 13 ? [["top", "right"]] : mask === 3 || mask === 12 ? [["left", "right"]] : mask === 4 || mask === 11 ? [["right", "bottom"]] : mask === 6 || mask === 9 ? [["top", "bottom"]] : mask === 7 || mask === 8 ? [["left", "bottom"]] : mask === 5 ? centerHigh ? [["top", "right"], ["bottom", "left"]] : [["left", "top"], ["right", "bottom"]] : centerHigh ? [["left", "top"], ["right", "bottom"]] : [["top", "right"], ["bottom", "left"]];
+      for (const [first, second] of pairs3) {
+        ctx.moveTo(...points[first]);
+        ctx.lineTo(...points[second]);
+      }
+    }
+  }
   draw() {
     const rect = this.canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -73170,13 +73263,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     ctx.clearRect(0, 0, rect.width, rect.height);
     const colors2 = this.colors(), focused = this.hovered || this.selected, queryFocused = focused === "__query__", labelNodes = /* @__PURE__ */ new Set();
     this.hit = [];
-    const rankedSource = this.hasQuery && !this.pendingQuery ? this.nodes.filter((node) => node.matched) : this.nodes, ranked = [...rankedSource].sort((a2, b) => this.targetQueryPresence && !this.pendingQuery ? b.relevance - a2.relevance : b.fileScale - a2.fileScale);
-    for (const node of ranked.slice(0, this.targetQueryPresence && !this.pendingQuery ? 7 : 5)) labelNodes.add(node.id);
-    if (focused && !queryFocused) {
-      labelNodes.add(focused);
-      const related = (this.activeEdges || []).filter((edge) => edge.source === focused || edge.target === focused).sort((a2, b) => b.overall - a2.overall).slice(0, 5);
-      for (const edge of related) labelNodes.add(edge.source === focused ? edge.target : edge.source);
-    }
+    this.paintDensityTerrain(ctx, rect.width, rect.height, colors2);
+    if (focused && !queryFocused) labelNodes.add(focused);
     const labels = [], ordered = this.hasQuery && !this.pendingQuery ? [...this.nodes.filter((node) => !node.matched), ...this.nodes.filter((node) => node.matched)] : this.nodes;
     for (const node of ordered) {
       if (node.visibility < 0.012) continue;
@@ -73186,14 +73274,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();
-      if (node.matched && (node.accent > 0.01 || active)) {
-        ctx.globalAlpha = opacity * Math.max(node.accent, active ? 1 : 0);
-        ctx.strokeStyle = colors2.accent;
-        ctx.lineWidth = active ? 2 : 1;
-        ctx.beginPath();
-        ctx.arc(x, y, radius + 1.5, 0, Math.PI * 2);
-        ctx.stroke();
-      }
       if (labelNodes.has(node.id) && (node.matched || !this.hasQuery || this.pendingQuery)) labels.push({ node, x, y, radius, active, opacity });
       if (node.matched || !this.hasQuery || this.pendingQuery) this.hit.push({ node, x, y, radius: radius + 9 });
     }
