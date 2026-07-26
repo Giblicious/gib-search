@@ -116,7 +116,7 @@ for (const relativePath of codeFiles) {
   if (/\.(?:js|mjs)$/.test(relativePath)) execFileSync(process.execPath, ['--check', path.join(root, relativePath)], { stdio: 'inherit' });
 }
 
-const { MobileSearchRuntime, buildHighlightCandidates } = await import(pathToFileURL(path.join(root, 'src', 'mobile-runtime.js')).href);
+const { MobileSearchRuntime, buildHighlightCandidates, conceptLabelCandidates } = await import(pathToFileURL(path.join(root, 'src', 'mobile-runtime.js')).href);
 const desktopBatchSizes = [];
 const batchRuntime = new MobileSearchRuntime({ isMobile: false, manifest: { id: 'gib-search' }, app: { vault: { adapter: { getBasePath: () => 'batch-test' }, configDir: '.obsidian', getName: () => 'batch-test' } }, desktopEmbedder: { embedBatch: async texts => { desktopBatchSizes.push(texts.length); return texts.map(() => new Float32Array(384)); } } });
 const batchedVectors = await batchRuntime.embedBatch(Array.from({ length: 19 }, (_, index) => `passage ${index}`), false, 8);
@@ -130,6 +130,7 @@ const coverage = buildHighlightCandidates('Topics/Agency and Parenting.md', { he
 const coveragePhrases = new Set(coverage.map(item => item.phrase.toLowerCase()));
 for (const phrase of ['teach the child', 'raising children', 'divine sovereignty', 'agency', 'determinism', 'desire']) if (!coveragePhrases.has(phrase)) throw new Error(`Indexed highlighting missed ${phrase}: ${[...coveragePhrases].join(', ')}`);
 for (const phrase of coveragePhrases) if (phrase === 'idea' || phrase === 'thought') throw new Error(`Generic highlight candidate leaked into the index: ${phrase}`);
+const garmentLabels = conceptLabelCandidates('During the 19th-century men wore ceremonial clothing. Temple covenants explain the sacred garment.', 'mormon garment').map(item => item.phrase.toLowerCase()); if (garmentLabels.includes('19th-century men') || !garmentLabels.includes('temple covenants')) throw new Error(`Concept labels accepted an incidental demographic phrase or missed a coherent noun phrase: ${garmentLabels.join(', ')}`);
 const mockPlugin = { isMobile: false, manifest: { id: 'gib-search' }, app: { vault: { adapter: { getBasePath: () => 'test' }, configDir: '.obsidian', getName: () => 'test' } } };
 const typoRuntime = new MobileSearchRuntime(mockPlugin); typoRuntime.meta = [{ file: '02 - Notes/Evolution.md', heading: 'Human evolution', text: 'Notes about evolution and natural selection.' }]; typoRuntime.refreshLexical(); if (typoRuntime.correctQuery('evoltion') !== 'evolution') throw new Error('Single-edit vault term correction failed'); if (typoRuntime.correctQuery('evolution') !== 'evolution') throw new Error('Correct vault terms must not be changed'); let embeddedTypo = ''; typoRuntime.embed = async value => { embeddedTypo = value; return new Float32Array(384); }; await typoRuntime.queryVector('evoltion'); if (embeddedTypo !== 'evolution') throw new Error(`Semantic query embedded the uncorrected typo: ${embeddedTypo}`);
 const highlighter = new MobileSearchRuntime(mockPlugin); const highlightCandidates = [{ phrase: 'agency', field: 'body', sentenceId: 0, start: 0, end: 0, words: 1, hasNoun: true, hasExpression: false, adjectiveOnly: false, quality: .04 }, { phrase: 'free will', field: 'body', sentenceId: 0, start: 2, end: 3, words: 2, hasNoun: true, hasExpression: false, adjectiveOnly: false, quality: .09 }];
