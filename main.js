@@ -72917,6 +72917,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.alpha = 0;
     this.queryPresence = 0;
     this.targetQueryPresence = 0;
+    this.queryMarkerFocus = 0;
     this.cameraX = 0;
     this.cameraY = 0;
     this.cameraZoom = 1;
@@ -73079,6 +73080,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   physicsStep(alpha2) {
     this.queryPresence += (this.targetQueryPresence - this.queryPresence) * 0.075;
+    this.queryMarkerFocus += ((this.hovered === "__query__" ? 1 : 0) - this.queryMarkerFocus) * 0.18;
     for (const node of this.nodes) {
       node.relevance += (node.targetRelevance - node.relevance) * 0.075;
       node.visibility += (node.targetVisibility - node.visibility) * 0.09;
@@ -73284,42 +73286,83 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (labelNodes.has(node.id) && (node.matched || !this.hasQuery || this.pendingQuery)) labels.push({ node, x, y, radius, active, opacity });
       if (node.matched || !this.hasQuery || this.pendingQuery) this.hit.push({ node, x, y, radius: radius + 9 });
     }
-    this.drawLabels(ctx, labels, colors2, rect.width, rect.height);
     if (this.queryPresence > 0.02) {
-      const [queryX, queryY] = this.coordinates(this.queryNode, rect.width, rect.height);
-      ctx.globalAlpha = this.queryPresence;
-      ctx.fillStyle = colors2.background;
-      ctx.strokeStyle = colors2.accent;
-      ctx.lineWidth = 2;
+      const [queryX, queryY] = this.coordinates(this.queryNode, rect.width, rect.height), active = queryFocused, marker = 4.5 + this.queryMarkerFocus * 1.2, tickInner = marker + 3.5, tickOuter = tickInner + 3 + this.queryMarkerFocus * 1.5;
+      ctx.globalAlpha = this.queryPresence * 0.42;
+      ctx.strokeStyle = colors2.muted;
+      ctx.lineWidth = 0.8;
       ctx.beginPath();
-      ctx.arc(queryX, queryY, 9, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.moveTo(queryX - tickOuter, queryY);
+      ctx.lineTo(queryX - tickInner, queryY);
+      ctx.moveTo(queryX + tickInner, queryY);
+      ctx.lineTo(queryX + tickOuter, queryY);
+      ctx.moveTo(queryX, queryY - tickOuter);
+      ctx.lineTo(queryX, queryY - tickInner);
+      ctx.moveTo(queryX, queryY + tickInner);
+      ctx.lineTo(queryX, queryY + tickOuter);
       ctx.stroke();
-      this.label(ctx, this.center?.label || "", queryX, queryY + 27, colors2, true, true);
-      this.hit.push({ node: this.queryNode, x: queryX, y: queryY, radius: 17 });
+      ctx.globalAlpha = this.queryPresence;
+      ctx.fillStyle = colors2.accent;
+      ctx.beginPath();
+      ctx.moveTo(queryX, queryY - marker);
+      ctx.lineTo(queryX + marker * 0.72, queryY);
+      ctx.lineTo(queryX, queryY + marker);
+      ctx.lineTo(queryX - marker * 0.72, queryY);
+      ctx.closePath();
+      ctx.fill();
+      labels.push({ node: this.queryNode, x: queryX, y: queryY, radius: tickOuter, active, opacity: this.queryPresence, query: true });
+      this.hit.push({ node: this.queryNode, x: queryX, y: queryY, radius: 16 });
     }
+    this.drawLabels(ctx, labels, colors2, rect.width, rect.height);
     ctx.globalAlpha = 1;
   }
   drawLabels(ctx, labels, colors2, width, height) {
-    const occupied = [];
-    for (const item of labels.sort((a2, b) => Number(b.active) - Number(a2.active) || b.node.relevance - a2.node.relevance)) {
-      const text = String(item.node.label || ""), clipped = text.length > 28 ? `${text.slice(0, 27)}\u2026` : text;
-      ctx.font = `${item.active ? 600 : 500} 11px -apple-system, BlinkMacSystemFont, sans-serif`;
-      const textWidth = ctx.measureText(clipped).width, candidates = [[item.x + item.radius + 5, item.y + 4, "left"], [item.x - item.radius - 5, item.y + 4, "right"], [item.x, item.y - item.radius - 7, "center"], [item.x, item.y + item.radius + 14, "center"]];
+    const occupied = [], clip = (value, length2) => {
+      const text = String(value || "");
+      return text.length > length2 ? `${text.slice(0, length2 - 1)}\u2026` : text;
+    };
+    for (const item of labels.sort((a2, b) => Number(b.query) - Number(a2.query) || Number(b.active) - Number(a2.active) || Number(b.node.relevance || 0) - Number(a2.node.relevance || 0))) {
+      const title = clip(item.node.label, item.query ? 34 : 30), folder = !item.query && item.active ? item.node.id.includes("/") ? item.node.id.slice(0, item.node.id.lastIndexOf("/")) : "Vault" : "", subtitle = item.query && item.active ? this.center?.id ? "Local note" : "Search origin" : folder ? clip(folder, 38) : "";
+      ctx.font = `${item.query || item.active ? 600 : 500} 11px -apple-system, BlinkMacSystemFont, sans-serif`;
+      const titleWidth = ctx.measureText(title).width;
+      ctx.font = `500 9px -apple-system, BlinkMacSystemFont, sans-serif`;
+      const subtitleWidth = subtitle ? ctx.measureText(subtitle).width : 0, textWidth = Math.max(titleWidth, subtitleWidth), textHeight = subtitle ? 26 : 15, near = item.radius + 6, far = item.radius + 17, candidates = [[item.x + near, item.y + 4, "left", false], [item.x - near, item.y + 4, "right", false], [item.x, item.y - near - 3, "center", false], [item.x, item.y + near + 11, "center", false], [item.x + far, item.y - 8, "left", true], [item.x - far, item.y - 8, "right", true]];
       let chosen = null;
-      for (const [x, y, align] of candidates) {
-        const left = align === "left" ? x : align === "right" ? x - textWidth : x - textWidth / 2, box = { left: left - 2, right: left + textWidth + 2, top: y - 11, bottom: y + 3 };
-        if (box.left < 4 || box.right > width - 4 || box.top < 4 || box.bottom > height - 4 || occupied.some((other) => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top)) continue;
-        chosen = { x, y, align, box };
+      for (const [x, y, align, leader] of candidates) {
+        const left = align === "left" ? x : align === "right" ? x - textWidth : x - textWidth / 2, box = { left: left - 3, right: left + textWidth + 3, top: y - 12, bottom: y - 12 + textHeight };
+        if (box.left < 5 || box.right > width - 5 || box.top < 5 || box.bottom > height - 5 || occupied.some((other) => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top)) continue;
+        chosen = { x, y, align, box, leader };
         break;
       }
       if (!chosen) continue;
       occupied.push(chosen.box);
-      ctx.globalAlpha = Math.max(0.35, item.opacity);
-      ctx.fillStyle = item.active ? colors2.normal : colors2.muted;
+      if (chosen.leader) {
+        const anchorX = chosen.align === "left" ? chosen.box.left : chosen.box.right, anchorY = Math.max(chosen.box.top + 4, Math.min(chosen.box.bottom - 4, item.y)), dx = anchorX - item.x, dy = anchorY - item.y, distance = Math.max(1, Math.hypot(dx, dy));
+        ctx.globalAlpha = Math.max(0.16, item.opacity * 0.3);
+        ctx.strokeStyle = colors2.muted;
+        ctx.lineWidth = 0.7;
+        ctx.beginPath();
+        ctx.moveTo(item.x + dx / distance * (item.radius + 2), item.y + dy / distance * (item.radius + 2));
+        ctx.lineTo(anchorX - dx / distance * 3, anchorY - dy / distance * 3);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = Math.max(0.38, item.opacity);
+      ctx.fillStyle = item.query || item.active ? colors2.normal : colors2.muted;
       ctx.textAlign = chosen.align;
-      ctx.fillText(clipped, chosen.x, chosen.y);
+      ctx.font = `${item.query || item.active ? 600 : 500} 11px -apple-system, BlinkMacSystemFont, sans-serif`;
+      ctx.fillText(title, chosen.x, chosen.y);
+      if (subtitle) {
+        ctx.globalAlpha = Math.max(0.28, item.opacity * 0.72);
+        ctx.fillStyle = colors2.muted;
+        ctx.font = `500 9px -apple-system, BlinkMacSystemFont, sans-serif`;
+        ctx.fillText(subtitle, chosen.x, chosen.y + 12);
+      }
     }
+  }
+  setHover(id2, notify = false) {
+    const queryChanged = this.hovered === "__query__" !== (id2 === "__query__");
+    super.setHover(id2, notify);
+    if (queryChanged) this.startSimulation(0.18);
   }
   pointerDown(event) {
     if (event.pointerType === "mouse" && event.button !== 0) return;
