@@ -72488,7 +72488,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     });
     const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
-      const weight = Number(edge.affinity ?? edge.score ?? overallLow), overall = (weight - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0))), crossCommunity = !hasQuery && communityById.get(edge.source) !== communityById.get(edge.target), baseStrength = edge.bridge ? 0.1 : overall * (0.65 + Math.max(0, residual) * 0.35), strength = crossCommunity ? baseStrength * 0.06 : baseStrength;
+      const weight = Number(edge.affinity ?? edge.score ?? overallLow), overall = (weight - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0))), sourceCommunity = communityById.get(edge.source), targetCommunity = communityById.get(edge.target), crossCommunity = sourceCommunity !== void 0 && targetCommunity !== void 0 && sourceCommunity !== targetCommunity, baseStrength = edge.bridge ? 0.1 : overall * (0.62 + Math.max(0, residual) * 0.48), strength = crossCommunity ? baseStrength * 0.08 : baseStrength;
       return { ...edge, overall, residual, strength, crossCommunity };
     }).filter((edge) => edge.strength > 8e-3);
     this.relationships = new Map(this.activeEdges.map((edge) => [mapEdgeKey(edge.source, edge.target), edge]));
@@ -72546,7 +72546,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const distance = Math.max(0.025, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const layerStrength = !this.hasQuery || this.pendingQuery ? 1.45 : 1.35, desired = 0.055 + (1 - edge.overall) * 0.46 + Math.max(0, -edge.residual) * 0.13, spring = (distance - desired) * (32e-4 + edge.strength * 0.013) * alpha2 * layerStrength, contrast = -Math.max(0, -edge.residual) * 7e-3 * alpha2 * layerStrength, force = spring + contrast;
+      const layerStrength = !this.hasQuery || this.pendingQuery ? 1.45 : 1.55, residualDistance = (1 - edge.residual) * 0.11, desired = 0.045 + (1 - edge.overall) * 0.34 + residualDistance, spring = (distance - desired) * (38e-4 + edge.strength * 0.017) * alpha2 * layerStrength, contrast = -Math.max(0, -edge.residual) * 9e-3 * alpha2 * layerStrength, force = spring + contrast;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -72600,10 +72600,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const distance = Math.max(0.025, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const desired = 0.07 + (1 - node.relevance) * 0.48, force = (distance - desired) * (3e-3 + node.relevance * 0.011) * alpha2 * this.queryPresence;
+      const desired = 0.065 + (1 - node.relevance) * 0.58, force = (distance - desired) * (28e-4 + node.relevance * 85e-4) * alpha2 * this.queryPresence;
       if (query !== this.dragging) {
-        query.vx += dx * force * 0.24;
-        query.vy += dy * force * 0.24;
+        query.vx += dx * force * 0.18;
+        query.vy += dy * force * 0.18;
       }
       if (node !== this.dragging) {
         node.vx -= dx * force;
@@ -73091,15 +73091,15 @@ var SemanticSearchModal = class extends SuggestModal {
   }
   async updateMap() {
     if (!this.map || !this.plugin.settings.searchMapEnabled) return;
-    const version2 = ++this.mapVersion, query = this.lastQuery, results = this.mapResults.slice(0, 80);
+    const version2 = ++this.mapVersion, query = this.lastQuery, results = this.lastResults.slice(0, 80);
     this.map.setTitle("Semantic map");
     const indexable = this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path)), paths = indexable.map((file) => file.path), sizes = indexable.map((file) => Math.log1p(Number(file.stat?.size || 0))), sizeLow = sizes.length ? Math.min(...sizes) : 0, sizeHigh = sizes.length ? Math.max(...sizes) : 1, sizeSpread = Math.max(1e-3, sizeHigh - sizeLow), fileScale = new Map(indexable.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - sizeLow) / sizeSpread]));
-    const roots = results.map((result) => result.file), generations = query ? this.plugin.search.semanticGenerations(roots, this.mapGenerations, 5) : { nodes: [], edges: [] }, generationByFile = new Map(generations.nodes.map((node) => [node.id, node])), activeFiles = generations.nodes.map((node) => node.id), graph = await this.plugin.search.semanticStarfield(query, paths, activeFiles);
+    const roots = results.map((result) => result.file), generations = query ? this.plugin.search.semanticGenerations(roots, this.mapGenerations, 5) : { nodes: [], edges: [] }, generationByFile = new Map(generations.nodes.map((node) => [node.id, node])), activeFiles = generations.nodes.map((node) => node.id), graph = await this.plugin.search.semanticStarfield(query, query ? activeFiles : paths, activeFiles);
     if (version2 !== this.mapVersion) return;
     const byFile = new Map(results.map((result) => [result.file, result])), rankingScores = results.map((result) => Number(result.score || 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = generations.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
     this.map.setGraph({ label: query || "Search", hasQuery: Boolean(query), resultCount: results.length }, graph.nodes.map((node) => {
-      const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.score || 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.28, Math.min(0.68, Number(generation.relationScore || 0))) : semanticRelevance;
-      return { ...node, generation: generation?.generation || 1, matched: Boolean(generation), relevance: query ? result ? 0.72 + rankedRelevance * 0.28 : expandedRelevance : 0.5, fileScale: fileScale.get(node.id) ?? 0.35 };
+      const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.score || 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
+      return { ...node, generation: generation?.generation || 1, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : 0.5, fileScale: fileScale.get(node.id) ?? 0.35 };
     }), combinedEdges);
   }
   hoverResult(file) {
