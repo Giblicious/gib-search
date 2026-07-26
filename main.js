@@ -72932,13 +72932,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.queryMarkerFocus = 0;
     this.gaussianLookup = Float32Array.from({ length: 1025 }, (_2, index3) => Math.exp(-index3 / 1024 * 9));
     this.roadEdges = [];
-    this.roadRoutes = /* @__PURE__ */ new Map();
     this.roadIntroducedAt = /* @__PURE__ */ new Map();
-    this.roadsDirty = true;
-    this.lastRoadAt = 0;
-    this.roadWorkToken = 0;
-    this.roadWorkHandle = null;
-    this.roadWorkUsesIdle = false;
     this.roadAnimationFrame = null;
     this.cameraX = 0;
     this.cameraY = 0;
@@ -72993,7 +72987,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.queryNode.layoutX = 0;
     this.queryNode.layoutY = 0;
     this.lastTerrainAt = 0;
-    this.roadsDirty = true;
     this.startSimulation(0.82);
   }
   setupViewportControls() {
@@ -73024,7 +73017,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.panY = relativeY - (relativeY - this.panY) * factor;
     this.userZoom = next;
     this.lastTerrainAt = 0;
-    this.roadsDirty = true;
     this.draw();
   }
   zoomBy(factor) {
@@ -73035,7 +73027,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.panX = 0;
     this.panY = 0;
     this.lastTerrainAt = 0;
-    this.roadsDirty = true;
     this.draw();
   }
   wheel(event) {
@@ -73065,16 +73056,13 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.relationships = new Map(this.activeEdges.map((edge) => [mapEdgeKey(edge.source, edge.target), edge]));
     this.pendingQuery = false;
     this.byId = new Map(this.nodes.map((node) => [node.id, node]));
-    const validRoadEndpoint = (id2) => this.byId.has(id2) || id2 === center?.id, nextRoads = roads.filter((road) => validRoadEndpoint(road.source) && validRoadEndpoint(road.target)), nextKeys = new Set(nextRoads.map((road) => road.key || mapEdgeKey(road.source, road.target))), introduced = /* @__PURE__ */ new Map();
+    const validRoadEndpoint = (id2) => this.byId.has(id2) || id2 === center?.id, nextRoads = roads.filter((road) => validRoadEndpoint(road.source) && validRoadEndpoint(road.target)), introduced = /* @__PURE__ */ new Map();
     nextRoads.forEach((road) => {
       const key = road.key || mapEdgeKey(road.source, road.target);
-      if (this.roadIntroducedAt.has(key)) introduced.set(key, this.roadIntroducedAt.get(key));
+      introduced.set(key, this.roadIntroducedAt.get(key) ?? performance.now());
     });
-    this.cancelRoadWork();
     this.roadEdges = nextRoads;
     this.roadIntroducedAt = introduced;
-    this.roadRoutes = new Map([...this.roadRoutes].filter(([key]) => nextKeys.has(key)));
-    this.roadsDirty = true;
     this.selected = this.byId.has(this.selected) ? this.selected : null;
     this.hovered = this.byId.has(this.hovered) || this.hovered === "__query__" ? this.hovered : null;
     const activeCount = this.nodes.filter((node) => node.matched).length;
@@ -73334,283 +73322,49 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const [x, y] = this.coordinates(node, width, height);
     return { x, y, visibility: node.visibility };
   }
-  resampleRoad(points, count) {
-    if (points.length < 2) return points;
-    const cumulative = [0];
-    for (let index3 = 1; index3 < points.length; index3++) cumulative.push(cumulative[index3 - 1] + Math.hypot(points[index3].x - points[index3 - 1].x, points[index3].y - points[index3 - 1].y));
-    const total = cumulative[cumulative.length - 1] || 1, sampled = [];
-    let cursor = 1;
-    for (let index3 = 0; index3 < count; index3++) {
-      const distance = total * index3 / Math.max(1, count - 1);
-      while (cursor < cumulative.length - 1 && cumulative[cursor] < distance) cursor++;
-      const first = points[cursor - 1], second = points[cursor], span = Math.max(1e-3, cumulative[cursor] - cumulative[cursor - 1]), blend = (distance - cumulative[cursor - 1]) / span;
-      sampled.push({ x: first.x + (second.x - first.x) * blend, y: first.y + (second.y - first.y) * blend });
-    }
-    return sampled;
-  }
-  routeRoad(field, source, target, traffic = null) {
-    const { values, columns, rows, step } = field, clampColumn = (value) => Math.max(0, Math.min(columns - 1, Math.round(value / step))), clampRow = (value) => Math.max(0, Math.min(rows - 1, Math.round(value / step))), startColumn = clampColumn(source.x), startRow = clampRow(source.y), goalColumn = clampColumn(target.x), goalRow = clampRow(target.y), start2 = startRow * columns + startColumn, goal = goalRow * columns + goalColumn;
-    if (start2 === goal) return { points: [source, target], cells: [start2] };
-    const gridDistance = Math.hypot(goalColumn - startColumn, goalRow - startRow), padding = Math.max(8, Math.min(30, Math.ceil(gridDistance * 0.38))), minColumn = Math.max(0, Math.min(startColumn, goalColumn) - padding), maxColumn = Math.min(columns - 1, Math.max(startColumn, goalColumn) + padding), minRow = Math.max(0, Math.min(startRow, goalRow) - padding), maxRow = Math.min(rows - 1, Math.max(startRow, goalRow) + padding), scores = new Float64Array(values.length), previous = new Int32Array(values.length);
-    scores.fill(Infinity);
-    previous.fill(-1);
-    scores[start2] = 0;
-    const heap = [{ index: start2, priority: gridDistance }], push = (item) => {
-      heap.push(item);
-      let child = heap.length - 1;
-      while (child > 0) {
-        const parent = Math.floor((child - 1) / 2);
-        if (heap[parent].priority <= item.priority) break;
-        heap[child] = heap[parent];
-        child = parent;
-      }
-      heap[child] = item;
-    }, pop = () => {
-      const first = heap[0], last = heap.pop();
-      if (heap.length && last) {
-        let parent = 0;
-        heap[0] = last;
-        while (true) {
-          const left = parent * 2 + 1, right = left + 1;
-          if (left >= heap.length) break;
-          const child = right < heap.length && heap[right].priority < heap[left].priority ? right : left;
-          if (heap[child].priority >= heap[parent].priority) break;
-          [heap[parent], heap[child]] = [heap[child], heap[parent]];
-          parent = child;
-        }
-      }
-      return first;
-    }, directions = [[-1, -1, 1.414], [0, -1, 1], [1, -1, 1.414], [-1, 0, 1], [1, 0, 1], [-1, 1, 1.414], [0, 1, 1], [1, 1, 1.414]];
-    let reached = false, expansions = 0;
-    const expansionLimit = Math.min(18e3, (maxColumn - minColumn + 1) * (maxRow - minRow + 1));
-    while (heap.length && expansions++ < expansionLimit) {
-      const current = pop(), index3 = current.index;
-      if (index3 === goal) {
-        reached = true;
-        break;
-      }
-      const row = Math.floor(index3 / columns), column = index3 - row * columns, currentScore = scores[index3];
-      for (const [dx, dy, move] of directions) {
-        const nextColumn = column + dx, nextRow = row + dy;
-        if (nextColumn < minColumn || nextColumn > maxColumn || nextRow < minRow || nextRow > maxRow) continue;
-        const next = nextRow * columns + nextColumn, endpointDistance = Math.min(Math.hypot(nextColumn - startColumn, nextRow - startRow), Math.hypot(nextColumn - goalColumn, nextRow - goalRow)), gradeWeight = Math.min(1, endpointDistance / 4), grade = Math.abs(values[next] - values[index3]), elevation = Math.max(0, values[next] - 0.28), slopeCost = (grade * 88 + grade * grade * 210) * gradeWeight, corridor = Math.min(0.7, Number(traffic?.[next] || 0) * 0.24), leaving = Number(traffic?.[index3] || 0) > 0.5 && Number(traffic?.[next] || 0) < 0.2 ? 0.36 : 0, tentative = currentScore + (move + slopeCost + elevation * 0.035) * (1 - corridor) + leaving;
-        if (tentative >= scores[next]) continue;
-        scores[next] = tentative;
-        previous[next] = index3;
-        const heuristic = Math.hypot(goalColumn - nextColumn, goalRow - nextRow) * 0.72;
-        push({ index: next, priority: tentative + heuristic });
-      }
-    }
-    const raw = [], cells = [];
-    if (reached) for (let index3 = goal; index3 !== -1; index3 = previous[index3]) {
-      const row = Math.floor(index3 / columns), column = index3 - row * columns;
-      cells.push(index3);
-      raw.push({ x: column * step, y: row * step });
-      if (index3 === start2) break;
-    }
-    else {
-      const bend = Math.min(44, Math.hypot(target.x - source.x, target.y - source.y) * 0.22), dx = target.x - source.x, dy = target.y - source.y, length2 = Math.max(1, Math.hypot(dx, dy)), normalX = -dy / length2, normalY = dx / length2, steps = Math.max(2, Math.ceil(gridDistance));
-      for (let index3 = steps; index3 >= 0; index3--) {
-        const fraction = index3 / steps, curve = Math.sin(Math.PI * fraction) * bend, x = source.x + dx * fraction + normalX * curve, y = source.y + dy * fraction + normalY * curve, column = clampColumn(x), row = clampRow(y);
-        raw.push({ x, y });
-        cells.push(row * columns + column);
-      }
-    }
-    raw.reverse();
-    cells.reverse();
-    raw[0] = { x: source.x, y: source.y };
-    raw[raw.length - 1] = { x: target.x, y: target.y };
-    const simplify = (points) => {
-      if (points.length < 3) return points;
-      const first = points[0], last = points[points.length - 1], dx = last.x - first.x, dy = last.y - first.y, denominator = Math.max(1e-3, dx * dx + dy * dy);
-      let farthest = 0, split3 = 0;
-      for (let index3 = 1; index3 < points.length - 1; index3++) {
-        const point = points[index3], along = Math.max(0, Math.min(1, ((point.x - first.x) * dx + (point.y - first.y) * dy) / denominator)), distance = Math.hypot(point.x - (first.x + dx * along), point.y - (first.y + dy * along));
-        if (distance > farthest) {
-          farthest = distance;
-          split3 = index3;
-        }
-      }
-      if (farthest <= step * 1.25) return [first, last];
-      const left = simplify(points.slice(0, split3 + 1)), right = simplify(points.slice(split3));
-      return [...left.slice(0, -1), ...right];
+  paintSweepLinks(ctx, width, height, colors2) {
+    if (!this.roadEdges.length) return;
+    const positions = /* @__PURE__ */ new Map(), guides = /* @__PURE__ */ new Map(), endpoint = (id2) => {
+      if (positions.has(id2)) return positions.get(id2);
+      const point = this.roadEndpoint(id2, width, height);
+      if (point) positions.set(id2, point);
+      return point;
+    }, addGuide = (id2, x, y) => {
+      const guide = guides.get(id2) || { x: 0, y: 0, count: 0 };
+      guide.x += x;
+      guide.y += y;
+      guide.count++;
+      guides.set(id2, guide);
     };
-    let smooth = simplify(raw);
-    for (let pass = 0; pass < 3; pass++) {
-      const next = [smooth[0]];
-      for (let index3 = 0; index3 < smooth.length - 1; index3++) {
-        const first = smooth[index3], second = smooth[index3 + 1];
-        next.push({ x: first.x * 0.75 + second.x * 0.25, y: first.y * 0.75 + second.y * 0.25 }, { x: first.x * 0.25 + second.x * 0.75, y: first.y * 0.25 + second.y * 0.75 });
-      }
-      next.push(smooth[smooth.length - 1]);
-      smooth = next;
-    }
-    return { points: this.resampleRoad(smooth, Math.max(8, Math.min(14, Math.ceil(gridDistance / 6)))), cells };
-  }
-  cancelRoadWork() {
-    this.roadWorkToken++;
-    if (this.roadWorkHandle !== null) {
-      if (this.roadWorkUsesIdle && typeof window.cancelIdleCallback === "function") window.cancelIdleCallback(this.roadWorkHandle);
-      else window.clearTimeout(this.roadWorkHandle);
-    }
-    this.roadWorkHandle = null;
-  }
-  scheduleRoadWork(callback) {
-    if (typeof window.requestIdleCallback === "function") {
-      this.roadWorkUsesIdle = true;
-      this.roadWorkHandle = window.requestIdleCallback(callback, { timeout: 100 });
-    } else {
-      this.roadWorkUsesIdle = false;
-      this.roadWorkHandle = window.setTimeout(() => callback({ timeRemaining: () => 7, didTimeout: true }), 0);
-    }
-  }
-  depositRoadTraffic(field, traffic, cells, amount = 1) {
-    const { columns, rows } = field;
-    for (const cell of cells) {
-      const row = Math.floor(cell / columns), column = cell - row * columns;
-      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
-        const nextRow = row + dy, nextColumn = column + dx;
-        if (nextRow < 0 || nextRow >= rows || nextColumn < 0 || nextColumn >= columns) continue;
-        const distance = Math.hypot(dx, dy), weight = distance < 0.5 ? 1 : distance <= 1.5 ? 0.36 : distance <= 2.25 ? 0.12 : 0;
-        if (weight) traffic[nextRow * columns + nextColumn] += amount * weight;
-      }
-    }
-  }
-  beginRoadRouteRefresh(field, width, height) {
-    this.cancelRoadWork();
-    const token = this.roadWorkToken, degree = /* @__PURE__ */ new Map();
     for (const road of this.roadEdges) {
-      degree.set(road.source, (degree.get(road.source) || 0) + 1);
-      degree.set(road.target, (degree.get(road.target) || 0) + 1);
-    }
-    const queue = this.roadEdges.slice(0, 72).sort((first, second) => (degree.get(second.source) || 0) + (degree.get(second.target) || 0) + Number(second.count || 0) * 0.25 - (degree.get(first.source) || 0) - (degree.get(first.target) || 0) - Number(first.count || 0) * 0.25), nextRoutes = /* @__PURE__ */ new Map(), traffic = new Float32Array(field.values.length), work = (deadline) => {
-      if (token !== this.roadWorkToken) return;
-      this.roadWorkHandle = null;
-      let processed = 0;
-      while (queue.length && processed < 1 && (processed === 0 || deadline.timeRemaining() > 3)) {
-        const road = queue.shift(), key = road.key || mapEdgeKey(road.source, road.target), source = this.roadEndpoint(road.source, width, height), target = this.roadEndpoint(road.target, width, height);
-        if (source && target) {
-          const routed = this.routeRoad(field, source, target, traffic), points = routed.points, cumulative = [0], previousRoute = this.roadRoutes.get(key), previousPoints = previousRoute ? this.resampleRoad(this.adjustedRoadPoints(previousRoute, source, target), points.length) : null;
-          this.depositRoadTraffic(field, traffic, routed.cells, Math.max(1, Number(road.count || 1)));
-          for (let index3 = 1; index3 < points.length; index3++) cumulative.push(cumulative[index3 - 1] + Math.hypot(points[index3].x - points[index3 - 1].x, points[index3].y - points[index3 - 1].y));
-          nextRoutes.set(key, { road, points, cells: routed.cells, cumulative, total: cumulative[cumulative.length - 1] || 1, source, target, previousPoints, transitionAt: performance.now() });
-          if (!this.roadIntroducedAt.has(key)) this.roadIntroducedAt.set(key, performance.now());
-        }
-        processed++;
-      }
-      this.roadRoutes = new Map([...this.roadRoutes, ...nextRoutes]);
-      this.draw();
-      if (queue.length) this.scheduleRoadWork(work);
-      else {
-        this.roadTrafficField = traffic;
-        this.lastRoadAt = performance.now();
-      }
-    };
-    this.roadsDirty = false;
-    this.scheduleRoadWork(work);
-  }
-  adjustedRoadPoints(route, source, target) {
-    return route.points.map((point, index3) => {
-      const fraction = route.cumulative[index3] / route.total;
-      return { x: point.x + (source.x - route.source.x) * (1 - fraction) + (target.x - route.target.x) * fraction, y: point.y + (source.y - route.source.y) * (1 - fraction) + (target.y - route.target.y) * fraction };
-    });
-  }
-  rebuildRoadTrafficField(field, width, height) {
-    const traffic = new Float32Array(field.values.length), { columns, rows, step } = field, clampCell = (point) => {
-      const column = Math.max(0, Math.min(columns - 1, Math.round(point.x / step))), row = Math.max(0, Math.min(rows - 1, Math.round(point.y / step)));
-      return row * columns + column;
-    };
-    for (const route of this.roadRoutes.values()) {
-      const source = this.roadEndpoint(route.road.source, width, height), target = this.roadEndpoint(route.road.target, width, height);
+      const source = endpoint(road.source), target = endpoint(road.target);
       if (!source || !target) continue;
-      const points = this.adjustedRoadPoints(route, source, target), cells = /* @__PURE__ */ new Set([clampCell(points[0])]);
-      for (let index3 = 1; index3 < points.length; index3++) {
-        const first = points[index3 - 1], second = points[index3], distance = Math.hypot(second.x - first.x, second.y - first.y), samples = Math.max(1, Math.ceil(distance / Math.max(2, step * 0.7)));
-        for (let sample = 1; sample <= samples; sample++) {
-          const blend = sample / samples;
-          cells.add(clampCell({ x: first.x + (second.x - first.x) * blend, y: first.y + (second.y - first.y) * blend }));
-        }
-      }
-      route.liveCells = [...cells];
-      this.depositRoadTraffic(field, traffic, route.liveCells, Math.max(1, Number(route.road.count || 1)));
+      const dx = target.x - source.x, dy = target.y - source.y, distance = Math.max(1, Math.hypot(dx, dy));
+      addGuide(road.source, dx / distance, dy / distance);
+      addGuide(road.target, -dx / distance, -dy / distance);
     }
-    this.roadTrafficField = traffic;
-    for (const route of this.roadRoutes.values()) {
-      const cells = route.liveCells || [], own = Math.max(1, Number(route.road.count || 1)), shared = cells.length ? cells.reduce((sum, cell) => sum + Math.max(0, traffic[cell] - own), 0) / cells.length : 0;
-      route.networkWeight = shared;
-    }
-  }
-  roadPointAt(points, fraction) {
-    const lengths = [0];
-    for (let index3 = 1; index3 < points.length; index3++) lengths.push(lengths[index3 - 1] + Math.hypot(points[index3].x - points[index3 - 1].x, points[index3].y - points[index3 - 1].y));
-    const target = (lengths[lengths.length - 1] || 1) * fraction;
-    for (let index3 = 1; index3 < points.length; index3++) if (lengths[index3] >= target) {
-      const span = Math.max(1e-3, lengths[index3] - lengths[index3 - 1]), blend = (target - lengths[index3 - 1]) / span, first = points[index3 - 1], second = points[index3];
-      return { x: first.x + (second.x - first.x) * blend, y: first.y + (second.y - first.y) * blend, angle: Math.atan2(second.y - first.y, second.x - first.x) };
-    }
-    const last = points[points.length - 1], before2 = points[Math.max(0, points.length - 2)];
-    return { ...last, angle: Math.atan2(last.y - before2.y, last.x - before2.x) };
-  }
-  traceRoad(ctx, points, progress) {
-    if (points.length < 2 || progress <= 0) return false;
-    let total = 0;
-    for (let index3 = 1; index3 < points.length; index3++) total += Math.hypot(points[index3].x - points[index3 - 1].x, points[index3].y - points[index3 - 1].y);
-    const visibleLength = total * progress, visible = [points[0]];
-    let walked = 0;
-    for (let index3 = 1; index3 < points.length; index3++) {
-      const first = points[index3 - 1], second = points[index3], length2 = Math.hypot(second.x - first.x, second.y - first.y);
-      if (walked + length2 <= visibleLength) visible.push(second);
-      else {
-        const blend = Math.max(0, Math.min(1, (visibleLength - walked) / Math.max(1e-3, length2)));
-        visible.push({ x: first.x + (second.x - first.x) * blend, y: first.y + (second.y - first.y) * blend });
-        break;
-      }
-      walked += length2;
-    }
-    if (visible.length < 2) return false;
-    ctx.beginPath();
-    ctx.moveTo(visible[0].x, visible[0].y);
-    for (let index3 = 0; index3 < visible.length - 1; index3++) {
-      const before2 = visible[Math.max(0, index3 - 1)], current = visible[index3], next = visible[index3 + 1], after2 = visible[Math.min(visible.length - 1, index3 + 2)], controlOne = { x: current.x + (next.x - before2.x) / 6, y: current.y + (next.y - before2.y) / 6 }, controlTwo = { x: next.x - (after2.x - current.x) / 6, y: next.y - (after2.y - current.y) / 6 };
-      ctx.bezierCurveTo(controlOne.x, controlOne.y, controlTwo.x, controlTwo.y, next.x, next.y);
-    }
-    return true;
-  }
-  paintRoads(ctx, width, height, colors2) {
-    if (!this.roadEdges.length || !this.lastTerrainField) return;
-    const now = performance.now(), moving = this.alpha >= 0.22 || this.dragging || this.panning;
-    if (this.roadsDirty && this.roadWorkHandle === null && !moving) this.beginRoadRouteRefresh(this.lastTerrainField, width, height);
-    if (this.roadTrafficRouteCount !== this.roadRoutes.size) {
-      this.rebuildRoadTrafficField(this.lastTerrainField, width, height);
-      this.roadTrafficRouteCount = this.roadRoutes.size;
-    }
-    const focused = this.hovered || this.selected, reduced = matchMedia("(prefers-reduced-motion: reduce)").matches, orderedRoutes = [...this.roadRoutes].sort((first, second) => Number(first[1].networkWeight || 0) - Number(second[1].networkWeight || 0));
+    const direction = (id2, fallbackX, fallbackY) => {
+      const guide = guides.get(id2), length2 = Math.hypot(guide?.x || 0, guide?.y || 0);
+      if (!guide || length2 < 0.08) return { x: fallbackX, y: fallbackY };
+      const x = fallbackX * 0.76 + guide.x / length2 * 0.24, y = fallbackY * 0.76 + guide.y / length2 * 0.24, blended = Math.max(1e-3, Math.hypot(x, y));
+      return { x: x / blended, y: y / blended };
+    }, focused = this.hovered || this.selected, reduced = matchMedia("(prefers-reduced-motion: reduce)").matches, now = performance.now();
     let animating = false;
-    for (const [key, route] of orderedRoutes) {
-      const source = this.roadEndpoint(route.road.source, width, height), target = this.roadEndpoint(route.road.target, width, height);
+    for (const road of this.roadEdges) {
+      const key = road.key || mapEdgeKey(road.source, road.target), source = endpoint(road.source), target = endpoint(road.target);
       if (!source || !target) continue;
-      const opacity = Math.min(source.visibility, target.visibility);
-      if (opacity < 0.035) continue;
-      const targetPoints = this.adjustedRoadPoints(route, source, target), transition = reduced ? 1 : Math.max(0, Math.min(1, (now - Number(route.transitionAt || 0)) / 220)), eased = 1 - (1 - transition) ** 3, points = route.previousPoints && transition < 1 ? targetPoints.map((point, index3) => ({ x: route.previousPoints[index3].x + (point.x - route.previousPoints[index3].x) * eased, y: route.previousPoints[index3].y + (point.y - route.previousPoints[index3].y) * eased })) : targetPoints, introduced = this.roadIntroducedAt.get(key) || now, fade = reduced ? 1 : Math.max(0, Math.min(1, (now - introduced) / 160));
-      if (transition < 1 || fade < 1) animating = true;
-      const active = focused === route.road.source || focused === route.road.target, trunk = Math.min(3.4, Math.sqrt(Math.max(0, Number(route.networkWeight || 0))) * 0.58);
-      ctx.globalAlpha = opacity * fade * (active ? 0.82 : 0.22 + Math.min(0.18, trunk * 0.045));
+      const visibility = Math.min(source.visibility, target.visibility);
+      if (visibility < 0.035) continue;
+      const dx = target.x - source.x, dy = target.y - source.y, distance = Math.max(1, Math.hypot(dx, dy)), directX = dx / distance, directY = dy / distance, sourceDirection = direction(road.source, directX, directY), targetDirection = direction(road.target, -directX, -directY), handle = Math.max(14, Math.min(68, distance * 0.27)), normalX = -directY, normalY = directX, sign = Math.sin(stableMapAngle(key)) >= 0 ? 1 : -1, bow = Math.min(22, distance * 0.07) * sign, controlOne = { x: source.x + sourceDirection.x * handle + normalX * bow, y: source.y + sourceDirection.y * handle + normalY * bow }, controlTwo = { x: target.x + targetDirection.x * handle + normalX * bow, y: target.y + targetDirection.y * handle + normalY * bow }, active = focused === road.source || focused === road.target, introduced = this.roadIntroducedAt.get(key) || now, fade = reduced ? 1 : Math.max(0, Math.min(1, (now - introduced) / 140));
+      if (fade < 1) animating = true;
+      ctx.globalAlpha = visibility * fade * (active ? 0.82 : focused ? 0.12 : 0.27);
       ctx.strokeStyle = active ? colors2.normal : colors2.muted;
-      ctx.lineWidth = (active ? 1.5 : 0.78) + trunk;
+      ctx.lineWidth = active ? 1.45 : 0.72 + Math.min(0.36, Math.log1p(Math.max(1, Number(road.count || 1))) * 0.14);
       ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      if (this.traceRoad(ctx, points, 1)) ctx.stroke();
-      const chevron = (fraction, reverse3 = false) => {
-        const point = this.roadPointAt(points, fraction), angle = point.angle + (reverse3 ? Math.PI : 0), size = active ? 3.8 : 3.1;
-        ctx.lineWidth = active ? 1.4 : 0.8;
-        ctx.beginPath();
-        ctx.moveTo(point.x - Math.cos(angle - 0.62) * size, point.y - Math.sin(angle - 0.62) * size);
-        ctx.lineTo(point.x, point.y);
-        ctx.lineTo(point.x - Math.cos(angle + 0.62) * size, point.y - Math.sin(angle + 0.62) * size);
-        ctx.stroke();
-      };
-      if (route.road.forward) chevron(0.62);
-      if (route.road.reverse) chevron(0.38, true);
+      ctx.beginPath();
+      ctx.moveTo(source.x, source.y);
+      ctx.bezierCurveTo(controlOne.x, controlOne.y, controlTwo.x, controlTwo.y, target.x, target.y);
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
     if (animating && this.roadAnimationFrame === null) this.roadAnimationFrame = requestAnimationFrame(() => {
@@ -73643,7 +73397,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const colors2 = this.colors(), focused = this.hovered || this.selected, queryFocused = focused === "__query__", labelNodes = /* @__PURE__ */ new Set();
     this.hit = [];
     this.paintDensityTerrain(ctx, rect.width, rect.height, colors2);
-    this.paintRoads(ctx, rect.width, rect.height, colors2);
+    this.paintSweepLinks(ctx, rect.width, rect.height, colors2);
     if (focused && !queryFocused) labelNodes.add(focused);
     const labels = [], ordered = this.hasQuery && !this.pendingQuery ? [...this.nodes.filter((node) => !node.matched), ...this.nodes.filter((node) => node.matched)] : this.nodes;
     for (const node of ordered) {
@@ -73811,7 +73565,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     if (!this.dragging || this.draggingPointer !== event.pointerId) return;
     this.dragging = null;
     this.draggingPointer = null;
-    this.roadsDirty = true;
     this.canvas.style.cursor = "grab";
     this.canvas.releasePointerCapture?.(event.pointerId);
     this.startSimulation(0.62);
@@ -73835,7 +73588,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     super.open(event);
   }
   destroy() {
-    this.cancelRoadWork();
     cancelAnimationFrame(this.roadAnimationFrame);
     cancelAnimationFrame(this.simulationFrame);
     cancelAnimationFrame(this.animationFrame);
@@ -74643,7 +74395,7 @@ var SearchSettings = class extends PluginSettingTab {
         await this.plugin.save();
       });
     });
-    new Setting(this.containerEl).setName("Show manual link roads").setDesc("Route wikilinks between visible notes across the semantic landscape.").addToggle((t3) => t3.setValue(this.plugin.settings.showWikilinks).onChange(async (value) => {
+    new Setting(this.containerEl).setName("Show manual links").setDesc("Draw smooth, gently bundled curves between visibly linked notes.").addToggle((t3) => t3.setValue(this.plugin.settings.showWikilinks).onChange(async (value) => {
       this.plugin.settings.showWikilinks = value;
       await this.plugin.save();
     }));
