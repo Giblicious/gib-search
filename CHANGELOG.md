@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.8
+
+- Replaces circular node-and-corridor envelopes with padded concave hulls around each relevance group.
+- Keeps every contour grounded in the qualifying note positions while allowing the boundary to shrink naturally between them.
+- Stitches raster contour fragments into complete paths and curve-smooths them for a cleaner topographic appearance.
+- Refines the six-line visual hierarchy from a quiet outer boundary to subtly stronger inner contours.
+
 ## 0.5.7
 
 - Removes the continuous elevation field and all synthetic terrain control points.

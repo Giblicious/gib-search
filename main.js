@@ -72137,22 +72137,97 @@ function pointSegmentDistance(x, y, source, target) {
   const amount = Math.max(0, Math.min(1, ((x - source.x) * dx + (y - source.y) * dy) / lengthSquared));
   return Math.hypot(x - (source.x + dx * amount), y - (source.y + dy * amount));
 }
+function pointInTriangle(x, y, triangle) {
+  const [a2, b, c2] = triangle, first = (x - b.x) * (a2.y - b.y) - (a2.x - b.x) * (y - b.y), second = (x - c2.x) * (b.y - c2.y) - (b.x - c2.x) * (y - c2.y), third = (x - a2.x) * (c2.y - a2.y) - (c2.x - a2.x) * (y - a2.y), hasNegative = first < 0 || second < 0 || third < 0, hasPositive = first > 0 || second > 0 || third > 0;
+  return !(hasNegative && hasPositive);
+}
+function distanceToTriangle(x, y, triangle) {
+  if (pointInTriangle(x, y, triangle)) return 0;
+  return Math.min(pointSegmentDistance(x, y, triangle[0], triangle[1]), pointSegmentDistance(x, y, triangle[1], triangle[2]), pointSegmentDistance(x, y, triangle[2], triangle[0]));
+}
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a2, b) => a2 - b), middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
 function buildSemanticEnvelopes(query, nodes, edges, size = 190) {
   const bodies = [query, ...nodes];
   if (!bodies.length) return null;
-  const extent = Math.min(1.12, Math.max(0.36, ...bodies.map((body) => Math.max(Math.abs(body.x), Math.abs(body.y)) + 0.19))), byId = new Map(nodes.map((node) => [node.id, node])), bands = [];
+  const padding = 0.105, extent = Math.min(1.12, Math.max(0.36, ...bodies.map((body) => Math.max(Math.abs(body.x), Math.abs(body.y)) + padding + 0.045))), bands = [];
   for (let band = 0; band < 6; band++) {
-    const threshold = band / 6, eligible = nodes.filter((node) => node.relevance >= threshold), eligibleIds = new Set(eligible.map((node) => node.id)), points = [query, ...eligible], connections = (edges || []).filter((edge) => edge.residual > 0 && eligibleIds.has(edge.source) && eligibleIds.has(edge.target)).map((edge) => ({ source: byId.get(edge.source), target: byId.get(edge.target), width: (0.045 + edge.strength * 0.04) * (1 - band * 0.055) })), radius = 0.145 - band * 9e-3, field = new Float32Array(size * size);
+    const threshold = band / 6, points = [query, ...nodes.filter((node) => node.relevance >= threshold)], nearest = points.map((point, index3) => Math.min(...points.filter((_2, other) => other !== index3).map((other) => Math.hypot(point.x - other.x, point.y - other.y)))), typicalSpacing = median(nearest.filter(Number.isFinite)), wrapReach = Math.max(padding * 2.35, Math.min(0.58, typicalSpacing * 2.15 || padding * 2.35));
+    const triangles = triangulateTerrain(points).filter((triangle) => {
+      const lengths = [Math.hypot(triangle[0].x - triangle[1].x, triangle[0].y - triangle[1].y), Math.hypot(triangle[1].x - triangle[2].x, triangle[1].y - triangle[2].y), Math.hypot(triangle[2].x - triangle[0].x, triangle[2].y - triangle[0].y)];
+      return Math.max(...lengths) <= wrapReach;
+    }), field = new Float32Array(size * size);
     for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
       const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
       let signedDistance = -Infinity;
-      for (const point of points) signedDistance = Math.max(signedDistance, radius - Math.hypot(x - point.x, y - point.y));
-      for (const connection of connections) signedDistance = Math.max(signedDistance, connection.width - pointSegmentDistance(x, y, connection.source, connection.target));
+      for (const point of points) signedDistance = Math.max(signedDistance, padding - Math.hypot(x - point.x, y - point.y));
+      for (const triangle of triangles) signedDistance = Math.max(signedDistance, padding - distanceToTriangle(x, y, triangle));
       field[row * size + column] = signedDistance;
     }
     bands.push(field);
   }
   return { size, bands, extent };
+}
+function contourSegments(field, size) {
+  const segments = [], edgePoint = (edge, column, row, corners) => {
+    const definitions = [[0, 1, column, row, column + 1, row], [1, 2, column + 1, row, column + 1, row + 1], [2, 3, column + 1, row + 1, column, row + 1], [3, 0, column, row + 1, column, row]], [first, second, x1, y1, x2, y2] = definitions[edge], amount = -corners[first] / (corners[second] - corners[first]);
+    return { x: x1 + (x2 - x1) * amount, y: y1 + (y2 - y1) * amount };
+  };
+  for (let row = 0; row < size - 1; row++) for (let column = 0; column < size - 1; column++) {
+    const corners = [field[row * size + column], field[row * size + column + 1], field[(row + 1) * size + column + 1], field[(row + 1) * size + column]], mask = corners.reduce((value, corner, index3) => value | (corner >= 0 ? 1 << index3 : 0), 0);
+    if (!mask || mask === 15) continue;
+    let pairs3 = { 1: [[3, 0]], 2: [[0, 1]], 3: [[3, 1]], 4: [[1, 2]], 6: [[0, 2]], 7: [[3, 2]], 8: [[2, 3]], 9: [[0, 2]], 11: [[1, 2]], 12: [[1, 3]], 13: [[0, 1]], 14: [[3, 0]] }[mask];
+    if (!pairs3) {
+      const centerInside = corners.reduce((sum, value) => sum + value, 0) >= 0;
+      pairs3 = mask === 5 ? centerInside ? [[0, 1], [2, 3]] : [[3, 0], [1, 2]] : centerInside ? [[3, 0], [1, 2]] : [[0, 1], [2, 3]];
+    }
+    for (const [first, second] of pairs3) segments.push([edgePoint(first, column, row, corners), edgePoint(second, column, row, corners)]);
+  }
+  return segments;
+}
+function stitchContourSegments(segments) {
+  const key = (point) => `${Math.round(point.x * 1e3)}:${Math.round(point.y * 1e3)}`, byEndpoint = /* @__PURE__ */ new Map();
+  segments.forEach((segment, index3) => segment.forEach((point) => {
+    const value = key(point);
+    if (!byEndpoint.has(value)) byEndpoint.set(value, []);
+    byEndpoint.get(value).push(index3);
+  }));
+  const unused = new Set(segments.map((_2, index3) => index3)), paths = [];
+  while (unused.size) {
+    const firstIndex = unused.values().next().value, path2 = [...segments[firstIndex]];
+    unused.delete(firstIndex);
+    const extend2 = (atStart) => {
+      while (true) {
+        const endpoint = atStart ? path2[0] : path2[path2.length - 1], nextIndex = (byEndpoint.get(key(endpoint)) || []).find((index3) => unused.has(index3));
+        if (nextIndex === void 0) break;
+        const segment = segments[nextIndex], next = key(segment[0]) === key(endpoint) ? segment[1] : segment[0];
+        unused.delete(nextIndex);
+        if (atStart) path2.unshift(next);
+        else path2.push(next);
+      }
+    };
+    extend2(false);
+    extend2(true);
+    if (path2.length > 5) paths.push(path2);
+  }
+  return paths;
+}
+function drawSmoothContour(ctx, path2, toCanvas) {
+  const points = path2.map((point) => toCanvas(point.x, point.y)), closed = Math.hypot(points[0][0] - points[points.length - 1][0], points[0][1] - points[points.length - 1][1]) < 2;
+  if (closed) points.pop();
+  if (points.length < 4) return;
+  const midpoint = (first, second) => [(first[0] + second[0]) / 2, (first[1] + second[1]) / 2], start2 = closed ? midpoint(points[points.length - 1], points[0]) : points[0];
+  ctx.moveTo(start2[0], start2[1]);
+  const end2 = closed ? points.length : points.length - 1;
+  for (let index3 = 0; index3 < end2; index3++) {
+    const point = points[index3], next = points[(index3 + 1) % points.length], middle = midpoint(point, next);
+    ctx.quadraticCurveTo(point[0], point[1], middle[0], middle[1]);
+  }
+  if (closed) ctx.closePath();
+  else ctx.lineTo(points[points.length - 1][0], points[points.length - 1][1]);
 }
 var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   constructor(host, app, options = {}) {
@@ -72284,32 +72359,12 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     for (let band = 0; band < bands.length; band++) {
-      const field = bands[band], outer = band === 0;
+      const outer = band === 0, paths = stitchContourSegments(contourSegments(bands[band], size));
       ctx.beginPath();
-      for (let row = 0; row < size - 1; row++) for (let column = 0; column < size - 1; column++) {
-        const corners = [field[row * size + column], field[row * size + column + 1], field[(row + 1) * size + column + 1], field[(row + 1) * size + column]], crossings = [];
-        const cross = (first, second, x1, y1, x2, y2) => {
-          if (first < 0 === second < 0 || first === second) return;
-          const amount = -first / (second - first);
-          crossings.push(toCanvas(x1 + (x2 - x1) * amount, y1 + (y2 - y1) * amount));
-        };
-        cross(corners[0], corners[1], column, row, column + 1, row);
-        cross(corners[1], corners[2], column + 1, row, column + 1, row + 1);
-        cross(corners[2], corners[3], column + 1, row + 1, column, row + 1);
-        cross(corners[3], corners[0], column, row + 1, column, row);
-        if (crossings.length === 2) {
-          ctx.moveTo(crossings[0][0], crossings[0][1]);
-          ctx.lineTo(crossings[1][0], crossings[1][1]);
-        } else if (crossings.length === 4) {
-          ctx.moveTo(crossings[0][0], crossings[0][1]);
-          ctx.lineTo(crossings[1][0], crossings[1][1]);
-          ctx.moveTo(crossings[2][0], crossings[2][1]);
-          ctx.lineTo(crossings[3][0], crossings[3][1]);
-        }
-      }
-      ctx.globalAlpha = outer ? 0.2 : 0.31;
+      for (const path2 of paths) drawSmoothContour(ctx, path2, toCanvas);
+      ctx.globalAlpha = outer ? 0.18 : 0.23 + band * 0.021;
       ctx.strokeStyle = outer ? colors2.muted : colors2.normal;
-      ctx.lineWidth = outer ? 0.76 : 1.02;
+      ctx.lineWidth = outer ? 0.72 : 0.78 + band * 0.045;
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
