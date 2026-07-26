@@ -70565,159 +70565,6 @@ function classicalDistanceLayout(ids, distances, topics = /* @__PURE__ */ new Ma
   }, 0), oriented = error(candidates[0]) <= error(candidates[1]) ? candidates[0] : candidates[1], extent = Math.max(1e-3, ...oriented.slice(1).map((point) => Math.hypot(point.x, point.y))), scale = 0.78 / extent;
   return new Map(oriented.map((point) => [point.id, { x: point.x * scale, y: point.y * scale }]));
 }
-function localNeighborhoodLayout(ids, distances, topics = /* @__PURE__ */ new Map()) {
-  const count = ids.length;
-  if (count < 4) return classicalDistanceLayout(ids, distances, topics);
-  const seed = classicalDistanceLayout(ids, distances, topics), positions = ids.map((id2, index3) => {
-    const point = seed.get(id2) || { x: 0, y: 0 }, angle = stableAngle(id2);
-    return { x: point.x + Math.cos(angle) * 2e-3, y: point.y + Math.sin(angle) * 2e-3, vx: 0, vy: 0, index: index3 };
-  }), neighborCount = Math.min(8, Math.max(3, Math.ceil(Math.log2(count)))), directed = distances.map((row, first) => [...ids.keys()].filter((second) => second !== first).map((second) => ({ second, distance: Number(row[second]) })).sort((a2, b) => a2.distance - b.distance).slice(0, neighborCount)), directedWeights = directed.map((list4) => {
-    const floor = Number(list4[0]?.distance || 0), scale2 = Math.max(0.025, Number(list4.at(-1)?.distance || floor) - floor);
-    return new Map(list4.map((item) => [item.second, Math.exp(-Math.max(0, item.distance - floor) / scale2)]));
-  }), edges = [], edgeKeys = /* @__PURE__ */ new Set();
-  for (let first = 0; first < count; first++) for (const neighbor of directed[first]) {
-    const second = neighbor.second, key = first < second ? first * count + second : second * count + first;
-    if (edgeKeys.has(key)) continue;
-    edgeKeys.add(key);
-    const forward = Number(directedWeights[first].get(second) || 0), reverse3 = Number(directedWeights[second].get(first) || 0), mutual = forward > 0 && reverse3 > 0, combined = forward + reverse3 - forward * reverse3, weight = mutual ? combined : combined * 0.08;
-    edges.push({ first, second, distance: neighbor.distance, weight, mutual });
-  }
-  for (let step = 0; step < 150; step++) {
-    const cooling = 0.18 + 0.82 * (1 - step / 150);
-    for (const edge of edges) {
-      const first = positions[edge.first], second = positions[edge.second];
-      let dx = second.x - first.x, dy = second.y - first.y;
-      const distance = Math.max(8e-3, Math.hypot(dx, dy));
-      dx /= distance;
-      dy /= distance;
-      const desired = 0.025 + Math.min(0.72, edge.distance) * (edge.mutual ? 0.13 : 0.22), force = (distance - desired) * (6e-3 + edge.weight * 0.055) * cooling;
-      first.vx += dx * force;
-      first.vy += dy * force;
-      second.vx -= dx * force;
-      second.vy -= dy * force;
-    }
-    for (let firstIndex = 0; firstIndex < count; firstIndex++) {
-      const first = positions[firstIndex];
-      for (let sample = 0; sample < 7; sample++) {
-        let secondIndex = (firstIndex * 47 + step * 29 + sample * 71 + 13) % count;
-        if (secondIndex === firstIndex) secondIndex = (secondIndex + sample + 1) % count;
-        if (secondIndex === firstIndex) continue;
-        const pairKey = firstIndex < secondIndex ? firstIndex * count + secondIndex : secondIndex * count + firstIndex;
-        if (edgeKeys.has(pairKey)) continue;
-        const second = positions[secondIndex];
-        let dx = second.x - first.x, dy = second.y - first.y;
-        const distance = Math.max(0.012, Math.hypot(dx, dy));
-        dx /= distance;
-        dy /= distance;
-        const force = Math.min(42e-4, 13e-5 / (15e-4 + distance * distance)) * cooling;
-        first.vx -= dx * force;
-        first.vy -= dy * force;
-        second.vx += dx * force;
-        second.vy += dy * force;
-      }
-      const topic = topics.get(ids[firstIndex]), strength = Math.max(0, Math.min(1, Number(topic?.topicStrength || 0))), radius = 0.12 + Math.pow(strength, 0.72) * 0.66, targetX = Math.cos(Number(topic?.topicAngle || stableAngle(ids[firstIndex]))) * radius, targetY = Math.sin(Number(topic?.topicAngle || stableAngle(ids[firstIndex]))) * radius, anchor = (18e-4 + strength * 32e-4) * cooling;
-      first.vx += (targetX - first.x) * anchor;
-      first.vy += (targetY - first.y) * anchor;
-    }
-    for (const point of positions) {
-      point.vx *= 0.74;
-      point.vy *= 0.74;
-      point.x += point.vx;
-      point.y += point.vy;
-    }
-  }
-  const meanX = positions.reduce((sum, point) => sum + point.x, 0) / count, meanY = positions.reduce((sum, point) => sum + point.y, 0) / count, extent = Math.max(1e-3, ...positions.map((point) => Math.hypot(point.x - meanX, point.y - meanY))), scale = 0.88 / extent;
-  return new Map(positions.map((point, index3) => [ids[index3], { x: (point.x - meanX) * scale, y: (point.y - meanY) * scale }]));
-}
-function hierarchicalVaultLayout(ids, distances, topics = /* @__PURE__ */ new Map(), communities = /* @__PURE__ */ new Map()) {
-  if (ids.length < 8) return localNeighborhoodLayout(ids, distances, topics);
-  const indexById = new Map(ids.map((id2, index3) => [id2, index3])), grouped = /* @__PURE__ */ new Map();
-  for (const id2 of ids) {
-    const community = communities.get(id2), key = community === void 0 ? id2 : `community:${community}`, members = grouped.get(key) || [];
-    members.push(id2);
-    grouped.set(key, members);
-  }
-  if (grouped.size < 2) return localNeighborhoodLayout(ids, distances, topics);
-  const groups = [...grouped].map(([id2, members]) => {
-    let topicX = 0, topicY = 0, topicWeight = 0;
-    for (const member of members) {
-      const topic = topics.get(member), weight = 0.2 + Math.max(0, Math.min(1, Number(topic?.topicStrength || 0)));
-      topicX += Math.cos(Number(topic?.topicAngle || stableAngle(member))) * weight;
-      topicY += Math.sin(Number(topic?.topicAngle || stableAngle(member))) * weight;
-      topicWeight += weight;
-    }
-    const strength = Math.hypot(topicX, topicY) / Math.max(1e-3, topicWeight);
-    return { id: id2, members, radius: 0.05 + Math.sqrt(members.length) * 0.018, topicAngle: Math.atan2(topicY, topicX), topicStrength: strength, x: 0, y: 0, vx: 0, vy: 0 };
-  }), groupIds = groups.map((group) => group.id), groupTopics = new Map(groups.map((group) => [group.id, { topicAngle: group.topicAngle, topicStrength: group.topicStrength }])), groupDistances = Array.from({ length: groups.length }, () => new Float64Array(groups.length));
-  for (let first = 0; first < groups.length; first++) for (let second = first + 1; second < groups.length; second++) {
-    const values = [];
-    for (const firstId of groups[first].members) for (const secondId of groups[second].members) values.push(Number(distances[indexById.get(firstId)][indexById.get(secondId)]));
-    values.sort((a2, b) => a2 - b);
-    const take = Math.max(1, Math.ceil(Math.sqrt(values.length))), distance = values.slice(0, take).reduce((sum, value) => sum + value, 0) / take;
-    groupDistances[first][second] = distance;
-    groupDistances[second][first] = distance;
-  }
-  const macro = classicalDistanceLayout(groupIds, groupDistances, groupTopics), maximumStrength = Math.max(1e-3, ...groups.map((group) => group.topicStrength));
-  for (const group of groups) {
-    const point = macro.get(group.id) || { x: 0, y: 0 }, strength = group.topicStrength / maximumStrength, radius = 0.2 + Math.pow(strength, 0.72) * 0.58, compassX = Math.cos(group.topicAngle) * radius, compassY = Math.sin(group.topicAngle) * radius;
-    group.x = point.x * 0.44 + compassX * 0.56;
-    group.y = point.y * 0.44 + compassY * 0.56;
-    group.seedX = group.x;
-    group.seedY = group.y;
-  }
-  for (let step = 0; step < 220; step++) {
-    for (let first = 0; first < groups.length; first++) for (let second = first + 1; second < groups.length; second++) {
-      const a2 = groups[first], b = groups[second];
-      let dx = b.x - a2.x, dy = b.y - a2.y;
-      const distance = Math.max(5e-3, Math.hypot(dx, dy)), desired = a2.radius + b.radius + 0.018;
-      if (distance >= desired) continue;
-      if (distance <= 6e-3) {
-        const angle = stableAngle(`${a2.id}:${b.id}`);
-        dx = Math.cos(angle);
-        dy = Math.sin(angle);
-      } else {
-        dx /= distance;
-        dy /= distance;
-      }
-      const force = (desired - distance) * 0.13;
-      a2.vx -= dx * force;
-      a2.vy -= dy * force;
-      b.vx += dx * force;
-      b.vy += dy * force;
-    }
-    for (const group of groups) {
-      group.vx += (group.seedX - group.x) * 0.028;
-      group.vy += (group.seedY - group.y) * 0.028;
-      group.vx *= 0.68;
-      group.vy *= 0.68;
-      group.x += group.vx;
-      group.y += group.vy;
-      const distance = Math.hypot(group.x, group.y), limit = Math.max(0.2, 0.9 - group.radius);
-      if (distance > limit) {
-        group.x *= limit / distance;
-        group.y *= limit / distance;
-      }
-    }
-  }
-  const layout = /* @__PURE__ */ new Map();
-  for (const group of groups) {
-    if (group.members.length === 1) {
-      layout.set(group.members[0], { x: group.x, y: group.y });
-      continue;
-    }
-    const memberIndices = group.members.map((id2) => indexById.get(id2)), localDistances = memberIndices.map((first) => Float64Array.from(memberIndices, (second) => distances[first][second])), local = classicalDistanceLayout(group.members, localDistances, topics), points = [...local.values()], meanX = points.reduce((sum, point) => sum + point.x, 0) / points.length, meanY = points.reduce((sum, point) => sum + point.y, 0) / points.length, extent2 = Math.max(1e-3, ...points.map((point) => Math.hypot(point.x - meanX, point.y - meanY))), scale = group.radius * 0.68 / extent2;
-    for (const member of group.members) {
-      const point = local.get(member);
-      layout.set(member, { x: group.x + (point.x - meanX) * scale, y: group.y + (point.y - meanY) * scale });
-    }
-  }
-  const extent = Math.max(1e-3, ...[...layout.values()].map((point) => Math.hypot(point.x, point.y)));
-  if (extent > 0.94) for (const point of layout.values()) {
-    point.x *= 0.94 / extent;
-    point.y *= 0.94 / extent;
-  }
-  return layout;
-}
 function semanticProjection(centerId, centerVector, entries) {
   const points = [{ id: centerId, vector: centerVector }, ...entries];
   const count = points.length;
@@ -72118,7 +71965,7 @@ var init_mobile_runtime = __esm({
         const basis = this.topicBasis(), trimmed = String(query || "").trim(), centerFile = String(options.centerFile || ""), fileCenter = centerFile ? this.fileVectors([centerFile]).get(centerFile)?.vector : null, conditioned = Boolean(trimmed || fileCenter);
         let center = fileCenter ? Float32Array.from(fileCenter) : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
         if (!conditioned) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
-        const topics = topicCoordinates(entries, conditioned ? center : basis.center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
+        const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
         for (const entities of entitySets.values()) for (const entity2 of entities) frequency.set(entity2, (frequency.get(entity2) || 0) + 1);
         const entitySimilarity = (first, second) => {
           const a2 = entitySets.get(first) || /* @__PURE__ */ new Set(), b = entitySets.get(second) || /* @__PURE__ */ new Set();
@@ -72138,7 +71985,7 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", baseWeights = { relevance: { semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens], weights = !conditioned && lens === "relevance" ? { semantic: 0.2, residual: 0.24, entity: 0.08, angular: 0.28, community: 0.2, relation: 0 } : baseWeights;
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = { relevance: { semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
@@ -72149,7 +71996,7 @@ var init_mobile_runtime = __esm({
           distances[row][column] = distance;
           distances[column][row] = distance;
         }
-        const communities = new Map(entries.map((entry) => [entry.id, nodeById.get(entry.id)?.community])), layout = conditioned ? classicalDistanceLayout(ids, distances, conceptTopics) : hierarchicalVaultLayout(ids, distances, topics, communities);
+        const layout = classicalDistanceLayout(ids, distances, conditioned ? conceptTopics : topics);
         layout.delete("__center__");
         if (conditioned) {
           const positioned = /* @__PURE__ */ new Map();
@@ -72163,6 +72010,11 @@ var init_mobile_runtime = __esm({
             positioned.set(entry.id, { x: parent.x + Math.cos(angle) * step, y: parent.y + Math.sin(angle) * step });
           }
           return positioned;
+        }
+        const points = [...layout.values()], meanX = points.reduce((sum, point) => sum + point.x, 0) / Math.max(1, points.length), meanY = points.reduce((sum, point) => sum + point.y, 0) / Math.max(1, points.length), extent = Math.max(1e-3, ...points.map((point) => Math.hypot(point.x - meanX, point.y - meanY)));
+        for (const point of layout.values()) {
+          point.x = (point.x - meanX) / extent * 0.82;
+          point.y = (point.y - meanY) / extent * 0.82;
         }
         return layout;
       }
@@ -72244,7 +72096,7 @@ var init_mobile_runtime = __esm({
               edges2.push({ source: entries2[first].id, target: entries2[relation.second].id, score: dot(entries2[first].vector, entries2[relation.second].vector), entityScore: relation.score, affinity: 0.08 + relation.score * 0.28, entityBridge: true });
             }
           }
-          const communities2 = louvainCommunities(entries2.map((entry) => entry.id), edges2), positions2 = clusteredSemanticPositions(entries2, communities2);
+          const communities2 = consolidateCommunities(entries2, louvainCommunities(entries2.map((entry) => entry.id), edges2)), positions2 = clusteredSemanticPositions(entries2, communities2);
           this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, entitySets: entitySets2 };
         }
         const { entries, edges, positions, communities, entitySets } = this.starfieldCache, trimmed = String(query || "").trim(), basis = this.topicBasis();
@@ -73388,7 +73240,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
       const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
-    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), sigma = Math.max(this.hasQuery ? 9 : 6, (this.hasQuery ? 27 : 10) * zoom), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
+    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), sigma = Math.max(9, 27 * zoom), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
