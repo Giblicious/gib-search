@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.4
+
+- Groups results by the semantic meaning remaining after their shared query relationship is removed.
+- Uses only each note's three strongest residual-semantic neighbors as attractive springs.
+- Adds full-plane repulsion so unrelated notes and subtopics can separate into distinct lobes.
+- Shapes terrain with raised control points along strong semantic relationships, producing meaningful ridges and cluster shoulders.
+- Draws exactly ten evenly spaced contours across the normalized visible elevation range.
+
 ## 0.5.3
 
 - Replaces the fixed radial settlement with a continuous, damped semantic spring simulation.
