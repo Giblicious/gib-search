@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.5
+
+- Stops treating the map container as the terrain boundary.
+- Replaces global interpolation with compact local influence around the query, notes, and semantic ridges.
+- Lets elevation fall naturally to zero beyond the result structure, preserving empty space around the landscape.
+- Produces irregular, result-shaped terrain outlines instead of stretching contours to fill the panel.
+
 ## 0.5.4
 
 - Groups results by the semantic meaning remaining after their shared query relationship is removed.

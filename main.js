@@ -72131,46 +72131,22 @@ var SemanticMapCanvas = class {
     this.resizeObserver?.disconnect();
   }
 };
-function solveElevationSystem(matrix, values) {
-  const size = values.length, rows = matrix.map((row, index3) => [...row, values[index3]]);
-  for (let column = 0; column < size; column++) {
-    let pivot = column;
-    for (let row = column + 1; row < size; row++) if (Math.abs(rows[row][column]) > Math.abs(rows[pivot][column])) pivot = row;
-    if (Math.abs(rows[pivot][column]) < 1e-10) continue;
-    [rows[column], rows[pivot]] = [rows[pivot], rows[column]];
-    const divisor = rows[column][column];
-    for (let item = column; item <= size; item++) rows[column][item] /= divisor;
-    for (let row = 0; row < size; row++) {
-      if (row === column) continue;
-      const amount = rows[row][column];
-      if (!amount) continue;
-      for (let item = column; item <= size; item++) rows[row][item] -= amount * rows[column][item];
-    }
-  }
-  return rows.map((row, index3) => Number.isFinite(row[size]) ? row[size] : index3 < size - 3 ? 0 : 0.035);
-}
-function elevationKernel(distanceSquared) {
-  return distanceSquared < 1e-8 ? 0 : distanceSquared * Math.log(Math.sqrt(distanceSquared));
-}
 function buildSmoothElevation(points, size = 190) {
-  if (points.length < 3) return null;
-  const perimeter = Array.from({ length: 24 }, (_2, index3) => {
-    const angle = index3 / 24 * Math.PI * 2, x = Math.cos(angle), y = Math.sin(angle), edge = Math.max(Math.abs(x), Math.abs(y));
-    return { x: x / edge * 1.08, y: y / edge * 1.08, z: 0.035 };
-  }), samples = [...points, ...perimeter], count = samples.length, order = count + 3, matrix = Array.from({ length: order }, () => new Float64Array(order)), values = new Float64Array(order);
-  for (let row = 0; row < count; row++) {
-    values[row] = samples[row].z;
-    for (let column = 0; column < count; column++) matrix[row][column] = elevationKernel((samples[row].x - samples[column].x) ** 2 + (samples[row].y - samples[column].y) ** 2) + (row === column ? 4e-5 : 0);
-    matrix[row][count] = matrix[count][row] = 1;
-    matrix[row][count + 1] = matrix[count + 1][row] = samples[row].x;
-    matrix[row][count + 2] = matrix[count + 2][row] = samples[row].y;
-  }
-  const coefficients = solveElevationSystem(matrix, values), field = new Float32Array(size * size), extent = 1.08;
+  if (points.length < 2) return null;
+  const influence = (point) => Number(point.influence || 0.19), extent = Math.min(1.12, Math.max(0.38, ...points.map((point) => Math.max(Math.abs(point.x), Math.abs(point.y)) + influence(point) + 0.045))), field = new Float32Array(size * size);
   for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
     const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
-    let elevation = coefficients[count] + coefficients[count + 1] * x + coefficients[count + 2] * y;
-    for (let point = 0; point < count; point++) elevation += coefficients[point] * elevationKernel((x - samples[point].x) ** 2 + (y - samples[point].y) ** 2);
-    field[row * size + column] = Math.max(0, Math.min(1, elevation));
+    let weightedElevation = 0, weightTotal = 0, supportTotal = 0;
+    for (const point of points) {
+      const radius = influence(point), distanceSquared = (x - point.x) ** 2 + (y - point.y) ** 2;
+      if (distanceSquared >= radius ** 2) continue;
+      const distance = Math.sqrt(distanceSquared), ratio = distance / radius, support2 = (1 - ratio) ** 4 * (4 * ratio + 1), weight = support2 / (distanceSquared + 18e-5);
+      supportTotal += support2;
+      weightTotal += weight;
+      weightedElevation += Number(point.z || 0) * weight;
+    }
+    const support = Math.min(1, supportTotal * 1.28);
+    field[row * size + column] = weightTotal ? Math.max(0, Math.min(1, weightedElevation / weightTotal * support)) : 0;
   }
   return { size, field, extent };
 }
@@ -72246,11 +72222,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
   }
   elevationSamples() {
-    const byId = new Map(this.nodes.map((node) => [node.id, node])), points = [{ x: 0, y: 0, z: 1 }, ...this.nodes.map((node) => ({ x: node.x, y: node.y, z: node.elevation }))], ridges = [...this.activeEdges || []].sort((first, second) => second.strength - first.strength).slice(0, Math.min(36, this.nodes.length * 2));
+    const byId = new Map(this.nodes.map((node) => [node.id, node])), points = [{ x: 0, y: 0, z: 1, influence: 0.28 }, ...this.nodes.map((node) => ({ x: node.x, y: node.y, z: node.elevation, influence: 0.17 + node.relevance * 0.035 }))], ridges = [...this.activeEdges || []].sort((first, second) => second.strength - first.strength).slice(0, Math.min(36, this.nodes.length * 2));
     for (const edge of ridges) {
       const source = byId.get(edge.source), target = byId.get(edge.target);
       if (!source || !target) continue;
-      points.push({ x: (source.x + target.x) / 2, y: (source.y + target.y) / 2, z: Math.min(0.94, (source.elevation + target.elevation) / 2 + edge.strength * 0.055) });
+      points.push({ x: (source.x + target.x) / 2, y: (source.y + target.y) / 2, z: Math.min(0.94, (source.elevation + target.elevation) / 2 + edge.strength * 0.055), influence: 0.15 + edge.strength * 0.055 });
     }
     return points;
   }
