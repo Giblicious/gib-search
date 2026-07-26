@@ -73351,7 +73351,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       ctx.lineTo(queryX - marker * 0.72, queryY);
       ctx.closePath();
       ctx.fill();
-      labels.push({ node: this.queryNode, x: queryX, y: queryY, radius: tickOuter, active, opacity: this.queryPresence, query: true });
+      if (this.center?.id) labels.push({ node: this.queryNode, x: queryX, y: queryY, radius: tickOuter, active, opacity: this.queryPresence, query: true });
       this.hit.push({ node: this.queryNode, x: queryX, y: queryY, radius: 16 });
     }
     this.drawLabels(ctx, labels, colors2, rect.width, rect.height);
@@ -73363,7 +73363,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       return text.length > length2 ? `${text.slice(0, length2 - 1)}\u2026` : text;
     };
     for (const item of labels.sort((a2, b) => Number(b.query) - Number(a2.query) || Number(b.active) - Number(a2.active) || Number(b.node.relevance || 0) - Number(a2.node.relevance || 0))) {
-      const title = clip(item.node.label, item.query ? 34 : 30), folder = !item.query && item.active ? item.node.id.includes("/") ? item.node.id.slice(0, item.node.id.lastIndexOf("/")) : "Vault" : "", subtitle = item.query && item.active ? this.center?.id ? "Local note" : "Search origin" : folder ? clip(folder, 38) : "";
+      const title = clip(item.node.label, item.query ? 34 : 30), folder = !item.query && item.active ? item.node.id.includes("/") ? item.node.id.slice(0, item.node.id.lastIndexOf("/")) : "Vault" : "", subtitle = item.query && item.active ? "Local note" : folder ? clip(folder, 38) : "";
       ctx.font = `${item.query || item.active ? 600 : 500} 11px -apple-system, BlinkMacSystemFont, sans-serif`;
       const titleWidth = ctx.measureText(title).width;
       ctx.font = `500 9px -apple-system, BlinkMacSystemFont, sans-serif`;
