@@ -70629,6 +70629,95 @@ function localNeighborhoodLayout(ids, distances, topics = /* @__PURE__ */ new Ma
   const meanX = positions.reduce((sum, point) => sum + point.x, 0) / count, meanY = positions.reduce((sum, point) => sum + point.y, 0) / count, extent = Math.max(1e-3, ...positions.map((point) => Math.hypot(point.x - meanX, point.y - meanY))), scale = 0.88 / extent;
   return new Map(positions.map((point, index3) => [ids[index3], { x: (point.x - meanX) * scale, y: (point.y - meanY) * scale }]));
 }
+function hierarchicalVaultLayout(ids, distances, topics = /* @__PURE__ */ new Map(), communities = /* @__PURE__ */ new Map()) {
+  if (ids.length < 8) return localNeighborhoodLayout(ids, distances, topics);
+  const indexById = new Map(ids.map((id2, index3) => [id2, index3])), grouped = /* @__PURE__ */ new Map();
+  for (const id2 of ids) {
+    const community = communities.get(id2), key = community === void 0 ? id2 : `community:${community}`, members = grouped.get(key) || [];
+    members.push(id2);
+    grouped.set(key, members);
+  }
+  if (grouped.size < 2) return localNeighborhoodLayout(ids, distances, topics);
+  const groups = [...grouped].map(([id2, members]) => {
+    let topicX = 0, topicY = 0, topicWeight = 0;
+    for (const member of members) {
+      const topic = topics.get(member), weight = 0.2 + Math.max(0, Math.min(1, Number(topic?.topicStrength || 0)));
+      topicX += Math.cos(Number(topic?.topicAngle || stableAngle(member))) * weight;
+      topicY += Math.sin(Number(topic?.topicAngle || stableAngle(member))) * weight;
+      topicWeight += weight;
+    }
+    const strength = Math.hypot(topicX, topicY) / Math.max(1e-3, topicWeight);
+    return { id: id2, members, radius: 0.05 + Math.sqrt(members.length) * 0.018, topicAngle: Math.atan2(topicY, topicX), topicStrength: strength, x: 0, y: 0, vx: 0, vy: 0 };
+  }), groupIds = groups.map((group) => group.id), groupTopics = new Map(groups.map((group) => [group.id, { topicAngle: group.topicAngle, topicStrength: group.topicStrength }])), groupDistances = Array.from({ length: groups.length }, () => new Float64Array(groups.length));
+  for (let first = 0; first < groups.length; first++) for (let second = first + 1; second < groups.length; second++) {
+    const values = [];
+    for (const firstId of groups[first].members) for (const secondId of groups[second].members) values.push(Number(distances[indexById.get(firstId)][indexById.get(secondId)]));
+    values.sort((a2, b) => a2 - b);
+    const take = Math.max(1, Math.ceil(Math.sqrt(values.length))), distance = values.slice(0, take).reduce((sum, value) => sum + value, 0) / take;
+    groupDistances[first][second] = distance;
+    groupDistances[second][first] = distance;
+  }
+  const macro = classicalDistanceLayout(groupIds, groupDistances, groupTopics), maximumStrength = Math.max(1e-3, ...groups.map((group) => group.topicStrength));
+  for (const group of groups) {
+    const point = macro.get(group.id) || { x: 0, y: 0 }, strength = group.topicStrength / maximumStrength, radius = 0.2 + Math.pow(strength, 0.72) * 0.58, compassX = Math.cos(group.topicAngle) * radius, compassY = Math.sin(group.topicAngle) * radius;
+    group.x = point.x * 0.44 + compassX * 0.56;
+    group.y = point.y * 0.44 + compassY * 0.56;
+    group.seedX = group.x;
+    group.seedY = group.y;
+  }
+  for (let step = 0; step < 220; step++) {
+    for (let first = 0; first < groups.length; first++) for (let second = first + 1; second < groups.length; second++) {
+      const a2 = groups[first], b = groups[second];
+      let dx = b.x - a2.x, dy = b.y - a2.y;
+      const distance = Math.max(5e-3, Math.hypot(dx, dy)), desired = a2.radius + b.radius + 0.018;
+      if (distance >= desired) continue;
+      if (distance <= 6e-3) {
+        const angle = stableAngle(`${a2.id}:${b.id}`);
+        dx = Math.cos(angle);
+        dy = Math.sin(angle);
+      } else {
+        dx /= distance;
+        dy /= distance;
+      }
+      const force = (desired - distance) * 0.13;
+      a2.vx -= dx * force;
+      a2.vy -= dy * force;
+      b.vx += dx * force;
+      b.vy += dy * force;
+    }
+    for (const group of groups) {
+      group.vx += (group.seedX - group.x) * 0.028;
+      group.vy += (group.seedY - group.y) * 0.028;
+      group.vx *= 0.68;
+      group.vy *= 0.68;
+      group.x += group.vx;
+      group.y += group.vy;
+      const distance = Math.hypot(group.x, group.y), limit = Math.max(0.2, 0.9 - group.radius);
+      if (distance > limit) {
+        group.x *= limit / distance;
+        group.y *= limit / distance;
+      }
+    }
+  }
+  const layout = /* @__PURE__ */ new Map();
+  for (const group of groups) {
+    if (group.members.length === 1) {
+      layout.set(group.members[0], { x: group.x, y: group.y });
+      continue;
+    }
+    const memberIndices = group.members.map((id2) => indexById.get(id2)), localDistances = memberIndices.map((first) => Float64Array.from(memberIndices, (second) => distances[first][second])), local = classicalDistanceLayout(group.members, localDistances, topics), points = [...local.values()], meanX = points.reduce((sum, point) => sum + point.x, 0) / points.length, meanY = points.reduce((sum, point) => sum + point.y, 0) / points.length, extent2 = Math.max(1e-3, ...points.map((point) => Math.hypot(point.x - meanX, point.y - meanY))), scale = group.radius * 0.68 / extent2;
+    for (const member of group.members) {
+      const point = local.get(member);
+      layout.set(member, { x: group.x + (point.x - meanX) * scale, y: group.y + (point.y - meanY) * scale });
+    }
+  }
+  const extent = Math.max(1e-3, ...[...layout.values()].map((point) => Math.hypot(point.x, point.y)));
+  if (extent > 0.94) for (const point of layout.values()) {
+    point.x *= 0.94 / extent;
+    point.y *= 0.94 / extent;
+  }
+  return layout;
+}
 function semanticProjection(centerId, centerVector, entries) {
   const points = [{ id: centerId, vector: centerVector }, ...entries];
   const count = points.length;
@@ -72060,7 +72149,7 @@ var init_mobile_runtime = __esm({
           distances[row][column] = distance;
           distances[column][row] = distance;
         }
-        const layout = conditioned ? classicalDistanceLayout(ids, distances, conceptTopics) : localNeighborhoodLayout(ids, distances, topics);
+        const communities = new Map(entries.map((entry) => [entry.id, nodeById.get(entry.id)?.community])), layout = conditioned ? classicalDistanceLayout(ids, distances, conceptTopics) : hierarchicalVaultLayout(ids, distances, topics, communities);
         layout.delete("__center__");
         if (conditioned) {
           const positioned = /* @__PURE__ */ new Map();
@@ -73299,7 +73388,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
       const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
-    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), sigma = Math.max(9, 27 * zoom), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
+    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), sigma = Math.max(this.hasQuery ? 9 : 6, (this.hasQuery ? 27 : 10) * zoom), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
