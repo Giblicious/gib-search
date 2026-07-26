@@ -72652,6 +72652,18 @@ function stableMapAngle(value) {
 function mapEdgeKey(a2, b) {
   return [a2, b].sort().join("\0");
 }
+function manualRoadEdges(app, files) {
+  const visible = new Set(files || []), roads = /* @__PURE__ */ new Map(), resolved = app?.metadataCache?.resolvedLinks || {};
+  for (const source of visible) for (const [target, count] of Object.entries(resolved[source] || {})) {
+    if (!count || source === target || !visible.has(target)) continue;
+    const [first, second] = [source, target].sort(), key = mapEdgeKey(first, second), road = roads.get(key) || { key, source: first, target: second, forward: false, reverse: false, count: 0 };
+    if (source === first) road.forward = true;
+    else road.reverse = true;
+    road.count += Number(count || 0);
+    roads.set(key, road);
+  }
+  return [...roads.values()];
+}
 var SemanticMapCanvas = class {
   constructor(host, app, options = {}) {
     this.host = host;
@@ -72919,6 +72931,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.targetQueryPresence = 0;
     this.queryMarkerFocus = 0;
     this.gaussianLookup = Float32Array.from({ length: 1025 }, (_2, index3) => Math.exp(-index3 / 1024 * 9));
+    this.roadEdges = [];
+    this.roadRoutes = /* @__PURE__ */ new Map();
+    this.roadIntroducedAt = /* @__PURE__ */ new Map();
+    this.roadsDirty = true;
+    this.lastRoadAt = 0;
     this.cameraX = 0;
     this.cameraY = 0;
     this.cameraZoom = 1;
@@ -72972,6 +72989,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.queryNode.layoutX = 0;
     this.queryNode.layoutY = 0;
     this.lastTerrainAt = 0;
+    this.roadsDirty = true;
     this.startSimulation(0.82);
   }
   setupViewportControls() {
@@ -73002,6 +73020,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.panY = relativeY - (relativeY - this.panY) * factor;
     this.userZoom = next;
     this.lastTerrainAt = 0;
+    this.roadsDirty = true;
     this.draw();
   }
   zoomBy(factor) {
@@ -73012,6 +73031,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.panX = 0;
     this.panY = 0;
     this.lastTerrainAt = 0;
+    this.roadsDirty = true;
     this.draw();
   }
   wheel(event) {
@@ -73019,7 +73039,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const rect = this.canvas.getBoundingClientRect(), factor = Math.exp(-Math.max(-120, Math.min(120, event.deltaY)) * 18e-4);
     this.setUserZoom(this.userZoom * factor, event.clientX - rect.left, event.clientY - rect.top);
   }
-  setGraph(center, values, edges = []) {
+  setGraph(center, values, edges = [], roads = []) {
     this.lastTerrainAt = 0;
     const previous = this.byId || /* @__PURE__ */ new Map(), previousQuery = this.queryNode, hasQuery = Boolean(center?.hasQuery), semanticScores = values.map((value) => Number(value.semanticScore || 0)), low = semanticScores.length ? Math.min(...semanticScores) : 0, high = semanticScores.length ? Math.max(...semanticScores) : 1, spread = Math.max(1e-3, high - low);
     this.center = center;
@@ -73041,6 +73061,15 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.relationships = new Map(this.activeEdges.map((edge) => [mapEdgeKey(edge.source, edge.target), edge]));
     this.pendingQuery = false;
     this.byId = new Map(this.nodes.map((node) => [node.id, node]));
+    const validRoadEndpoint = (id2) => this.byId.has(id2) || id2 === center?.id, nextRoads = roads.filter((road) => validRoadEndpoint(road.source) && validRoadEndpoint(road.target)), nextKeys = new Set(nextRoads.map((road) => road.key || mapEdgeKey(road.source, road.target))), introduced = /* @__PURE__ */ new Map(), now = performance.now();
+    nextRoads.forEach((road, index3) => {
+      const key = road.key || mapEdgeKey(road.source, road.target);
+      introduced.set(key, this.roadIntroducedAt.get(key) ?? now + index3 * 34);
+    });
+    this.roadEdges = nextRoads;
+    this.roadIntroducedAt = introduced;
+    this.roadRoutes = new Map([...this.roadRoutes].filter(([key]) => nextKeys.has(key)));
+    this.roadsDirty = true;
     this.selected = this.byId.has(this.selected) ? this.selected : null;
     this.hovered = this.byId.has(this.hovered) || this.hovered === "__query__" ? this.hovered : null;
     const activeCount = this.nodes.filter((node) => node.matched).length;
@@ -73248,6 +73277,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= 32;
     if (refresh) {
       const field = this.semanticDensityField(width, height), maximum = Math.max(0, ...field.values);
+      this.lastTerrainField = field;
       if (!this.terrainCanvas) this.terrainCanvas = document.createElement("canvas");
       if (!this.terrainMask) this.terrainMask = document.createElement("canvas");
       const terrain = this.terrainCanvas, mask = this.terrainMask;
@@ -73289,6 +73319,177 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     if (this.terrainCanvas) ctx.drawImage(this.terrainCanvas, 0, 0, width, height);
   }
+  roadEndpoint(id2, width, height) {
+    if (id2 === this.center?.id) {
+      const [x2, y2] = this.coordinates(this.queryNode, width, height);
+      return { x: x2, y: y2, visibility: this.queryPresence };
+    }
+    const node = this.byId.get(id2);
+    if (!node) return null;
+    const [x, y] = this.coordinates(node, width, height);
+    return { x, y, visibility: node.visibility };
+  }
+  routeRoad(field, source, target) {
+    const { values, columns, rows, step } = field, clampColumn = (value) => Math.max(0, Math.min(columns - 1, Math.round(value / step))), clampRow = (value) => Math.max(0, Math.min(rows - 1, Math.round(value / step))), startColumn = clampColumn(source.x), startRow = clampRow(source.y), goalColumn = clampColumn(target.x), goalRow = clampRow(target.y), start2 = startRow * columns + startColumn, goal = goalRow * columns + goalColumn;
+    if (start2 === goal) return [source, target];
+    const gridDistance = Math.hypot(goalColumn - startColumn, goalRow - startRow), padding = Math.max(8, Math.min(30, Math.ceil(gridDistance * 0.38))), minColumn = Math.max(0, Math.min(startColumn, goalColumn) - padding), maxColumn = Math.min(columns - 1, Math.max(startColumn, goalColumn) + padding), minRow = Math.max(0, Math.min(startRow, goalRow) - padding), maxRow = Math.min(rows - 1, Math.max(startRow, goalRow) + padding), scores = new Float64Array(values.length), previous = new Int32Array(values.length);
+    scores.fill(Infinity);
+    previous.fill(-1);
+    scores[start2] = 0;
+    const heap = [{ index: start2, priority: gridDistance }], push = (item) => {
+      heap.push(item);
+      let child = heap.length - 1;
+      while (child > 0) {
+        const parent = Math.floor((child - 1) / 2);
+        if (heap[parent].priority <= item.priority) break;
+        heap[child] = heap[parent];
+        child = parent;
+      }
+      heap[child] = item;
+    }, pop = () => {
+      const first = heap[0], last = heap.pop();
+      if (heap.length && last) {
+        let parent = 0;
+        heap[0] = last;
+        while (true) {
+          const left = parent * 2 + 1, right = left + 1;
+          if (left >= heap.length) break;
+          const child = right < heap.length && heap[right].priority < heap[left].priority ? right : left;
+          if (heap[child].priority >= heap[parent].priority) break;
+          [heap[parent], heap[child]] = [heap[child], heap[parent]];
+          parent = child;
+        }
+      }
+      return first;
+    }, directions = [[-1, -1, 1.414], [0, -1, 1], [1, -1, 1.414], [-1, 0, 1], [1, 0, 1], [-1, 1, 1.414], [0, 1, 1], [1, 1, 1.414]];
+    let reached = false, expansions = 0;
+    while (heap.length && expansions++ < 5200) {
+      const current = pop(), index3 = current.index;
+      if (index3 === goal) {
+        reached = true;
+        break;
+      }
+      const row = Math.floor(index3 / columns), column = index3 - row * columns, currentScore = scores[index3];
+      for (const [dx, dy, move] of directions) {
+        const nextColumn = column + dx, nextRow = row + dy;
+        if (nextColumn < minColumn || nextColumn > maxColumn || nextRow < minRow || nextRow > maxRow) continue;
+        const next = nextRow * columns + nextColumn, endpointDistance = Math.min(Math.hypot(nextColumn - startColumn, nextRow - startRow), Math.hypot(nextColumn - goalColumn, nextRow - goalRow)), gradeWeight = Math.min(1, endpointDistance / 4), grade = Math.abs(values[next] - values[index3]), elevation = Math.max(0, values[next] - 0.28), tentative = currentScore + move + grade * 17 * gradeWeight + elevation * 0.07;
+        if (tentative >= scores[next]) continue;
+        scores[next] = tentative;
+        previous[next] = index3;
+        const heuristic = Math.hypot(goalColumn - nextColumn, goalRow - nextRow) * 0.9;
+        push({ index: next, priority: tentative + heuristic });
+      }
+    }
+    if (!reached) return [source, target];
+    const raw = [];
+    for (let index3 = goal; index3 !== -1; index3 = previous[index3]) {
+      const row = Math.floor(index3 / columns), column = index3 - row * columns;
+      raw.push({ x: column * step, y: row * step });
+      if (index3 === start2) break;
+    }
+    raw.reverse();
+    raw[0] = { x: source.x, y: source.y };
+    raw[raw.length - 1] = { x: target.x, y: target.y };
+    let smooth = raw;
+    for (let pass = 0; pass < 2; pass++) {
+      const next = [smooth[0]];
+      for (let index3 = 0; index3 < smooth.length - 1; index3++) {
+        const first = smooth[index3], second = smooth[index3 + 1];
+        next.push({ x: first.x * 0.75 + second.x * 0.25, y: first.y * 0.75 + second.y * 0.25 }, { x: first.x * 0.25 + second.x * 0.75, y: first.y * 0.25 + second.y * 0.75 });
+      }
+      next.push(smooth[smooth.length - 1]);
+      smooth = next;
+    }
+    return smooth;
+  }
+  refreshRoadRoutes(field, width, height) {
+    const routes = /* @__PURE__ */ new Map();
+    for (const road of this.roadEdges.slice(0, 72)) {
+      const key = road.key || mapEdgeKey(road.source, road.target), source = this.roadEndpoint(road.source, width, height), target = this.roadEndpoint(road.target, width, height);
+      if (!source || !target) continue;
+      const points = this.routeRoad(field, source, target), cumulative = [0];
+      for (let index3 = 1; index3 < points.length; index3++) cumulative.push(cumulative[index3 - 1] + Math.hypot(points[index3].x - points[index3 - 1].x, points[index3].y - points[index3 - 1].y));
+      routes.set(key, { road, points, cumulative, total: cumulative[cumulative.length - 1] || 1, source, target });
+    }
+    this.roadRoutes = routes;
+    this.roadsDirty = false;
+    this.lastRoadAt = performance.now();
+  }
+  roadRouteDrift(width, height) {
+    let drift = 0;
+    for (const route of this.roadRoutes.values()) {
+      const source = this.roadEndpoint(route.road.source, width, height), target = this.roadEndpoint(route.road.target, width, height);
+      if (!source || !target) continue;
+      drift = Math.max(drift, Math.hypot(source.x - route.source.x, source.y - route.source.y), Math.hypot(target.x - route.target.x, target.y - route.target.y));
+    }
+    return drift;
+  }
+  adjustedRoadPoints(route, source, target) {
+    return route.points.map((point, index3) => {
+      const fraction = route.cumulative[index3] / route.total;
+      return { x: point.x + (source.x - route.source.x) * (1 - fraction) + (target.x - route.target.x) * fraction, y: point.y + (source.y - route.source.y) * (1 - fraction) + (target.y - route.target.y) * fraction };
+    });
+  }
+  roadPointAt(points, fraction) {
+    const lengths = [0];
+    for (let index3 = 1; index3 < points.length; index3++) lengths.push(lengths[index3 - 1] + Math.hypot(points[index3].x - points[index3 - 1].x, points[index3].y - points[index3 - 1].y));
+    const target = (lengths[lengths.length - 1] || 1) * fraction;
+    for (let index3 = 1; index3 < points.length; index3++) if (lengths[index3] >= target) {
+      const span = Math.max(1e-3, lengths[index3] - lengths[index3 - 1]), blend = (target - lengths[index3 - 1]) / span, first = points[index3 - 1], second = points[index3];
+      return { x: first.x + (second.x - first.x) * blend, y: first.y + (second.y - first.y) * blend, angle: Math.atan2(second.y - first.y, second.x - first.x) };
+    }
+    const last = points[points.length - 1], before2 = points[Math.max(0, points.length - 2)];
+    return { ...last, angle: Math.atan2(last.y - before2.y, last.x - before2.x) };
+  }
+  paintRoads(ctx, width, height, colors2) {
+    if (!this.roadEdges.length || !this.lastTerrainField) return;
+    const now = performance.now(), moving = this.alpha > 0.025 || this.dragging || this.panning, drift = this.roadRouteDrift(width, height), shouldRefresh = this.roadsDirty || (moving ? drift > 18 && now - this.lastRoadAt >= 220 : drift > 3);
+    if (shouldRefresh) this.refreshRoadRoutes(this.lastTerrainField, width, height);
+    const focused = this.hovered || this.selected, reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let animating = false;
+    for (const [key, route] of this.roadRoutes) {
+      const source = this.roadEndpoint(route.road.source, width, height), target = this.roadEndpoint(route.road.target, width, height);
+      if (!source || !target) continue;
+      const opacity = Math.min(source.visibility, target.visibility);
+      if (opacity < 0.035) continue;
+      const points = this.adjustedRoadPoints(route, source, target), introduced = this.roadIntroducedAt.get(key) || now, progress = reduced ? 1 : Math.max(0, Math.min(1, (now - introduced) / 430));
+      if (progress < 1) animating = true;
+      const active = focused === route.road.source || focused === route.road.target, total = points.slice(1).reduce((sum, point, index3) => sum + Math.hypot(point.x - points[index3].x, point.y - points[index3].y), 0), visibleLength = total * progress;
+      ctx.globalAlpha = opacity * (active ? 0.78 : 0.28);
+      ctx.strokeStyle = active ? colors2.normal : colors2.muted;
+      ctx.lineWidth = active ? 1.45 : 0.85;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      let walked = 0;
+      for (let index3 = 1; index3 < points.length; index3++) {
+        const first = points[index3 - 1], second = points[index3], length2 = Math.hypot(second.x - first.x, second.y - first.y);
+        if (walked + length2 <= visibleLength) ctx.lineTo(second.x, second.y);
+        else {
+          const blend = Math.max(0, Math.min(1, (visibleLength - walked) / Math.max(1e-3, length2)));
+          ctx.lineTo(first.x + (second.x - first.x) * blend, first.y + (second.y - first.y) * blend);
+          break;
+        }
+        walked += length2;
+      }
+      ctx.stroke();
+      const chevron = (fraction, reverse3 = false) => {
+        if (progress < fraction + 0.04) return;
+        const point = this.roadPointAt(points, fraction), angle = point.angle + (reverse3 ? Math.PI : 0), size = active ? 3.8 : 3.1;
+        ctx.beginPath();
+        ctx.moveTo(point.x - Math.cos(angle - 0.62) * size, point.y - Math.sin(angle - 0.62) * size);
+        ctx.lineTo(point.x, point.y);
+        ctx.lineTo(point.x - Math.cos(angle + 0.62) * size, point.y - Math.sin(angle + 0.62) * size);
+        ctx.stroke();
+      };
+      if (route.road.forward) chevron(0.62);
+      if (route.road.reverse) chevron(0.38, true);
+    }
+    ctx.globalAlpha = 1;
+    if (animating) this.startSimulation(0.16);
+  }
   traceDensityLevel(ctx, field, level) {
     const { values, columns, rows, step } = field, interpolate = (first, second) => Math.max(0, Math.min(1, Math.abs(second - first) < 1e-6 ? 0.5 : (level - first) / (second - first)));
     ctx.beginPath();
@@ -73314,6 +73515,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const colors2 = this.colors(), focused = this.hovered || this.selected, queryFocused = focused === "__query__", labelNodes = /* @__PURE__ */ new Set();
     this.hit = [];
     this.paintDensityTerrain(ctx, rect.width, rect.height, colors2);
+    this.paintRoads(ctx, rect.width, rect.height, colors2);
     if (focused && !queryFocused) labelNodes.add(focused);
     const labels = [], ordered = this.hasQuery && !this.pendingQuery ? [...this.nodes.filter((node) => !node.matched), ...this.nodes.filter((node) => node.matched)] : this.nodes;
     for (const node of ordered) {
@@ -73885,8 +74087,8 @@ var SemanticSearchModal = class extends SuggestModal {
         node.layoutY = target.y;
       }
     }
-    const displayEdges = this.lens === "arguments" ? [...combinedEdges.map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) })), ...this.lensRelationshipEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target))).map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) }))] : combinedEdges;
-    this.map.setGraph({ label: query || "Search", hasQuery: Boolean(query), resultCount: results.length }, graphNodes, displayEdges);
+    const displayEdges = this.lens === "arguments" ? [...combinedEdges.map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) })), ...this.lensRelationshipEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target))).map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) }))] : combinedEdges, roads = this.plugin.settings.showWikilinks ? manualRoadEdges(this.app, graphNodes.map((node) => node.id)) : [];
+    this.map.setGraph({ label: query || "Search", hasQuery: Boolean(query), resultCount: results.length }, graphNodes, displayEdges, roads);
   }
   hoverResult(file) {
     for (const item2 of this.modalEl.querySelectorAll(".suggestion-item.is-map-hovered")) item2.removeClass("is-map-hovered");
@@ -74003,8 +74205,9 @@ var NeighborhoodView = class extends ItemView {
       const layout = await this.plugin.search.multiRelationalLayout(file.basename, nodes, relationships, { lens: this.lens, magic: this.plugin.settings.magicGraphEnabled, centerFile: file.path });
       if (version2 !== this.loadVersion) return;
       nodes = nodes.map((node) => ({ ...node, layoutX: layout.get(node.id)?.x, layoutY: layout.get(node.id)?.y }));
+      const roads = this.plugin.settings.showWikilinks ? manualRoadEdges(this.app, [file.path, ...nodes.map((node) => node.id)]) : [];
       this.map.setTitle(`${SEARCH_LENSES[this.lens].label} \xB7 ${file.basename}`);
-      this.map.setGraph({ id: file.path, label: file.basename, hasQuery: true, resultCount: nodes.length }, nodes, edges);
+      this.map.setGraph({ id: file.path, label: file.basename, hasQuery: true, resultCount: nodes.length }, nodes, edges, roads);
       this.map.setIntelligenceStatus(intelligenceMessage);
     } catch (error) {
       if (version2 === this.loadVersion) this.empty(error.message);
@@ -74309,7 +74512,7 @@ var SearchSettings = class extends PluginSettingTab {
         await this.plugin.save();
       });
     });
-    new Setting(this.containerEl).setName("Include wikilinks in graph").addToggle((t3) => t3.setValue(this.plugin.settings.showWikilinks).onChange(async (value) => {
+    new Setting(this.containerEl).setName("Show manual link roads").setDesc("Route wikilinks between visible notes across the semantic landscape.").addToggle((t3) => t3.setValue(this.plugin.settings.showWikilinks).onChange(async (value) => {
       this.plugin.settings.showWikilinks = value;
       await this.plugin.save();
     }));
