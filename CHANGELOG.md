@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.7
+
+- Removes the continuous elevation field and all synthetic terrain control points.
+- Recasts the six relevance bands as independent semantic envelopes around notes meeting each threshold.
+- Connects envelopes only along positive, selected note relationships.
+- Ensures every lobe and connection corresponds directly to a visible query, note, or measured semantic edge.
+
 ## 0.5.6
 
 - Makes the query a draggable, unpinned participant in the same physics simulation as result notes.

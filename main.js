@@ -72131,24 +72131,28 @@ var SemanticMapCanvas = class {
     this.resizeObserver?.disconnect();
   }
 };
-function buildSmoothElevation(points, size = 190) {
-  if (points.length < 2) return null;
-  const influence = (point) => Number(point.influence || 0.19), extent = Math.min(1.12, Math.max(0.38, ...points.map((point) => Math.max(Math.abs(point.x), Math.abs(point.y)) + influence(point) + 0.045))), field = new Float32Array(size * size);
-  for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
-    const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
-    let weightedElevation = 0, weightTotal = 0, supportTotal = 0;
-    for (const point of points) {
-      const radius = influence(point), distanceSquared = (x - point.x) ** 2 + (y - point.y) ** 2;
-      if (distanceSquared >= radius ** 2) continue;
-      const distance = Math.sqrt(distanceSquared), ratio = distance / radius, support2 = (1 - ratio) ** 4 * (4 * ratio + 1), weight = support2 / (distanceSquared + 18e-5);
-      supportTotal += support2;
-      weightTotal += weight;
-      weightedElevation += Number(point.z || 0) * weight;
+function pointSegmentDistance(x, y, source, target) {
+  const dx = target.x - source.x, dy = target.y - source.y, lengthSquared = dx * dx + dy * dy;
+  if (!lengthSquared) return Math.hypot(x - source.x, y - source.y);
+  const amount = Math.max(0, Math.min(1, ((x - source.x) * dx + (y - source.y) * dy) / lengthSquared));
+  return Math.hypot(x - (source.x + dx * amount), y - (source.y + dy * amount));
+}
+function buildSemanticEnvelopes(query, nodes, edges, size = 190) {
+  const bodies = [query, ...nodes];
+  if (!bodies.length) return null;
+  const extent = Math.min(1.12, Math.max(0.36, ...bodies.map((body) => Math.max(Math.abs(body.x), Math.abs(body.y)) + 0.19))), byId = new Map(nodes.map((node) => [node.id, node])), bands = [];
+  for (let band = 0; band < 6; band++) {
+    const threshold = band / 6, eligible = nodes.filter((node) => node.relevance >= threshold), eligibleIds = new Set(eligible.map((node) => node.id)), points = [query, ...eligible], connections = (edges || []).filter((edge) => edge.residual > 0 && eligibleIds.has(edge.source) && eligibleIds.has(edge.target)).map((edge) => ({ source: byId.get(edge.source), target: byId.get(edge.target), width: (0.045 + edge.strength * 0.04) * (1 - band * 0.055) })), radius = 0.145 - band * 9e-3, field = new Float32Array(size * size);
+    for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
+      const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
+      let signedDistance = -Infinity;
+      for (const point of points) signedDistance = Math.max(signedDistance, radius - Math.hypot(x - point.x, y - point.y));
+      for (const connection of connections) signedDistance = Math.max(signedDistance, connection.width - pointSegmentDistance(x, y, connection.source, connection.target));
+      field[row * size + column] = signedDistance;
     }
-    const support = Math.min(1, supportTotal * 1.28);
-    field[row * size + column] = weightTotal ? Math.max(0, Math.min(1, weightedElevation / weightTotal * support)) : 0;
+    bands.push(field);
   }
-  return { size, field, extent };
+  return { size, bands, extent };
 }
 var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   constructor(host, app, options = {}) {
@@ -72250,17 +72254,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       }
     }
   }
-  elevationSamples() {
-    const query = this.queryNode, byId = new Map(this.nodes.map((node) => [node.id, node])), points = [{ x: query.x, y: query.y, z: 1, influence: 0.24 }, ...this.nodes.map((node) => ({ x: node.x, y: node.y, z: node.elevation, influence: 0.145 + node.relevance * 0.035 }))], queryRidges = [...this.nodes].sort((first, second) => second.relevance - first.relevance).slice(0, 12);
-    for (const node of queryRidges) points.push({ x: (query.x + node.x) / 2, y: (query.y + node.y) / 2, z: (1 + node.elevation) / 2, influence: 0.11 + node.relevance * 0.045 });
-    const ridges = [...this.activeEdges || []].filter((edge) => edge.residual > 0).sort((first, second) => second.strength - first.strength).slice(0, Math.min(30, this.nodes.length * 2));
-    for (const edge of ridges) {
-      const source = byId.get(edge.source), target = byId.get(edge.target);
-      if (!source || !target) continue;
-      points.push({ x: (source.x + target.x) / 2, y: (source.y + target.y) / 2, z: (source.elevation + target.elevation) / 2, influence: 0.12 + edge.strength * 0.05 });
-    }
-    return points;
-  }
   startSimulation(alpha2 = 0.7) {
     this.alpha = Math.max(this.alpha, alpha2);
     if (this.simulationFrame) return;
@@ -72268,14 +72261,14 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       this.simulationFrame = null;
       if (!matchMedia("(prefers-reduced-motion: reduce)").matches) this.physicsStep(this.alpha);
       this.alpha *= 0.985;
-      if (!this.terrain || time - this.lastTerrainAt > 88) {
-        this.terrain = buildSmoothElevation(this.elevationSamples(), this.alpha < 0.08 ? 200 : 125);
+      if (!this.terrain || time - this.lastTerrainAt > 105) {
+        this.terrain = buildSemanticEnvelopes(this.queryNode, this.nodes, this.activeEdges, this.alpha < 0.08 ? 190 : 105);
         this.lastTerrainAt = time;
       }
       this.draw();
       if (this.alpha > 0.012 || this.dragging) this.simulationFrame = requestAnimationFrame(tick);
       else {
-        this.terrain = buildSmoothElevation(this.elevationSamples(), 220);
+        this.terrain = buildSemanticEnvelopes(this.queryNode, this.nodes, this.activeEdges, 220);
         this.draw();
       }
     };
@@ -72287,18 +72280,17 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   drawContours(ctx, width, height, colors2) {
     if (!this.terrain) return;
-    const { size, field, extent } = this.terrain, scale = Math.max(20, Math.min(width, height) / 2 - 68), toCanvas = (column, row) => [width / 2 + (column / (size - 1) * 2 - 1) * extent * scale, height / 2 + (row / (size - 1) * 2 - 1) * extent * scale];
+    const { size, bands, extent } = this.terrain, scale = Math.max(20, Math.min(width, height) / 2 - 68), toCanvas = (column, row) => [width / 2 + (column / (size - 1) * 2 - 1) * extent * scale, height / 2 + (row / (size - 1) * 2 - 1) * extent * scale];
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    const levels = [0.025, 1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6];
-    for (let levelIndex = 0; levelIndex < levels.length; levelIndex++) {
-      const level = levels[levelIndex], outer = levelIndex === 0;
+    for (let band = 0; band < bands.length; band++) {
+      const field = bands[band], outer = band === 0;
       ctx.beginPath();
       for (let row = 0; row < size - 1; row++) for (let column = 0; column < size - 1; column++) {
         const corners = [field[row * size + column], field[row * size + column + 1], field[(row + 1) * size + column + 1], field[(row + 1) * size + column]], crossings = [];
         const cross = (first, second, x1, y1, x2, y2) => {
-          if (first < level === second < level || first === second) return;
-          const amount = (level - first) / (second - first);
+          if (first < 0 === second < 0 || first === second) return;
+          const amount = -first / (second - first);
           crossings.push(toCanvas(x1 + (x2 - x1) * amount, y1 + (y2 - y1) * amount));
         };
         cross(corners[0], corners[1], column, row, column + 1, row);
@@ -72315,9 +72307,9 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
           ctx.lineTo(crossings[3][0], crossings[3][1]);
         }
       }
-      ctx.globalAlpha = outer ? 0.18 : 0.31;
+      ctx.globalAlpha = outer ? 0.2 : 0.31;
       ctx.strokeStyle = outer ? colors2.muted : colors2.normal;
-      ctx.lineWidth = outer ? 0.72 : 1.02;
+      ctx.lineWidth = outer ? 0.76 : 1.02;
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
