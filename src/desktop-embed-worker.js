@@ -1,10 +1,13 @@
 const { pipeline, env } = require('@huggingface/transformers');
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
+const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
 const QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';
 let configuration = null;
 let pipe = null;
 let modelPromise = null;
+let relationPipe = null;
+let relationPromise = null;
 let nextCacheId = 1;
 const pendingCache = new Map();
 let embedQueue = Promise.resolve();
@@ -60,10 +63,22 @@ async function embed(texts, query) {
   return { buffers, transfer: buffers };
 }
 
+async function initializeRelationModel() {
+  if (relationPipe) return relationPipe; if (relationPromise) return relationPromise; await initializeModel();
+  relationPromise = pipeline('text-classification', RELATION_MODEL_ID, { dtype: 'q8', progress_callback: progress => { if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'relation-progress', file: progress.file || 'relationship model', progress: Number(progress.progress) }); } });
+  try { relationPipe = await relationPromise; self.postMessage({ type: 'relation-ready' }); return relationPipe; } finally { relationPromise = null; }
+}
+function softmax(values) { const maximum = Math.max(...values), exponents = values.map(value => Math.exp(value - maximum)), total = exponents.reduce((sum, value) => sum + value, 0) || 1; return exponents.map(value => value / total); }
+async function classifyRelations(pairs) {
+  const classifier = await initializeRelationModel(), premises = pairs.map(pair => String(pair.premise || '').slice(0, 1200)), hypotheses = pairs.map(pair => String(pair.hypothesis || '').slice(0, 1200)), inputs = classifier.tokenizer(premises, { text_pair: hypotheses, padding: true, truncation: true, max_length: 256 }), output = await classifier.model(inputs), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label || {};
+  return pairs.map((_, index) => { const probabilities = softmax(Array.from(output.logits.data.slice(index * width, (index + 1) * width))), result = { entailment: 0, neutral: 0, contradiction: 0 }; probabilities.forEach((score, labelIndex) => { const label = String(labels[labelIndex] || labels[String(labelIndex)] || '').toLowerCase(); if (label.includes('entail') || !label && labelIndex === 2) result.entailment = score; else if (label.includes('contrad') || !label && labelIndex === 0) result.contradiction = score; else result.neutral = score; }); return result; });
+}
+
 async function handleEmbed(message) {
   try { const result = await embed(message.texts || [], Boolean(message.query)); self.postMessage({ type: 'result', id: message.id, buffers: result.buffers }, result.transfer); }
   catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
 }
+async function handleRelations(message) { try { self.postMessage({ type: 'relation-result', id: message.id, results: await classifyRelations(message.pairs || []) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
 
 self.onmessage = event => {
   const message = event.data;
@@ -72,6 +87,6 @@ self.onmessage = event => {
     if (message.error) pending.reject(new Error(message.error)); else pending.resolve(message.buffer || null); return;
   }
   if (message.type === 'init') { configuration = message; self.postMessage({ type: 'initialized' }); return; }
-  if (message.type !== 'embed') return;
-  embedQueue = embedQueue.then(() => handleEmbed(message));
+  if (message.type === 'embed') embedQueue = embedQueue.then(() => handleEmbed(message));
+  else if (message.type === 'relations') handleRelations(message);
 };
