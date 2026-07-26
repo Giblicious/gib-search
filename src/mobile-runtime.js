@@ -438,6 +438,11 @@ export class MobileSearchRuntime {
       edges: outputEdges.map(edge => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
     };
   }
+  semanticGenerations(seedFiles, generations = 1, limit = 5) {
+    const depth = Math.max(1, Math.min(3, Number(generations) || 1)), maximum = Math.max(1, Math.min(10, Number(limit) || 5)), vectors = this.fileVectors(), roots = [...new Set((seedFiles || []).filter(id => vectors.has(id)))], seen = new Set(roots), nodes = roots.map(id => ({ id, generation: 1, parent: null, relationScore: 1 })), edges = []; let frontier = roots;
+    for (let generation = 2; generation <= depth && frontier.length; generation++) { const candidates = []; for (const [id, entry] of vectors) { if (seen.has(id)) continue; let best = null; for (const parent of frontier) { const score = dot(vectors.get(parent).vector, entry.vector); if (!best || score > best.score) best = { id, parent, score }; } if (best) candidates.push(best); } const selected = candidates.sort((a, b) => b.score - a.score).slice(0, maximum); for (const item of selected) { seen.add(item.id); nodes.push({ id: item.id, generation, parent: item.parent, relationScore: item.score }); edges.push({ source: item.parent, target: item.id, score: item.score, generation }); } frontier = selected.map(item => item.id); }
+    return { nodes, edges };
+  }
   semanticNeighbors(file, limit = 18) {
     const vectors = this.fileVectors(); const center = vectors.get(file); if (!center) return { center: file, nodes: [], edges: [] };
     const ranked = [...vectors.entries()].filter(([id]) => id !== file).map(([id, entry]) => ({ id, label: basename(id), score: dot(center.vector, entry.vector) })).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(40, limit)));
