@@ -16,6 +16,12 @@ function tokens(source) {
     .filter(token => token.length > 2)
     .map(token => token.replace(/ies$/, 'y').replace(/ing$/, '').replace(/s$/, ''));
 }
+function spellingTerms(source) { return (String(source || '').toLowerCase().match(/[\p{L}]+/gu) || []).filter(term => term.length >= 5 && !STOP_WORDS.has(term)); }
+function editDistanceWithin(first, second, maximum = 1) {
+  if (Math.abs(first.length - second.length) > maximum) return maximum + 1; let previous = Array.from({ length: second.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= first.length; row++) { const current = [row]; let rowMinimum = row; for (let column = 1; column <= second.length; column++) { const value = Math.min(current[column - 1] + 1, previous[column] + 1, previous[column - 1] + (first[row - 1] === second[column - 1] ? 0 : 1)); current[column] = value; rowMinimum = Math.min(rowMinimum, value); } if (rowMinimum > maximum) return maximum + 1; previous = current; }
+  return previous[second.length];
+}
 function lexicalCoverage(queryTokens, sourceTokens) {
   if (!queryTokens.length) return 0;
   return queryTokens.filter(token => sourceTokens.has(token)).length / queryTokens.length;
@@ -135,7 +141,7 @@ export function buildHighlightCandidates(file, chunk) {
 
 export class MobileSearchRuntime {
   constructor(plugin) {
-    this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.highlightVectors = []; this.highlightPhraseVectors = new Map(); this.packedVectors = new Float32Array(); this.packedHighlightVectors = new Int16Array(); this.lexical = [];
+    this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.highlightVectors = []; this.highlightPhraseVectors = new Map(); this.packedVectors = new Float32Array(); this.packedHighlightVectors = new Int16Array(); this.lexical = []; this.spellingVocabulary = new Map(); this.spellingByLength = new Map();
     this.pipe = null; this.modelPromise = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Semantic search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
     this.listeners = new Set(); this.updateTimer = null; this.indexRun = null; this.indexAgain = false; this.indexForce = false; this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt;
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
@@ -231,7 +237,13 @@ export class MobileSearchRuntime {
     return results;
   }
   async embed(text, query = false) { return (await this.embedBatch([text], query))[0]; }
-  refreshLexical() { this.lexical = this.meta.map(item => ({ filename: new Set(tokens(basename(item.file))), folder: new Set(tokens(dirname(item.file))) })); }
+  refreshLexical() {
+    this.spellingVocabulary.clear(); const addTerms = (source, weight) => { for (const term of new Set(spellingTerms(source))) this.spellingVocabulary.set(term, (this.spellingVocabulary.get(term) || 0) + weight); };
+    this.lexical = this.meta.map(item => { addTerms(basename(item.file), 4); addTerms(dirname(item.file), 2); addTerms(item.heading, 2); addTerms(item.text, 1); return { filename: new Set(tokens(basename(item.file))), folder: new Set(tokens(dirname(item.file))) }; }); this.spellingByLength.clear(); for (const term of this.spellingVocabulary.keys()) { if (!this.spellingByLength.has(term.length)) this.spellingByLength.set(term.length, []); this.spellingByLength.get(term.length).push(term); }
+  }
+  correctQuery(query) {
+    return String(query || '').replace(/[\p{L}]+/gu, word => { const lower = word.toLowerCase(); if (lower.length < 5 || this.spellingVocabulary.has(lower)) return word; let best = null, bestWeight = 0; for (let length = lower.length - 1; length <= lower.length + 1; length++) for (const candidate of this.spellingByLength.get(length) || []) { if (candidate[0] !== lower[0]) continue; const weight = this.spellingVocabulary.get(candidate) || 0; if (weight < 2 || editDistanceWithin(lower, candidate, 1) > 1) continue; if (weight > bestWeight || weight === bestWeight && candidate < best) { best = candidate; bestWeight = weight; } } if (!best) return word; if (word === word.toUpperCase()) return best.toUpperCase(); if (word[0] === word[0].toUpperCase()) return best[0].toUpperCase() + best.slice(1); return best; });
+  }
   refreshHighlightPhraseCache() { this.highlightPhraseVectors.clear(); this.meta.forEach((item, passageIndex) => (item.highlightCandidates || []).forEach((candidate, candidateIndex) => this.highlightPhraseVectors.set(candidate.phrase.trim().toLowerCase(), this.highlightVectors[passageIndex]?.[candidateIndex]))); }
   async loadIndex() {
     try {
@@ -346,8 +358,8 @@ export class MobileSearchRuntime {
   }
   cacheResult(cache, key, value, maximum) { cache.delete(key); cache.set(key, value); while (cache.size > maximum) cache.delete(cache.keys().next().value); return value; }
   async queryVector(query) {
-    const key = String(query || '').trim().replace(/\s+/g, ' ').toLowerCase(); const cached = this.queryCache.get(key); if (cached) return await cached;
-    const pending = this.embed(query, true); this.cacheResult(this.queryCache, key, pending, 48);
+    const prepared = this.correctQuery(query), key = String(prepared || '').trim().replace(/\s+/g, ' ').toLowerCase(); const cached = this.queryCache.get(key); if (cached) return await cached;
+    const pending = this.embed(prepared, true); this.cacheResult(this.queryCache, key, pending, 48);
     try { const vector = await pending; this.cacheResult(this.queryCache, key, vector, 48); return vector; } catch (error) { this.queryCache.delete(key); throw error; }
   }
   searchLive(query, topK, minScore, options = {}) {
@@ -366,7 +378,7 @@ export class MobileSearchRuntime {
     if (!this.vectors.length) throw new Error(this.message || 'The semantic index is not ready');
     const cacheKey = JSON.stringify([String(query).trim().toLowerCase(), topK, minScore, options.scoreWindow, options.folderPathBoost, Boolean(options.semanticHighlights), options.resultMinScore, options.singleWordMinScore, options.phraseMinScore, options.maxPhrases, options.highlightLimit || 15, options.file || '']);
     const cached = this.resultCache.get(cacheKey); if (cached) { this.cacheResult(this.resultCache, cacheKey, cached, 80); return cached; }
-    const queryVector = await this.queryVector(query); const queryTokens = [...new Set(tokens(query))]; const scores = [];
+    const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery); const queryTokens = [...new Set(tokens(`${query} ${correctedQuery}`))]; const scores = [];
     for (let i = 0; i < this.vectors.length; i++) {
       if (options.file && this.meta[i].file !== options.file) continue; const semantic = dotPacked(queryVector, this.packedVectors, i * DIMENSION); if (semantic < minScore) continue;
       const filenameBoost = lexicalCoverage(queryTokens, this.lexical[i].filename) * .05; const folderPathBoost = (options.folderPathBoost || 0) * lexicalCoverage(queryTokens, this.lexical[i].folder);
@@ -374,7 +386,7 @@ export class MobileSearchRuntime {
     }
     scores.sort((a, b) => b.rankingScore - a.rankingScore); const floor = (scores[0]?.score || 0) - Math.max(0, Math.min(1, options.scoreWindow ?? 1)); const top = scores.filter(item => item.score >= floor).slice(0, topK);
     const results = top.map(item => ({ ...this.meta[item.index], passageIndex: item.index, score: Math.min(1, item.rankingScore), semanticScore: item.score, rankingScore: Math.min(1, item.rankingScore), filenameBoost: item.filenameBoost, folderPathBoost: item.folderPathBoost }));
-    if (options.semanticHighlights && results.length) await this.semanticHighlights(results, queryVector, { ...options, query }); return this.cacheResult(this.resultCache, cacheKey, results, 80);
+    if (options.semanticHighlights && results.length) await this.semanticHighlights(results, queryVector, { ...options, query: correctedQuery }); return this.cacheResult(this.resultCache, cacheKey, results, 80);
   }
   async scores(query) { const vector = await this.queryVector(query); const scores = {}; this.meta.forEach((item, index) => { const score = dotPacked(vector, this.packedVectors, index * DIMENSION); scores[item.file] = Math.max(scores[item.file] || -1, score); }); return scores; }
   fileVectors(files = null) {
