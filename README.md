@@ -4,7 +4,7 @@ Local semantic search and a similarity graph for Obsidian.
 
 Gib Search indexes note content, headings, filenames, entities, and optional folder-path signals. Search results include compact source excerpts, semantic phrase emphasis, ranking controls, and a living graph of related notes.
 
-The search popup includes four coordinated lenses. **Relevance** gives the strongest overall matches, **Concepts** groups distinct facets, **Arguments** separates support and tension, and **Context** favors notes connected to the wider vault. A lens changes both result ordering and the map layout; Relevance is the default and can be changed in settings.
+The search popup includes three coordinated lenses. **Relevance** gives the strongest overall matches while revealing the concepts within them, **Arguments** separates support and tension, and **Context** favors notes connected to the wider vault. A lens changes both result ordering and the map layout; Relevance is the default and can be changed in settings.
 
 The note-neighborhood pane offers the same lenses with the active note as its semantic center. Arguments compares relevant neighboring notes pairwise; it does not treat the first result or the active note as an authoritative claim.
 
