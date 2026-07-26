@@ -71823,14 +71823,40 @@ var init_mobile_runtime = __esm({
         const item = this.meta.find((value) => value.file === file);
         return item?.contentHash || `${file}:${item?.mtime || 0}`;
       }
-      async conceptFacets(query, files, evidence = /* @__PURE__ */ new Map()) {
-        return this.conceptFacetsFromVector(await this.queryVector(this.correctQuery(query)), files, evidence, query);
+      indexedConceptCandidates(queryVector, files, query = "") {
+        const requested = new Set(files), passages = /* @__PURE__ */ new Map();
+        this.meta.forEach((item, index3) => {
+          if (!requested.has(item.file) || !this.vectors[index3]) return;
+          const group = passages.get(item.file) || [];
+          group.push({ index: index3, score: dot(queryVector, this.vectors[index3]) });
+          passages.set(item.file, group);
+        });
+        const output = /* @__PURE__ */ new Map();
+        for (const file of files) {
+          const candidates = /* @__PURE__ */ new Map(), selected = (passages.get(file) || []).sort((a2, b) => b.score - a2.score).slice(0, 2);
+          for (const passage of selected) {
+            const item = this.meta[passage.index], vectors = this.highlightVectors[passage.index] || [];
+            (item.highlightCandidates || []).forEach((candidate, candidateIndex) => {
+              const vector = vectors[candidateIndex];
+              if (!vector?.length) return;
+              const accepted = conceptLabelCandidates(candidate.phrase, query, candidate.field).find((value2) => value2.phrase.toLowerCase() === candidate.phrase.trim().toLowerCase());
+              if (!accepted) return;
+              const value = { ...accepted, vector, field: candidate.field }, previous = candidates.get(value.key);
+              if (!previous || value.quality * value.novelty > previous.quality * previous.novelty) candidates.set(value.key, value);
+            });
+          }
+          output.set(file, candidates);
+        }
+        return output;
+      }
+      async conceptFacets(query, files) {
+        return this.conceptFacetsFromVector(await this.queryVector(this.correctQuery(query)), files, query);
       }
       conceptFacetsFromFile(file, files) {
         const vector = this.fileVectors([file]).get(file)?.vector;
         return vector ? this.conceptFacetsFromVector(vector, files) : /* @__PURE__ */ new Map();
       }
-      conceptFacetsFromVector(queryVector, files, evidence = /* @__PURE__ */ new Map(), query = "") {
+      conceptFacetsFromVector(queryVector, files, query = "") {
         const ordered = [...new Set((files || []).filter(Boolean))], vectors = this.fileVectors(ordered), entries = centeredVectorCloud(ordered.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: residualVector(vectors.get(id2).vector, queryVector) })));
         if (!entries.length) return /* @__PURE__ */ new Map();
         const neighbors = entries.map((entry, first) => entries.map((other, second) => first === second ? null : { second, score: dot(entry.vector, other.vector) }).filter(Boolean).sort((a2, b) => b.score - a2.score).slice(0, Math.min(4, Math.max(1, entries.length - 1)))), directed = neighbors.map((list4) => new Map(list4.map((item) => [item.second, item.score]))), edges = [];
@@ -71844,34 +71870,41 @@ var init_mobile_runtime = __esm({
           group.push(entry.id);
           groups.set(id2, group);
         }
-        const candidateSets = /* @__PURE__ */ new Map(), documentFrequency = /* @__PURE__ */ new Map();
-        for (const file of ordered) {
-          const candidates = new Map([...conceptLabelCandidates(evidence.get(file) || "", query), ...conceptLabelCandidates(basename(file), query, "filename")].map((candidate) => [candidate.key, candidate]));
-          candidateSets.set(file, candidates);
-          for (const key of candidates.keys()) documentFrequency.set(key, (documentFrequency.get(key) || 0) + 1);
-        }
-        const centroids = /* @__PURE__ */ new Map(), labels = /* @__PURE__ */ new Map();
+        const candidateSets = this.indexedConceptCandidates(queryVector, ordered, query), semanticCentroids = /* @__PURE__ */ new Map(), centroids = /* @__PURE__ */ new Map();
         for (const [community, members] of groups) {
-          const centroid = new Float32Array(DIMENSION);
+          const conceptual = new Float32Array(DIMENSION), semantic = new Float32Array(DIMENSION);
           for (const file of members) {
-            const vector = entries.find((entry) => entry.id === file)?.vector;
-            if (vector) for (let dimension = 0; dimension < DIMENSION; dimension++) centroid[dimension] += vector[dimension];
+            const conceptVector = entries.find((entry) => entry.id === file)?.vector, semanticVector = vectors.get(file)?.vector;
+            if (conceptVector) for (let dimension = 0; dimension < DIMENSION; dimension++) conceptual[dimension] += conceptVector[dimension];
+            if (semanticVector) for (let dimension = 0; dimension < DIMENSION; dimension++) semantic[dimension] += semanticVector[dimension];
           }
-          const norm = Math.sqrt(dot(centroid, centroid)) || 1;
-          for (let dimension = 0; dimension < DIMENSION; dimension++) centroid[dimension] /= norm;
-          centroids.set(community, centroid);
-          const counts = /* @__PURE__ */ new Map(), displays = /* @__PURE__ */ new Map();
+          const conceptNorm = Math.sqrt(dot(conceptual, conceptual)) || 1, semanticNorm = Math.sqrt(dot(semantic, semantic)) || 1;
+          for (let dimension = 0; dimension < DIMENSION; dimension++) {
+            conceptual[dimension] /= conceptNorm;
+            semantic[dimension] /= semanticNorm;
+          }
+          centroids.set(community, conceptual);
+          semanticCentroids.set(community, semantic);
+        }
+        const labels = /* @__PURE__ */ new Map();
+        for (const [community, members] of groups) {
+          const candidates = /* @__PURE__ */ new Map();
           for (const file of members) for (const [key, candidate] of candidateSets.get(file) || []) {
-            const value = counts.get(key) || { count: 0, quality: 0, novelty: 0 };
-            value.count++;
-            value.quality += candidate.quality;
-            value.novelty += candidate.novelty;
-            counts.set(key, value);
-            if (!displays.has(key)) displays.set(key, candidate.phrase);
+            const value = candidates.get(key) || { ...candidate, files: /* @__PURE__ */ new Set() };
+            value.files.add(file);
+            if (candidate.quality > value.quality) {
+              value.phrase = candidate.phrase;
+              value.quality = candidate.quality;
+              value.vector = candidate.vector;
+              value.novelty = candidate.novelty;
+            }
+            candidates.set(key, value);
           }
-          const ranked = [...counts].map(([key, value]) => ({ value: displays.get(key), score: value.count * Math.log(1 + entries.length / Math.max(1, documentFrequency.get(key) || 1)) * (1 + value.quality / value.count * 2.2) * value.novelty / value.count })).sort((a2, b) => b.score - a2.score || a2.value.localeCompare(b.value));
-          const best = ranked[0], runnerUp = ranked[1], labelConfidence = best ? Math.min(1, 0.34 + best.score / Math.max(1e-3, best.score + Number(runnerUp?.score || 0)) * 0.5 + Math.min(0.16, members.length / entries.length * 0.3)) : 0;
-          labels.set(community, { label: best ? String(best.value).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "", confidence: labelConfidence });
+          const centroid = semanticCentroids.get(community), otherCentroids = [...semanticCentroids].filter(([id2]) => id2 !== community).map(([, vector]) => vector), ranked = [...candidates.values()].map((candidate) => {
+            const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), memberCoverage = members.reduce((sum, file) => sum + Math.max(0, Math.min(1, (dotHighlight(vectors.get(file).vector, candidate.vector) + 1) / 2)), 0) / Math.max(1, members.length), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.5)), grounded = Math.sqrt(candidate.files.size / Math.max(1, members.length)), quality = Math.min(1, candidate.quality / 0.18), score = candidate.novelty * (centrality * 0.42 + memberCoverage * 0.25 + distinction * 0.2 + grounded * 0.08 + quality * 0.05);
+            return { ...candidate, score, centrality, memberCoverage, distinction };
+          }).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase)), best = ranked[0], runnerUp = ranked[1], margin = Number(best?.score || 0) - Number(runnerUp?.score || 0), confidence = best && best.score >= 0.56 && (margin >= 0.018 || best.files.size > 1) ? Math.max(0, Math.min(1, (best.score - 0.46) * 1.7 + margin * 2 + Math.min(0.14, best.files.size / members.length * 0.14))) : 0;
+          labels.set(community, { label: confidence >= 0.44 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "", confidence });
         }
         return new Map(entries.map((entry) => {
           const scored = [...centroids].map(([facet2, centroid]) => ({ facet: facet2, score: Math.max(1e-3, (dot(entry.vector, centroid) + 1) / 2) ** 5 })), total = scored.reduce((sum, item) => sum + item.score, 0) || 1, affinities = Object.fromEntries(scored.map((item) => [item.facet, item.score / total])), orderedScores = scored.map((item) => ({ ...item, affinity: item.score / total })).sort((a2, b) => b.affinity - a2.affinity), facet = orderedScores[0]?.facet ?? communities.get(entry.id) ?? 0, margin = Number(orderedScores[0]?.affinity || 0) - Number(orderedScores[1]?.affinity || 0), label = labels.get(facet) || { label: "", confidence: 0 }, confidence = Math.min(label.confidence, 0.3 + Number(orderedScores[0]?.affinity || 0) * 0.45 + margin * 0.55);
@@ -73403,8 +73436,7 @@ var SemanticSearchModal = class extends SuggestModal {
     try {
       const files = source.map((result) => result.file);
       if (lens === "relevance") {
-        const evidence = new Map(source.map((result) => [result.file, result.snippets.map((snippet) => `${snippet.heading || ""} ${snippet.text || ""}`).join(" ")]));
-        const facets = await this.plugin.search.conceptFacets(query, files, evidence);
+        const facets = await this.plugin.search.conceptFacets(query, files);
         if (version2 !== this.lensVersion) return;
         for (const result of source) {
           const info = facets.get(result.file);
