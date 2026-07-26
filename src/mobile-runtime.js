@@ -2,8 +2,10 @@ import { pipeline, env } from '@huggingface/transformers';
 import nlp from 'compromise';
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
+const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
 const DIMENSION = 384;
 const HIGHLIGHT_INDEX_VERSION = 1;
+const GRAPH_METADATA_VERSION = 1;
 const QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';
 const INDEXABLE = new Set(['md', 'txt', 'markdown']);
 const STOP_WORDS = new Set(['a', 'about', 'an', 'and', 'are', 'as', 'at', 'be', 'because', 'been', 'being', 'between', 'but', 'by', 'can', 'could', 'do', 'does', 'for', 'from', 'had', 'has', 'have', 'how', 'i', 'in', 'into', 'is', 'it', 'its', 'may', 'might', 'more', 'my', 'not', 'of', 'on', 'or', 'our', 'out', 'over', 'she', 'so', 'than', 'that', 'the', 'their', 'them', 'then', 'they', 'this', 'those', 'through', 'to', 'under', 'up', 'vs', 'was', 'we', 'were', 'what', 'when', 'where', 'which', 'while', 'who', 'with', 'without', 'would', 'you', 'your']);
@@ -33,6 +35,16 @@ function dot(a, b) {
 function dotPacked(query, packed, offset) { let score = 0; for (let i = 0; i < DIMENSION; i += 4) score += query[i] * packed[offset + i] + query[i + 1] * packed[offset + i + 1] + query[i + 2] * packed[offset + i + 2] + query[i + 3] * packed[offset + i + 3]; return score; }
 function stableAngle(value) { let hash = 2166136261; for (const character of String(value || '')) { hash ^= character.codePointAt(0); hash = Math.imul(hash, 16777619); } return ((hash >>> 0) / 4294967295) * Math.PI * 2; }
 function residualVector(vector, axis) { const projection = dot(vector, axis), residual = new Float32Array(vector.length); let norm = 0; for (let index = 0; index < vector.length; index++) { residual[index] = vector[index] - projection * axis[index]; norm += residual[index] ** 2; } norm = Math.sqrt(norm); if (norm < 1e-6) return vector; for (let index = 0; index < residual.length; index++) residual[index] /= norm; return residual; }
+function semanticTopicBasis(entries) {
+  if (!entries.length) return { center: new Float32Array(DIMENSION), axes: [new Float32Array(DIMENSION), new Float32Array(DIMENSION)] };
+  const center = new Float32Array(DIMENSION); for (const entry of entries) for (let dimension = 0; dimension < DIMENSION; dimension++) center[dimension] += entry.vector[dimension] / entries.length;
+  const component = (seed, previous = null) => { let axis = Float64Array.from({ length: DIMENSION }, (_, index) => Math.sin((index + 1) * seed) + Math.cos((index + 1) * (seed + .37))); for (let iteration = 0; iteration < 32; iteration++) { const next = new Float64Array(DIMENSION); for (const entry of entries) { let projection = 0; for (let dimension = 0; dimension < DIMENSION; dimension++) projection += (entry.vector[dimension] - center[dimension]) * axis[dimension]; for (let dimension = 0; dimension < DIMENSION; dimension++) next[dimension] += (entry.vector[dimension] - center[dimension]) * projection; } if (previous) { const overlap = next.reduce((sum, value, dimension) => sum + value * previous[dimension], 0); for (let dimension = 0; dimension < DIMENSION; dimension++) next[dimension] -= overlap * previous[dimension]; } const norm = Math.hypot(...next) || 1; axis = Float64Array.from(next, value => value / norm); } return Float32Array.from(axis); };
+  const first = component(1.17), second = component(2.73, first); return { center, axes: [first, second] };
+}
+function topicCoordinates(entries, center, axes) {
+  const raw = entries.map(entry => { let x = 0, y = 0; for (let dimension = 0; dimension < DIMENSION; dimension++) { const delta = entry.vector[dimension] - center[dimension]; x += delta * axes[0][dimension]; y += delta * axes[1][dimension]; } return { id: entry.id, x, y }; }); const extent = Math.max(.0001, ...raw.map(point => Math.hypot(point.x, point.y)));
+  return new Map(raw.map(point => { const angle = Math.atan2(point.y, point.x), strength = Math.min(1, Math.hypot(point.x, point.y) / extent); return [point.id, { topicAngle: angle, topicStrength: strength, topicHue: (angle * 180 / Math.PI + 360) % 360 }]; }));
+}
 function semanticProjection(centerId, centerVector, entries) {
   const points = [{ id: centerId, vector: centerVector }, ...entries]; const count = points.length; if (count < 2) return new Map(); const distances = Array.from({ length: count }, () => new Float64Array(count));
   for (let row = 0; row < count; row++) for (let column = row + 1; column < count; column++) { const squared = Math.max(0, 2 - 2 * Math.max(-1, Math.min(1, dot(points[row].vector, points[column].vector)))); distances[row][column] = squared; distances[column][row] = squared; }
@@ -110,6 +122,11 @@ function cleanText(source) {
     .replace(/!?(?:\[\[|\[)([^\]|]+)(?:\|[^\]]+)?(?:\]\]|\](?:\([^)]*\))?)/g, '$1')
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+] |\d+[.)] )\s*/gm, '').replace(/[*_~=#|<>]/g, ' ').replace(/\s+/g, ' ').trim();
 }
+function extractGraphEntities(source) {
+  const text = cleanText(source).slice(0, 12000); if (!text) return [];
+  const document = nlp(text), values = [...document.people().out('array'), ...document.places().out('array'), ...document.organizations().out('array'), ...document.topics().out('array')];
+  const seen = new Set(); return values.map(value => cleanText(value).replace(/[.,;:!?]+$/g, '').trim()).filter(value => { const key = value.toLowerCase(), words = key.split(/\s+/); if (key.length < 3 || key.length > 64 || words.length > 5 || STOP_WORDS.has(key) || GENERIC_CONCEPTS.has(key) || seen.has(key)) return false; seen.add(key); return true; }).slice(0, 24);
+}
 const IRREGULAR_LEMMAS = new Map([['felt', 'feel'], ['feels', 'feel'], ['feelings', 'feel'], ['children', 'child'], ['people', 'person'], ['men', 'man'], ['women', 'woman']]);
 function lemma(source) {
   const word = String(source || '').toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
@@ -162,7 +179,7 @@ export function buildHighlightCandidates(file, chunk) {
 
 export class MobileSearchRuntime {
   constructor(plugin) {
-    this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.highlightVectors = []; this.highlightPhraseVectors = new Map(); this.packedVectors = new Float32Array(); this.packedHighlightVectors = new Int16Array(); this.lexical = []; this.spellingVocabulary = new Map(); this.spellingByLength = new Map(); this.starfieldCache = null;
+    this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.highlightVectors = []; this.highlightPhraseVectors = new Map(); this.packedVectors = new Float32Array(); this.packedHighlightVectors = new Int16Array(); this.lexical = []; this.spellingVocabulary = new Map(); this.spellingByLength = new Map(); this.starfieldCache = null; this.topicBasisCache = null; this.relationCache = new Map(); this.relationPipe = null; this.relationModelPromise = null;
     this.pipe = null; this.modelPromise = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Semantic search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
     this.listeners = new Set(); this.updateTimer = null; this.indexRun = null; this.indexAgain = false; this.indexForce = false; this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt;
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
@@ -174,8 +191,8 @@ export class MobileSearchRuntime {
   changed() { for (const listener of this.listeners) listener(); }
   setState(phase, message) { if (phase !== this.phase) this.phaseStartedAt = Date.now(); this.phase = phase; this.message = message; this.lastEvent = message; this.lastError = phase === 'error' ? message : ''; this.changed(); }
   highlightPhraseCount() { return this.meta.reduce((total, item) => total + (item.highlightCandidates?.length || 0), 0); }
-  workerStatus() { return { phase: this.phase, message: this.message, pid: 'mobile', startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }; }
-  async health() { return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), modelProfile: 'bge', modelId: MODEL_ID, modelBackend: this.isMobile ? this.modelBackend : 'web-worker-wasm' }; }
+  workerStatus() { return { phase: this.phase, message: this.message, relationMessage: this.relationMessage || '', pid: 'mobile', startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }; }
+  async health() { return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), graphEntities: new Set(this.meta.flatMap(item => item.entities || [])).size, cachedRelationships: this.relationCache.size, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), relationModelLoaded: Boolean(this.relationPipe || this.plugin.desktopEmbedder?.relationReady), modelProfile: 'bge', modelId: MODEL_ID, modelBackend: this.isMobile ? this.modelBackend : 'web-worker-wasm' }; }
   async openDatabase() {
     if (this.database) return this.database;
     this.database = await new Promise((resolve, reject) => {
@@ -194,6 +211,15 @@ export class MobileSearchRuntime {
     if (!this.isMobile) return this.plugin.desktopIndexStore.put(value);
     const database = await this.openDatabase();
     return new Promise((resolve, reject) => { const request = database.transaction('indexes', 'readwrite').objectStore('indexes').put(value, this.indexKey); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); });
+  }
+  async loadRelationCache() {
+    try { let stored; if (this.isMobile) { const database = await this.openDatabase(); stored = await new Promise((resolve, reject) => { const request = database.transaction('indexes', 'readonly').objectStore('indexes').get(`${this.indexKey}:relationships`); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); } else stored = await this.plugin.desktopIndexStore.getRelations(); this.relationCache = new Map(Array.isArray(stored) ? stored : []); }
+    catch { this.relationCache = new Map(); }
+  }
+  async saveRelationCache() {
+    const entries = [...this.relationCache].slice(-600); this.relationCache = new Map(entries);
+    if (this.isMobile) { const database = await this.openDatabase(); await new Promise((resolve, reject) => { const request = database.transaction('indexes', 'readwrite').objectStore('indexes').put(entries, `${this.indexKey}:relationships`); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); }); }
+    else await this.plugin.desktopIndexStore.putRelations(entries);
   }
   async migrateLegacyIndex() {
     if (!this.isMobile) return;
@@ -258,6 +284,23 @@ export class MobileSearchRuntime {
     return results;
   }
   async embed(text, query = false) { return (await this.embedBatch([text], query))[0]; }
+  relationActivity(message = '') { this.relationMessage = message; this.changed(); }
+  async initializeRelationModel() {
+    if (this.relationPipe) return this.relationPipe; if (this.relationModelPromise) return this.relationModelPromise; await this.initializeModel(); this.relationActivity('Loading relationship intelligence');
+    this.relationModelPromise = pipeline('text-classification', RELATION_MODEL_ID, { dtype: 'q8', progress_callback: progress => { if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) this.relationActivity(`Downloading relationship model: ${Math.round(Number(progress.progress))}%`); } });
+    try { this.relationPipe = await this.relationModelPromise; this.relationActivity('Relationship intelligence ready'); return this.relationPipe; } finally { this.relationModelPromise = null; }
+  }
+  async classifyRelationPairs(pairs) {
+    if (!pairs.length) return []; if (!this.isMobile && this.plugin.desktopEmbedder) return this.plugin.desktopEmbedder.classifyRelations(pairs);
+    const classifier = await this.initializeRelationModel(), premises = pairs.map(pair => String(pair.premise || '').slice(0, 1200)), hypotheses = pairs.map(pair => String(pair.hypothesis || '').slice(0, 1200)), inputs = classifier.tokenizer(premises, { text_pair: hypotheses, padding: true, truncation: true, max_length: 256 }), output = await classifier.model(inputs), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label || {}, softmax = values => { const maximum = Math.max(...values), exponents = values.map(value => Math.exp(value - maximum)), total = exponents.reduce((sum, value) => sum + value, 0) || 1; return exponents.map(value => value / total); };
+    return pairs.map((_, index) => { const probabilities = softmax(Array.from(output.logits.data.slice(index * width, (index + 1) * width))), result = { entailment: 0, neutral: 0, contradiction: 0 }; probabilities.forEach((score, labelIndex) => { const label = String(labels[labelIndex] || labels[String(labelIndex)] || '').toLowerCase(); if (label.includes('entail') || !label && labelIndex === 2) result.entailment = score; else if (label.includes('contrad') || !label && labelIndex === 0) result.contradiction = score; else result.neutral = score; }); return result; });
+  }
+  async graphRelationships(edges, budget = 12) {
+    const maximum = Math.max(0, Math.min(30, Number(budget) || 0)), candidates = [...edges].filter(edge => edge.source && edge.target).sort((a, b) => Number(b.affinity || b.score || 0) - Number(a.affinity || a.score || 0)), output = new Map(), missing = [];
+    for (const edge of candidates) { const files = [edge.source, edge.target].sort(), key = `${RELATION_MODEL_ID}:${files[0]}:${this.fileFingerprint(files[0])}:${files[1]}:${this.fileFingerprint(files[1])}`, cached = this.relationCache.get(key); if (cached) output.set([edge.source, edge.target].sort().join('\0'), cached); else if (missing.length < maximum) missing.push({ edge, key, first: this.fileSummary(edge.source), second: this.fileSummary(edge.target) }); }
+    if (!missing.length) return output; this.relationActivity(`Reading ${missing.length} visible relationships`); const pairs = missing.flatMap(item => [{ premise: item.first, hypothesis: item.second }, { premise: item.second, hypothesis: item.first }]), classified = await this.classifyRelationPairs(pairs);
+    missing.forEach((item, index) => { const forward = classified[index * 2] || {}, reverse = classified[index * 2 + 1] || {}, contradiction = Math.max(Number(forward.contradiction || 0), Number(reverse.contradiction || 0)), entailment = (Number(forward.entailment || 0) + Number(reverse.entailment || 0)) / 2, neutral = (Number(forward.neutral || 0) + Number(reverse.neutral || 0)) / 2, type = contradiction >= .58 && contradiction > entailment ? 'contrast' : entailment >= .58 && entailment > contradiction ? 'support' : 'related', confidence = Math.max(contradiction, entailment, neutral), value = { type, confidence, contradiction, entailment, neutral }; this.relationCache.set(item.key, value); output.set([item.edge.source, item.edge.target].sort().join('\0'), value); }); await this.saveRelationCache(); this.relationActivity('Relationship intelligence ready'); return output;
+  }
   refreshLexical() {
     this.spellingVocabulary.clear(); const addTerms = (source, weight) => { for (const term of new Set(spellingTerms(source))) this.spellingVocabulary.set(term, (this.spellingVocabulary.get(term) || 0) + weight); };
     this.lexical = this.meta.map(item => { addTerms(basename(item.file), 4); addTerms(dirname(item.file), 2); addTerms(item.heading, 2); addTerms(item.text, 1); return { filename: new Set(tokens(basename(item.file))), folder: new Set(tokens(dirname(item.file))) }; }); this.spellingByLength.clear(); for (const term of this.spellingVocabulary.keys()) { if (!this.spellingByLength.has(term.length)) this.spellingByLength.set(term.length, []); this.spellingByLength.get(term.length).push(term); }
@@ -273,7 +316,7 @@ export class MobileSearchRuntime {
       if (all.length !== this.meta.length * DIMENSION) throw new Error('Index dimensions do not match BGE');
       const highlightCount = this.meta.reduce((total, item) => total + (item.highlightCandidates?.length || 0), 0); if (highlights.length !== highlightCount * DIMENSION) throw new Error('Highlight index dimensions do not match BGE');
       let highlightOffset = 0; this.highlightVectors = this.meta.map(item => (item.highlightCandidates || []).map(() => { const vector = highlights.subarray(highlightOffset, highlightOffset + DIMENSION); highlightOffset += DIMENSION; return vector; }));
-      this.packedVectors = all; this.packedHighlightVectors = highlights; this.vectors = this.meta.map((_, index) => all.subarray(index * DIMENSION, (index + 1) * DIMENSION)); this.refreshLexical(); this.refreshHighlightPhraseCache();
+      this.packedVectors = all; this.packedHighlightVectors = highlights; this.vectors = this.meta.map((_, index) => all.subarray(index * DIMENSION, (index + 1) * DIMENSION)); this.refreshLexical(); this.refreshHighlightPhraseCache(); await this.loadRelationCache();
     } catch (error) { this.plugin.logDiagnostic(`Index load failed: ${error?.message || String(error)}`, true); if (!this.isMobile) throw error; this.meta = []; this.vectors = []; this.highlightVectors = []; this.highlightPhraseVectors.clear(); this.packedVectors = new Float32Array(); this.packedHighlightVectors = new Int16Array(); this.refreshLexical(); }
   }
   async saveIndex() {
@@ -281,7 +324,7 @@ export class MobileSearchRuntime {
     this.vectors.forEach((vector, index) => packed.set(vector, index * DIMENSION));
     const highlightCount = this.highlightVectors.reduce((total, vectors) => total + vectors.length, 0); const packedHighlights = new Int16Array(highlightCount * DIMENSION); let highlightOffset = 0;
     this.highlightVectors.forEach(vectors => vectors.forEach(vector => { packedHighlights.set(vector, highlightOffset); highlightOffset += DIMENSION; }));
-    this.packedVectors = packed; this.packedHighlightVectors = packedHighlights; this.vectors = this.meta.map((_, index) => packed.subarray(index * DIMENSION, (index + 1) * DIMENSION)); highlightOffset = 0; this.highlightVectors = this.meta.map(item => (item.highlightCandidates || []).map(() => { const vector = packedHighlights.subarray(highlightOffset, highlightOffset + DIMENSION); highlightOffset += DIMENSION; return vector; })); this.queryCache.clear(); this.resultCache.clear(); this.starfieldCache = null;
+    this.packedVectors = packed; this.packedHighlightVectors = packedHighlights; this.vectors = this.meta.map((_, index) => packed.subarray(index * DIMENSION, (index + 1) * DIMENSION)); highlightOffset = 0; this.highlightVectors = this.meta.map(item => (item.highlightCandidates || []).map(() => { const vector = packedHighlights.subarray(highlightOffset, highlightOffset + DIMENSION); highlightOffset += DIMENSION; return vector; })); this.queryCache.clear(); this.resultCache.clear(); this.starfieldCache = null; this.topicBasisCache = null;
     await this.databasePut({ meta: this.meta, vectors: packed.buffer, highlightVectors: packedHighlights.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }); this.refreshLexical(); this.refreshHighlightPhraseCache();
   }
   storageBytes() { return this.vectors.length * DIMENSION * 4 + this.highlightVectors.reduce((total, vectors) => total + vectors.length, 0) * DIMENSION * 2 + new TextEncoder().encode(JSON.stringify(this.meta)).length; }
@@ -314,10 +357,10 @@ export class MobileSearchRuntime {
     const indexed = new Map(); this.meta.forEach(item => { const group = indexed.get(item.file) || []; group.push(item); indexed.set(item.file, group); });
     const changed = []; const contentByPath = new Map(); let metadataChanged = false;
     for (const file of files) {
-      const previous = indexed.get(file.path); const currentHighlights = previous?.every(item => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)); if (!force && currentHighlights && previous?.every(item => item.mtime === file.stat.mtime && item.contentHash)) continue;
+      const previous = indexed.get(file.path); const currentHighlights = previous?.every(item => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)), currentGraphMetadata = previous?.every(item => item.graphVersion === GRAPH_METADATA_VERSION && Array.isArray(item.entities)); if (!force && currentHighlights && currentGraphMetadata && previous?.every(item => item.mtime === file.stat.mtime && item.contentHash)) continue;
       const content = await this.plugin.app.vault.read(file); const fingerprint = contentFingerprint(content); const previousFingerprint = previous?.find(item => item.contentHash)?.contentHash;
       const unchanged = !force && currentHighlights && previous && (previousFingerprint === fingerprint || (!previousFingerprint && sameChunks(previous, chunkMarkdown(content))));
-      if (unchanged) { previous.forEach(item => { item.mtime = file.stat.mtime; item.contentHash = fingerprint; }); metadataChanged = true; }
+      if (unchanged) { previous.forEach(item => { item.mtime = file.stat.mtime; item.contentHash = fingerprint; item.graphVersion = GRAPH_METADATA_VERSION; item.entities = extractGraphEntities(`${basename(file.path)} ${item.heading || ''} ${item.text || ''}`); }); metadataChanged = true; }
       else { changed.push(file); contentByPath.set(file.path, content); }
       await yieldToUi();
     }
@@ -333,7 +376,7 @@ export class MobileSearchRuntime {
       try {
         const content = contentByPath.get(file.path) ?? await this.plugin.app.vault.read(file); const fingerprint = contentFingerprint(content); const chunks = chunkMarkdown(content); const embedded = await this.embedBatch(chunks.map(chunk => embeddingText(file.path, chunk))); const highlightCandidates = chunks.map(chunk => buildHighlightCandidates(file.path, chunk)); const embeddedHighlights = await this.embedHighlightCandidates(highlightCandidates);
         const retainedMeta = []; const retainedVectors = []; const retainedHighlights = []; for (let i = 0; i < meta.length; i++) if (meta[i].file !== file.path) { retainedMeta.push(meta[i]); retainedVectors.push(vectors[i]); retainedHighlights.push(highlightVectors[i] || []); }
-        meta = retainedMeta; vectors = retainedVectors; highlightVectors = retainedHighlights; chunks.forEach((chunk, index) => { meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: highlightCandidates[index] }); vectors.push(embedded[index]); highlightVectors.push(embeddedHighlights[index]); });
+        meta = retainedMeta; vectors = retainedVectors; highlightVectors = retainedHighlights; chunks.forEach((chunk, index) => { meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: highlightCandidates[index], graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ''} ${chunk.text}`) }); vectors.push(embedded[index]); highlightVectors.push(embeddedHighlights[index]); });
         this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks.length} chunks, ${highlightCandidates.flat().length} highlight phrases in ${Date.now() - fileStartedAt} ms`);
       } catch (error) { this.plugin.reportOnce(`Could not index ${file.path}: ${error.message}`); }
       this.processedFiles++;
@@ -399,14 +442,14 @@ export class MobileSearchRuntime {
     if (!this.vectors.length) throw new Error(this.message || 'The semantic index is not ready');
     const cacheKey = JSON.stringify([String(query).trim().toLowerCase(), topK, minScore, options.scoreWindow, options.folderPathBoost, Boolean(options.semanticHighlights), options.resultMinScore, options.singleWordMinScore, options.phraseMinScore, options.maxPhrases, options.highlightLimit || 15, options.file || '']);
     const cached = this.resultCache.get(cacheKey); if (cached) { this.cacheResult(this.resultCache, cacheKey, cached, 80); return cached; }
-    const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery); const queryTokens = [...new Set(tokens(`${query} ${correctedQuery}`))]; const scores = [];
+    const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery); const queryTokens = [...new Set(tokens(`${query} ${correctedQuery}`))], queryEntities = new Set(extractGraphEntities(`${query} ${correctedQuery}`).map(value => value.toLowerCase())); const scores = [];
     for (let i = 0; i < this.vectors.length; i++) {
       if (options.file && this.meta[i].file !== options.file) continue; const semantic = dotPacked(queryVector, this.packedVectors, i * DIMENSION); if (semantic < minScore) continue;
-      const filenameBoost = lexicalCoverage(queryTokens, this.lexical[i].filename) * .05; const folderPathBoost = (options.folderPathBoost || 0) * lexicalCoverage(queryTokens, this.lexical[i].folder);
-      scores.push({ index: i, score: semantic, rankingScore: semantic + filenameBoost + folderPathBoost, filenameBoost, folderPathBoost });
+      const filenameBoost = lexicalCoverage(queryTokens, this.lexical[i].filename) * .05; const folderPathBoost = (options.folderPathBoost || 0) * lexicalCoverage(queryTokens, this.lexical[i].folder), passageEntities = new Set((this.meta[i].entities || []).map(value => String(value).toLowerCase())), entityBoost = queryEntities.size ? [...queryEntities].filter(entity => passageEntities.has(entity)).length / queryEntities.size * .025 : 0;
+      scores.push({ index: i, score: semantic, rankingScore: semantic + filenameBoost + folderPathBoost + entityBoost, filenameBoost, folderPathBoost, entityBoost });
     }
     scores.sort((a, b) => b.rankingScore - a.rankingScore); const floor = (scores[0]?.score || 0) - Math.max(0, Math.min(1, options.scoreWindow ?? 1)); const top = scores.filter(item => item.score >= floor).slice(0, topK);
-    const results = top.map(item => ({ ...this.meta[item.index], passageIndex: item.index, score: Math.min(1, item.rankingScore), semanticScore: item.score, rankingScore: Math.min(1, item.rankingScore), filenameBoost: item.filenameBoost, folderPathBoost: item.folderPathBoost }));
+    const results = top.map(item => ({ ...this.meta[item.index], passageIndex: item.index, score: Math.min(1, item.rankingScore), semanticScore: item.score, rankingScore: Math.min(1, item.rankingScore), filenameBoost: item.filenameBoost, folderPathBoost: item.folderPathBoost, entityBoost: item.entityBoost }));
     if (options.semanticHighlights && results.length) await this.semanticHighlights(results, queryVector, { ...options, query: correctedQuery }); return this.cacheResult(this.resultCache, cacheKey, results, 80);
   }
   async scores(query) { const vector = await this.queryVector(query); const scores = {}; this.meta.forEach((item, index) => { const score = dotPacked(vector, this.packedVectors, index * DIMENSION); scores[item.file] = Math.max(scores[item.file] || -1, score); }); return scores; }
@@ -420,6 +463,17 @@ export class MobileSearchRuntime {
     for (const entry of groups.values()) { const norm = Math.sqrt(dot(entry.vector, entry.vector)) || 1; for (let dimension = 0; dimension < DIMENSION; dimension++) entry.vector[dimension] /= norm; }
     return groups;
   }
+  fileEntities(files = null) {
+    const requested = files ? new Set(files) : null, groups = new Map(); for (const item of this.meta) { if (requested && !requested.has(item.file)) continue; const values = groups.get(item.file) || new Set(); for (const entity of item.entities || []) values.add(String(entity).toLowerCase()); groups.set(item.file, values); } return groups;
+  }
+  topicBasis() {
+    const signature = `${this.meta.length}:${this.vectors.length}:${this.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}`; if (this.topicBasisCache?.signature === signature) return this.topicBasisCache;
+    const vectors = this.fileVectors(), entries = [...vectors].map(([id, value]) => ({ id, vector: value.vector })), basis = semanticTopicBasis(entries); this.topicBasisCache = { signature, ...basis }; return this.topicBasisCache;
+  }
+  fileSummary(file) {
+    const passages = this.meta.filter(item => item.file === file), headings = [...new Set(passages.map(item => item.heading).filter(Boolean))].slice(0, 3).join('. '), body = passages.map(item => cleanText(item.text)).filter(Boolean).join(' ').slice(0, 900); return `${basename(file)}. ${headings}${headings ? '. ' : ''}${body}`.slice(0, 1100);
+  }
+  fileFingerprint(file) { const item = this.meta.find(value => value.file === file); return item?.contentHash || `${file}:${item?.mtime || 0}`; }
   semanticMap(files) {
     const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 60); const vectors = this.fileVectors(ordered); const nodes = ordered.filter(id => vectors.has(id)).map(id => ({ id, label: basename(id) })); const edges = []; const seen = new Set();
     for (let i = 0; i < nodes.length; i++) {
@@ -438,20 +492,22 @@ export class MobileSearchRuntime {
     const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map(item => item.file))];
     const signature = `${this.meta.length}:${this.vectors.length}:${requested.join('\0')}`;
     if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
-      const vectors = this.fileVectors(requested), entries = requested.filter(id => vectors.has(id)).map(id => ({ id, vector: vectors.get(id).vector }));
-      const neighbors = entries.map((entry, first) => entries.map((other, second) => first === second ? null : { index: second, id: other.id, score: dot(entry.vector, other.vector) }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, 8)), directed = neighbors.map(list => { const floor = Number(list.at(-1)?.score || 0), spread = Math.max(.02, 1 - floor); return new Map(list.map(item => [item.index, { ...item, affinity: Math.max(.001, (item.score - floor) / spread) }])); }), edges = [], seen = new Set(), incident = new Set();
-      for (let first = 0; first < entries.length; first++) for (const [second, relation] of directed[first]) { if (second <= first) continue; const reverse = directed[second].get(first); if (!reverse) continue; const key = [entries[first].id, entries[second].id].sort().join('\0'); seen.add(key); incident.add(first); incident.add(second); edges.push({ source: entries[first].id, target: entries[second].id, score: relation.score, affinity: Math.sqrt(relation.affinity * reverse.affinity) }); }
+      const vectors = this.fileVectors(requested), entries = requested.filter(id => vectors.has(id)).map(id => ({ id, vector: vectors.get(id).vector })), entitySets = this.fileEntities(requested), entityFrequency = new Map(); for (const entities of entitySets.values()) for (const entity of entities) entityFrequency.set(entity, (entityFrequency.get(entity) || 0) + 1);
+      const entityAffinity = (first, second) => { const a = entitySets.get(first) || new Set(), b = entitySets.get(second) || new Set(); let shared = 0, aWeight = 0, bWeight = 0; for (const entity of a) { const weight = Math.log(1 + entries.length / Math.max(1, entityFrequency.get(entity) || 1)); aWeight += weight * weight; if (b.has(entity)) shared += weight * weight; } for (const entity of b) { const weight = Math.log(1 + entries.length / Math.max(1, entityFrequency.get(entity) || 1)); bWeight += weight * weight; } return shared / Math.max(.001, Math.sqrt(aWeight * bWeight)); };
+      const neighbors = entries.map((entry, first) => entries.map((other, second) => first === second ? null : { index: second, id: other.id, score: dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a, b) => b.score + b.entityScore * .08 - a.score - a.entityScore * .08).slice(0, 8)), directed = neighbors.map(list => { const floor = Number(list.at(-1)?.score || 0), spread = Math.max(.02, 1 - floor); return new Map(list.map(item => [item.index, { ...item, affinity: Math.max(.001, (item.score - floor) / spread) * .82 + item.entityScore * .18 }])); }), edges = [], seen = new Set(), incident = new Set();
+      for (let first = 0; first < entries.length; first++) for (const [second, relation] of directed[first]) { if (second <= first) continue; const reverse = directed[second].get(first); if (!reverse) continue; const key = [entries[first].id, entries[second].id].sort().join('\0'); seen.add(key); incident.add(first); incident.add(second); edges.push({ source: entries[first].id, target: entries[second].id, score: relation.score, entityScore: Math.max(relation.entityScore, reverse.entityScore), affinity: Math.sqrt(relation.affinity * reverse.affinity) }); }
       for (let first = 0; first < entries.length; first++) { if (incident.has(first) || !neighbors[first].length) continue; const relation = directed[first].get(neighbors[first][0].index), second = relation.index, key = [entries[first].id, entries[second].id].sort().join('\0'); if (seen.has(key)) continue; seen.add(key); incident.add(first); incident.add(second); edges.push({ source: entries[first].id, target: entries[second].id, score: relation.score, affinity: relation.affinity * .28, bridge: true }); }
+      for (let first = 0; first < entries.length; first++) { const related = entries.map((other, second) => second === first ? null : { second, score: entityAffinity(entries[first].id, other.id) }).filter(item => item?.score >= .16).sort((a, b) => b.score - a.score).slice(0, 2); for (const relation of related) { const key = [entries[first].id, entries[relation.second].id].sort().join('\0'); if (seen.has(key)) continue; seen.add(key); edges.push({ source: entries[first].id, target: entries[relation.second].id, score: dot(entries[first].vector, entries[relation.second].vector), entityScore: relation.score, affinity: .08 + relation.score * .28, entityBridge: true }); } }
       const communities = consolidateCommunities(entries, louvainCommunities(entries.map(entry => entry.id), edges)), positions = clusteredSemanticPositions(entries, communities);
-      this.starfieldCache = { signature, entries, edges, positions, communities };
+      this.starfieldCache = { signature, entries, edges, positions, communities, entitySets };
     }
-    const { entries, edges, positions, communities } = this.starfieldCache, trimmed = String(query || '').trim();
-    if (!trimmed) return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, community: communities.get(entry.id) ?? 0, ...(positions.get(entry.id) || {}) })), edges: edges.map(edge => ({ ...edge, residualScore: 0 })) };
-    const queryVector = await this.queryVector(this.correctQuery(trimmed)), residuals = new Map(entries.map(entry => [entry.id, residualVector(entry.vector, queryVector)]));
+    const { entries, edges, positions, communities, entitySets } = this.starfieldCache, trimmed = String(query || '').trim(), basis = this.topicBasis();
+    if (!trimmed) { const topics = topicCoordinates(entries, basis.center, basis.axes); return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, community: communities.get(entry.id) ?? 0, entities: [...(entitySets.get(entry.id) || [])].slice(0, 8), ...(positions.get(entry.id) || {}), ...(topics.get(entry.id) || {}) })), edges: edges.map(edge => ({ ...edge, residualScore: 0 })) }; }
+    const queryVector = await this.queryVector(this.correctQuery(trimmed)), residuals = new Map(entries.map(entry => [entry.id, residualVector(entry.vector, queryVector)])), topics = topicCoordinates(entries, queryVector, basis.axes);
     const outputEdges = [...edges], seen = new Set(edges.map(edge => [edge.source, edge.target].sort().join('\0'))), focus = new Set(focusFiles || []), focused = entries.filter(entry => focus.has(entry.id));
     for (const entry of focused) { const nearby = focused.filter(other => other.id !== entry.id).map(other => ({ source: entry.id, target: other.id, score: dot(entry.vector, other.vector) })).sort((a, b) => b.score - a.score); for (const edge of nearby.slice(0, 4)) { const key = [edge.source, edge.target].sort().join('\0'); if (seen.has(key)) continue; seen.add(key); outputEdges.push({ ...edge, affinity: Math.max(.04, (edge.score + 1) * .5) }); } }
     return {
-      nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), community: communities.get(entry.id) ?? 0, ...(positions.get(entry.id) || {}) })),
+      nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), community: communities.get(entry.id) ?? 0, entities: [...(entitySets.get(entry.id) || [])].slice(0, 8), ...(positions.get(entry.id) || {}), ...(topics.get(entry.id) || {}) })),
       edges: outputEdges.map(edge => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
     };
   }

@@ -2,7 +2,9 @@
 
 Local semantic search and a similarity graph for Obsidian.
 
-Gib Search indexes note content, headings, filenames, and optional folder-path signals. Search results include compact source excerpts, semantic phrase emphasis, ranking controls, and a graph of related notes.
+Gib Search indexes note content, headings, filenames, entities, and optional folder-path signals. Search results include compact source excerpts, semantic phrase emphasis, ranking controls, and a living graph of related notes.
+
+The optional magic graph combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. Hue represents semantic direction; distance represents query relevance; the strongest visible note relationships influence the graph's local shape.
 
 ## Install with BRAT
 
@@ -20,6 +22,7 @@ Each device builds its own local index. The first index can take several minutes
 - Notes, queries, embeddings, and indexes remain on the local device.
 - Inference runs directly inside Obsidian using the bundled WebAssembly engine.
 - BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached.
+- If relationship intelligence is enabled, MobileBERT MNLI is downloaded on its first graph analysis. It runs locally and its judgments are cached on the device.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 
@@ -27,7 +30,7 @@ On desktop, the model, index, and diagnostic logs are stored inside the Gib Sear
 
 ## Model
 
-Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements.
+Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. Optional support/contrast classification uses a quantized **MobileBERT MNLI** model only on a bounded set of visible graph connections.
 
 ## Commands
 
