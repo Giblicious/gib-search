@@ -70770,7 +70770,7 @@ function clusteredSemanticPositions(entries, communities) {
       positions.set(point.id, { x: center.x + (point.x - groupX) * 0.42 + Math.cos(angle) * jitter, y: center.y + (point.y - groupY) * 0.42 + Math.sin(angle) * jitter });
     }
   }
-  const extent = Math.max(1e-3, ...positions.values().map((point) => Math.hypot(point.x, point.y)));
+  const extent = Math.max(1e-3, ...[...positions.values()].map((point) => Math.hypot(point.x, point.y)));
   if (extent > 0.86) for (const point of positions.values()) {
     point.x *= 0.86 / extent;
     point.y *= 0.86 / extent;

@@ -88,6 +88,7 @@ if (!builtMain.includes('contextualExpression') || !builtMain.includes('indexedH
 if (builtMain.includes('function phraseCandidates(')) throw new Error('Legacy isolated n-gram highlighting is still bundled');
 if (/device\s*:\s*["'](?:wasm|webgpu)["']/.test(builtMain)) throw new Error('Inference device must be selected by the host runtime');
 if (/process\?\.release\?\.name\s*===\s*["']node["']/.test(builtMain)) throw new Error('Release build still contains Electron Node runtime detection');
+if (/\.(?:values|keys|entries)\(\)\.(?:map|filter|reduce|some|every|find|sort|slice)\b/.test(runtimeSource)) throw new Error('Runtime uses iterator helpers unavailable in the minimum release environment');
 
 const codeFiles = [
   'main.js', 'src/main.js', 'src/mobile-runtime.js', 'src/desktop-embed-worker.js', 'styles.css',
