@@ -70478,6 +70478,22 @@ function residualVector(vector, axis) {
   for (let index3 = 0; index3 < residual.length; index3++) residual[index3] /= norm;
   return residual;
 }
+function centeredVectorCloud(entries, reference = entries) {
+  if (!entries.length) return [];
+  const center = new Float32Array(entries[0].vector.length), source = reference.length ? reference : entries;
+  for (const entry of source) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] += entry.vector[dimension] / source.length;
+  return entries.map((entry) => {
+    const vector = new Float32Array(entry.vector.length);
+    let strength = 0;
+    for (let dimension = 0; dimension < vector.length; dimension++) {
+      vector[dimension] = entry.vector[dimension] - center[dimension];
+      strength += vector[dimension] ** 2;
+    }
+    strength = Math.sqrt(strength);
+    if (strength > 1e-6) for (let dimension = 0; dimension < vector.length; dimension++) vector[dimension] /= strength;
+    return { ...entry, vector, centeredStrength: strength };
+  });
+}
 function semanticTopicBasis(entries) {
   if (!entries.length) return { center: new Float32Array(DIMENSION), axes: [new Float32Array(DIMENSION), new Float32Array(DIMENSION)] };
   const center = new Float32Array(DIMENSION);
@@ -71815,7 +71831,7 @@ var init_mobile_runtime = __esm({
         return vector ? this.conceptFacetsFromVector(vector, files) : /* @__PURE__ */ new Map();
       }
       conceptFacetsFromVector(queryVector, files, evidence = /* @__PURE__ */ new Map(), query = "") {
-        const ordered = [...new Set((files || []).filter(Boolean))], vectors = this.fileVectors(ordered), entries = ordered.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: residualVector(vectors.get(id2).vector, queryVector) }));
+        const ordered = [...new Set((files || []).filter(Boolean))], vectors = this.fileVectors(ordered), entries = centeredVectorCloud(ordered.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: residualVector(vectors.get(id2).vector, queryVector) })));
         if (!entries.length) return /* @__PURE__ */ new Map();
         const neighbors = entries.map((entry, first) => entries.map((other, second) => first === second ? null : { second, score: dot(entry.vector, other.vector) }).filter(Boolean).sort((a2, b) => b.score - a2.score).slice(0, Math.min(4, Math.max(1, entries.length - 1)))), directed = neighbors.map((list4) => new Map(list4.map((item) => [item.second, item.score]))), edges = [];
         for (let first = 0; first < entries.length; first++) for (const relation of neighbors[first]) {
@@ -71916,7 +71932,7 @@ var init_mobile_runtime = __esm({
         const basis = this.topicBasis(), trimmed = String(query || "").trim(), centerFile = String(options.centerFile || ""), fileCenter = centerFile ? this.fileVectors([centerFile]).get(centerFile)?.vector : null, conditioned = Boolean(trimmed || fileCenter);
         let center = fileCenter ? Float32Array.from(fileCenter) : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
         if (!conditioned) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
-        const topics = topicCoordinates(entries, center, basis.axes), residuals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), conceptEntries = entries.map((entry) => ({ id: entry.id, vector: residuals.get(entry.id) })), conceptBasis = semanticTopicBasis(conceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
+        const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
         for (const entities of entitySets.values()) for (const entity2 of entities) frequency.set(entity2, (frequency.get(entity2) || 0) + 1);
         const entitySimilarity = (first, second) => {
           const a2 = entitySets.get(first) || /* @__PURE__ */ new Set(), b = entitySets.get(second) || /* @__PURE__ */ new Set();
@@ -71952,7 +71968,7 @@ var init_mobile_runtime = __esm({
         if (conditioned) {
           const positioned = /* @__PURE__ */ new Map();
           for (const entry of entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1)) {
-            const point = layout.get(entry.id), topic = conceptTopics.get(entry.id), angle = point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : Number(topic?.topicAngle || stableAngle(entry.id)), radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
+            const topic = conceptTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = Number(topic?.topicStrength || 0) > 0.015 ? Number(topic.topicAngle) : 0, angle = lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle, radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
             positioned.set(entry.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
           }
           const later = entries.filter((entry) => Number(nodeById.get(entry.id)?.generation || 1) > 1).sort((a2, b) => Number(nodeById.get(a2.id)?.generation || 1) - Number(nodeById.get(b.id)?.generation || 1));
