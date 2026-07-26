@@ -72684,7 +72684,15 @@ var SemanticMapCanvas = class {
   }
   hitAt(event) {
     const rect = this.canvas.getBoundingClientRect(), x = event.clientX - rect.left, y = event.clientY - rect.top;
-    return this.hit?.find((item) => Math.hypot(item.x - x, item.y - y) <= item.radius)?.node || null;
+    let closest = null, closestDistance = Infinity;
+    for (const item of this.hit || []) {
+      const distance = Math.hypot(item.x - x, item.y - y);
+      if (distance <= item.radius && distance < closestDistance) {
+        closest = item.node;
+        closestDistance = distance;
+      }
+    }
+    return closest;
   }
   pointerDown(event) {
     const node = this.hitAt(event);
@@ -73512,11 +73520,16 @@ var SemanticSearchModal = class extends SuggestModal {
       this.close();
       this.plugin.openNeighborhood(file, true);
     } });
-    this.selectionObserver = new MutationObserver(() => {
+    this.selectionObserver = new MutationObserver((mutations) => {
+      const selectionChanged = mutations.some((mutation) => {
+        const wasSelected = String(mutation.oldValue || "").split(/\s+/).includes("is-selected"), isSelected = mutation.target.classList?.contains("is-selected");
+        return wasSelected !== isSelected;
+      });
+      if (!selectionChanged) return;
       const selected = suggestions.querySelector(".suggestion-item.is-selected")?.dataset.gibFile;
-      if (selected) this.map?.setHover(selected);
+      this.map?.setHover(selected || null);
     });
-    this.selectionObserver.observe(suggestions, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    this.selectionObserver.observe(suggestions, { subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ["class"] });
     this.applyMapState();
   }
   applyMapState() {
