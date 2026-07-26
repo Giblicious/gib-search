@@ -71255,15 +71255,15 @@ var init_mobile_runtime = __esm({
       async graphRelationships(edges, budget = 12) {
         const maximum = Math.max(0, Math.min(30, Number(budget) || 0)), candidates = [...edges].filter((edge) => edge.source && edge.target).sort((a2, b) => Number(b.affinity || b.score || 0) - Number(a2.affinity || a2.score || 0)), output = /* @__PURE__ */ new Map(), missing = [];
         for (const edge of candidates) {
-          const files = [edge.source, edge.target].sort(), key = `${RELATION_MODEL_ID}:${files[0]}:${this.fileFingerprint(files[0])}:${files[1]}:${this.fileFingerprint(files[1])}`, cached = this.relationCache.get(key);
+          const first = cleanText(edge.sourceEvidence) || this.fileSummary(edge.source), second = cleanText(edge.targetEvidence) || this.fileSummary(edge.target), evidence = { [edge.source]: first, [edge.target]: second }, files = [edge.source, edge.target].sort(), key = `${RELATION_MODEL_ID}:evidence-v1:${files[0]}:${this.fileFingerprint(files[0])}:${contentFingerprint(evidence[files[0]])}:${files[1]}:${this.fileFingerprint(files[1])}:${contentFingerprint(evidence[files[1]])}`, cached = this.relationCache.get(key);
           if (cached) output.set([edge.source, edge.target].sort().join("\0"), cached);
-          else if (missing.length < maximum) missing.push({ edge, key, first: this.fileSummary(edge.source), second: this.fileSummary(edge.target) });
+          else if (missing.length < maximum) missing.push({ edge, key, first, second, evidence });
         }
         if (!missing.length) return output;
         this.relationActivity(`Reading ${missing.length} visible relationships`);
         const pairs3 = missing.flatMap((item) => [{ premise: item.first, hypothesis: item.second }, { premise: item.second, hypothesis: item.first }]), classified = await this.classifyRelationPairs(pairs3);
         missing.forEach((item, index3) => {
-          const forward = classified[index3 * 2] || {}, reverse3 = classified[index3 * 2 + 1] || {}, contradiction = Math.max(Number(forward.contradiction || 0), Number(reverse3.contradiction || 0)), entailment = (Number(forward.entailment || 0) + Number(reverse3.entailment || 0)) / 2, neutral = (Number(forward.neutral || 0) + Number(reverse3.neutral || 0)) / 2, type = contradiction >= 0.58 && contradiction > entailment ? "contrast" : entailment >= 0.58 && entailment > contradiction ? "support" : "related", confidence = Math.max(contradiction, entailment, neutral), value = { type, confidence, contradiction, entailment, neutral };
+          const forward = classified[index3 * 2] || {}, reverse3 = classified[index3 * 2 + 1] || {}, contradiction = Math.max(Number(forward.contradiction || 0), Number(reverse3.contradiction || 0)), entailment = (Number(forward.entailment || 0) + Number(reverse3.entailment || 0)) / 2, neutral = (Number(forward.neutral || 0) + Number(reverse3.neutral || 0)) / 2, type = contradiction >= 0.58 && contradiction > entailment ? "contrast" : entailment >= 0.58 && entailment > contradiction ? "support" : "related", confidence = Math.max(contradiction, entailment, neutral), value = { type, confidence, contradiction, entailment, neutral, evidence: item.evidence };
           this.relationCache.set(item.key, value);
           output.set([item.edge.source, item.edge.target].sort().join("\0"), value);
         });
@@ -72519,6 +72519,13 @@ function passageSearchResults(results, query, maximum) {
     return { file: hit.file, score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: [{ text: distillSnippet(hit.text, query, semanticHighlights), heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) }] };
   }).filter((result) => result.snippets[0].text);
 }
+function argumentEvidenceText(result) {
+  const snippet = result?.snippets?.[0];
+  if (!snippet) return "";
+  const heading = cleanSourceText(snippet.heading);
+  const text = cleanSourceText(snippet.text);
+  return `${heading ? `${heading}. ` : ""}${text}`.trim().slice(0, 720);
+}
 function renderHighlighted(parent, text, query, semanticPhrases = []) {
   const matches3 = [...new Set(semanticPhrases.filter((phrase) => {
     const words = phrase.trim().split(/\s+/).length;
@@ -73335,12 +73342,12 @@ var SemanticSearchModal = class extends SuggestModal {
       if (lens === "concepts") {
         const facets = await this.plugin.search.conceptFacets(query, files);
         if (version2 !== this.lensVersion) return;
-        const strongest = /* @__PURE__ */ new Map();
+        const strongest2 = /* @__PURE__ */ new Map();
         for (const result of source) {
           const facet = facets.get(result.file)?.facet ?? Number.MAX_SAFE_INTEGER;
-          strongest.set(facet, Math.max(strongest.get(facet) || 0, Number(result.score || 0)));
+          strongest2.set(facet, Math.max(strongest2.get(facet) || 0, Number(result.score || 0)));
         }
-        const facetOrder = new Map([...strongest].sort((a2, b) => b[1] - a2[1]).map(([facet], index3) => [facet, index3]));
+        const facetOrder = new Map([...strongest2].sort((a2, b) => b[1] - a2[1]).map(([facet], index3) => [facet, index3]));
         for (const result of source) {
           const info = facets.get(result.file);
           result.facet = info?.facet;
@@ -73364,23 +73371,30 @@ var SemanticSearchModal = class extends SuggestModal {
       if (!this.plugin.settings.graphRelationshipIntelligence || source.length < 2) return;
       await new Promise((resolve) => window.setTimeout(resolve, 180));
       if (version2 !== this.lensVersion) return;
-      const candidates = source.slice(0, Math.min(source.length, Math.max(this.visibleLimit || 10, 10))), edges = this.plugin.search.argumentCandidateEdges(candidates.map((result) => result.file)), budget = this.plugin.isMobile ? this.plugin.settings.graphRelationshipBudgetMobile : this.plugin.settings.graphRelationshipBudgetDesktop;
+      const candidates = source.slice(0, Math.min(source.length, Math.max(this.visibleLimit || 10, 10))), candidateByFile = new Map(candidates.map((result) => [result.file, result])), edges = this.plugin.search.argumentCandidateEdges(candidates.map((result) => result.file)).map((edge) => ({ ...edge, sourceEvidence: argumentEvidenceText(candidateByFile.get(edge.source)), targetEvidence: argumentEvidenceText(candidateByFile.get(edge.target)) })), budget = this.plugin.isMobile ? this.plugin.settings.graphRelationshipBudgetMobile : this.plugin.settings.graphRelationshipBudgetDesktop;
       this.map?.setIntelligenceStatus("Comparing positions\u2026");
       const details = await this.plugin.search.graphRelationships(edges, budget);
       if (version2 !== this.lensVersion) return;
       this.lensRelationships = details;
       this.lensRelationshipEdges = edges;
-      const counts = new Map(candidates.map((result) => [result.file, { support: 0, contrast: 0 }]));
+      const counts = new Map(candidates.map((result) => [result.file, { support: 0, contrast: 0 }])), strongest = /* @__PURE__ */ new Map();
       for (const edge of edges) {
         const relation = details.get(mapEdgeKey(edge.source, edge.target));
         if (!relation || relation.type === "related") continue;
         const key = relation.type === "contrast" ? "contrast" : "support";
         counts.get(edge.source)[key]++;
         counts.get(edge.target)[key]++;
+        for (const [file, counterpart] of [[edge.source, edge.target], [edge.target, edge.source]]) {
+          const score = Number(relation.confidence || 0) + (relation.type === "contrast" ? 0.025 : 0), previous = strongest.get(file);
+          if (previous && previous.score >= score) continue;
+          const ownResult = candidateByFile.get(file), counterpartResult = candidateByFile.get(counterpart);
+          strongest.set(file, { score, type: relation.type, counterpart, counterpartName: counterpart.replace(/\.md$/i, "").split("/").pop(), ownText: relation.evidence?.[file] || argumentEvidenceText(ownResult), counterpartText: relation.evidence?.[counterpart] || argumentEvidenceText(counterpartResult), ownHighlights: ownResult?.snippets?.[0]?.semanticHighlights || [], counterpartHighlights: counterpartResult?.snippets?.[0]?.semanticHighlights || [] });
+        }
       }
       for (const result of source) {
-        const count = counts.get(result.file);
+        const count = counts.get(result.file), evidence = strongest.get(result.file);
         result.lensLabel = !count ? "Position" : count.contrast && count.support ? "Mixed position" : count.contrast ? `${count.contrast} tension${count.contrast === 1 ? "" : "s"}` : count.support ? `${count.support} alignment${count.support === 1 ? "" : "s"}` : "Position";
+        result.argumentEvidence = evidence;
       }
       this.commitLensResults(source, version2);
       this.map?.setIntelligenceStatus("");
@@ -73455,6 +73469,18 @@ var SemanticSearchModal = class extends SuggestModal {
     const semantic = Math.round(Number(result.semanticScore || 0) * 100), filename = Math.round(Number(result.filenameBoost || 0) * 100), folderBoost = Math.round(Number(result.folderPathBoost || 0) * 100);
     score.setAttribute("title", `${SEARCH_LENSES[this.lens].label} score: ${(displayedScore * 100).toFixed(0)}% \xB7 Semantic: ${semantic}% \xB7 Filename: +${filename} \xB7 Folder: +${folderBoost}`);
     const snippets = container.createDiv({ cls: "gib-semantic-snippets" });
+    if (this.lens === "arguments" && result.argumentEvidence) {
+      const evidence = result.argumentEvidence, block = snippets.createDiv({ cls: `gib-semantic-snippet gib-semantic-argument-evidence is-${evidence.type}` }), heading = block.createDiv({ cls: "gib-semantic-result-heading gib-semantic-argument-heading" });
+      heading.createSpan({ text: evidence.type === "contrast" ? "Tension with " : "Aligns with " });
+      heading.createSpan({ cls: "gib-semantic-argument-note", text: evidence.counterpartName });
+      const own = block.createDiv({ cls: "gib-semantic-result-preview gib-semantic-argument-own" });
+      renderHighlighted(own, evidence.ownText, this.lastQuery, evidence.ownHighlights);
+      const compared = block.createDiv({ cls: "gib-semantic-argument-compared" });
+      compared.createDiv({ cls: "gib-semantic-argument-compared-label", text: "Compared passage" });
+      const counterpart = compared.createDiv({ cls: "gib-semantic-result-preview" });
+      renderHighlighted(counterpart, evidence.counterpartText, this.lastQuery, evidence.counterpartHighlights);
+      return;
+    }
     result.snippets.forEach((snippet, index3) => {
       const block = snippets.createDiv({ cls: "gib-semantic-snippet" });
       if (snippet.heading) {
