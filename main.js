@@ -72150,26 +72150,17 @@ function median(values) {
   const sorted = [...values].sort((a2, b) => a2 - b), middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
-function buildSemanticEnvelopes(query, nodes, edges, size = 190) {
-  const bodies = [query, ...nodes];
-  if (!bodies.length) return null;
-  const padding = 0.105, extent = Math.min(1.12, Math.max(0.36, ...bodies.map((body) => Math.max(Math.abs(body.x), Math.abs(body.y)) + padding + 0.045))), bands = [];
-  for (let band = 0; band < 6; band++) {
-    const threshold = band / 6, points = [query, ...nodes.filter((node) => node.relevance >= threshold)], nearest = points.map((point, index3) => Math.min(...points.filter((_2, other) => other !== index3).map((other) => Math.hypot(point.x - other.x, point.y - other.y)))), typicalSpacing = median(nearest.filter(Number.isFinite)), wrapReach = Math.max(padding * 2.35, Math.min(0.58, typicalSpacing * 2.15 || padding * 2.35));
-    const triangles = triangulateTerrain(points).filter((triangle) => {
-      const lengths = [Math.hypot(triangle[0].x - triangle[1].x, triangle[0].y - triangle[1].y), Math.hypot(triangle[1].x - triangle[2].x, triangle[1].y - triangle[2].y), Math.hypot(triangle[2].x - triangle[0].x, triangle[2].y - triangle[0].y)];
-      return Math.max(...lengths) <= wrapReach;
-    }), field = new Float32Array(size * size);
-    for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
-      const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
-      let signedDistance = -Infinity;
-      for (const point of points) signedDistance = Math.max(signedDistance, padding - Math.hypot(x - point.x, y - point.y));
-      for (const triangle of triangles) signedDistance = Math.max(signedDistance, padding - distanceToTriangle(x, y, triangle));
-      field[row * size + column] = signedDistance;
-    }
-    bands.push(field);
+function buildPaddedFootprint(points, size = 105) {
+  const padding = 0.12, extent = Math.min(1.12, Math.max(0.36, ...points.map((point) => Math.max(Math.abs(point.x), Math.abs(point.y)) + padding + 0.045))), nearest = points.map((point, index3) => Math.min(...points.filter((_2, other) => other !== index3).map((other) => Math.hypot(point.x - other.x, point.y - other.y)))), typicalSpacing = median(nearest.filter(Number.isFinite)), wrapReach = Math.max(padding * 2.35, Math.min(0.62, typicalSpacing * 2.2 || padding * 2.35));
+  const triangles = triangulateTerrain(points).filter((triangle) => Math.max(Math.hypot(triangle[0].x - triangle[1].x, triangle[0].y - triangle[1].y), Math.hypot(triangle[1].x - triangle[2].x, triangle[1].y - triangle[2].y), Math.hypot(triangle[2].x - triangle[0].x, triangle[2].y - triangle[0].y)) <= wrapReach), field = new Float32Array(size * size);
+  for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
+    const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
+    let signedDistance = -Infinity;
+    for (const point of points) signedDistance = Math.max(signedDistance, padding - Math.hypot(x - point.x, y - point.y));
+    for (const triangle of triangles) signedDistance = Math.max(signedDistance, padding - distanceToTriangle(x, y, triangle));
+    field[row * size + column] = signedDistance;
   }
-  return { size, bands, extent };
+  return { size, field, extent };
 }
 function contourSegments(field, size) {
   const segments = [], edgePoint = (edge, column, row, corners) => {
@@ -72214,6 +72205,34 @@ function stitchContourSegments(segments) {
     if (path2.length > 5) paths.push(path2);
   }
   return paths;
+}
+function buildTopographicTerrain(query, nodes) {
+  const elevated = [{ x: query.x, y: query.y, z: 1 }, ...nodes.map((node) => ({ x: node.x, y: node.y, z: node.elevation }))], footprint = buildPaddedFootprint(elevated), boundaryPaths = stitchContourSegments(contourSegments(footprint.field, footprint.size)), ground = [], seen = /* @__PURE__ */ new Set();
+  for (const path2 of boundaryPaths) {
+    const stride = Math.max(1, Math.ceil(path2.length / 48));
+    for (let index3 = 0; index3 < path2.length; index3 += stride) {
+      const point = path2[index3], sample = { x: (point.x / (footprint.size - 1) * 2 - 1) * footprint.extent, y: (point.y / (footprint.size - 1) * 2 - 1) * footprint.extent, z: 0 }, key = `${Math.round(sample.x * 1e4)}:${Math.round(sample.y * 1e4)}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        ground.push(sample);
+      }
+    }
+  }
+  const triangles = triangulateTerrain([...elevated, ...ground]).filter((triangle) => triangle.some((point) => point.z > 0));
+  return { triangles, extent: footprint.extent };
+}
+function topographicContourSegments(triangles, level) {
+  const segments = [];
+  for (const triangle of triangles) {
+    const crossings = [];
+    for (const [first, second] of [[triangle[0], triangle[1]], [triangle[1], triangle[2]], [triangle[2], triangle[0]]]) {
+      if (first.z < level === second.z < level || first.z === second.z) continue;
+      const amount = (level - first.z) / (second.z - first.z);
+      crossings.push({ x: first.x + (second.x - first.x) * amount, y: first.y + (second.y - first.y) * amount });
+    }
+    if (crossings.length === 2) segments.push(crossings);
+  }
+  return segments;
 }
 function drawSmoothContour(ctx, path2, toCanvas) {
   const points = path2.map((point) => toCanvas(point.x, point.y)), closed = Math.hypot(points[0][0] - points[points.length - 1][0], points[0][1] - points[points.length - 1][1]) < 2;
@@ -72337,13 +72356,13 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (!matchMedia("(prefers-reduced-motion: reduce)").matches) this.physicsStep(this.alpha);
       this.alpha *= 0.985;
       if (!this.terrain || time - this.lastTerrainAt > 105) {
-        this.terrain = buildSemanticEnvelopes(this.queryNode, this.nodes, this.activeEdges, this.alpha < 0.08 ? 190 : 105);
+        this.terrain = buildTopographicTerrain(this.queryNode, this.nodes);
         this.lastTerrainAt = time;
       }
       this.draw();
       if (this.alpha > 0.012 || this.dragging) this.simulationFrame = requestAnimationFrame(tick);
       else {
-        this.terrain = buildSemanticEnvelopes(this.queryNode, this.nodes, this.activeEdges, 220);
+        this.terrain = buildTopographicTerrain(this.queryNode, this.nodes);
         this.draw();
       }
     };
@@ -72355,11 +72374,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   drawContours(ctx, width, height, colors2) {
     if (!this.terrain) return;
-    const { size, bands, extent } = this.terrain, scale = Math.max(20, Math.min(width, height) / 2 - 68), toCanvas = (column, row) => [width / 2 + (column / (size - 1) * 2 - 1) * extent * scale, height / 2 + (row / (size - 1) * 2 - 1) * extent * scale];
+    const { triangles } = this.terrain, scale = Math.max(20, Math.min(width, height) / 2 - 68), toCanvas = (x, y) => [width / 2 + x * scale, height / 2 + y * scale], levels = [0.04, 0.2, 0.36, 0.52, 0.68, 0.84];
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    for (let band = 0; band < bands.length; band++) {
-      const outer = band === 0, paths = stitchContourSegments(contourSegments(bands[band], size));
+    for (let band = 0; band < levels.length; band++) {
+      const outer = band === 0, paths = stitchContourSegments(topographicContourSegments(triangles, levels[band]));
       ctx.beginPath();
       for (const path2 of paths) drawSmoothContour(ctx, path2, toCanvas);
       ctx.globalAlpha = outer ? 0.18 : 0.23 + band * 0.021;

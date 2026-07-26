@@ -50,13 +50,13 @@ if (builtMain.includes("if (!this.vectors.length) throw new Error(this.message |
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('SemanticMapCanvas') || !builtMain.includes('Open note neighborhood') || !builtMain.includes('Explore from note')) throw new Error('Semantic search map or note neighborhood UI is missing');
 if (!builtMain.includes('semanticTerrain(query, files)') || !builtMain.includes('semanticNeighbors(file')) throw new Error('Local semantic terrain data is missing');
-if (!builtMain.includes('LivingSemanticMapCanvas') || !builtMain.includes('buildSemanticEnvelopes') || !builtMain.includes('terrain.edges || []')) throw new Error('Living semantic envelopes or note gravity is missing');
+if (!builtMain.includes('LivingSemanticMapCanvas') || !builtMain.includes('buildTopographicTerrain') || !builtMain.includes('terrain.edges || []')) throw new Error('Living topographic terrain or note gravity is missing');
 if (!modalSource.includes('new LivingSemanticMapCanvas') || modalSource.includes('this.map = new SemanticMapCanvas')) throw new Error('Search modal is not using the living semantic terrain');
 if (!mainSource.includes('this.startSimulation(.9)') || !mainSource.includes("id: '__query__'") || !mainSource.includes('const centerX = bodies.reduce')) throw new Error('Unpinned query physics or whole-system recentering is missing');
-if (!mainSource.includes('this.activeEdges, 220')) throw new Error('High-resolution final envelopes are missing');
-if (mainSource.includes('buildSmoothElevation') || mainSource.includes('elevationSamples()') || mainSource.includes('weightedElevation')) throw new Error('Synthetic continuous terrain is still bundled');
-if (!mainSource.includes('for (let band = 0; band < 6; band++)') || !mainSource.includes('const threshold = band / 6')) throw new Error('Map must use six threshold relevance envelopes');
-if (!mainSource.includes('pointInTriangle') || !mainSource.includes('triangulateTerrain(points).filter') || !mainSource.includes('wrapReach')) throw new Error('Semantic envelopes are not padded concave hulls of their qualifying notes');
+if (!mainSource.includes('buildTopographicTerrain(this.queryNode, this.nodes)')) throw new Error('Continuous topographic terrain is missing');
+if (mainSource.includes('buildSmoothElevation') || mainSource.includes('elevationSamples()') || mainSource.includes('weightedElevation')) throw new Error('Synthetic radial terrain is still bundled');
+if (!mainSource.includes('levels = [.04, .2, .36, .52, .68, .84]')) throw new Error('Terrain must use six normalized elevation contours');
+if (!mainSource.includes('buildPaddedFootprint') || !mainSource.includes('z: 0') || !mainSource.includes('triangle.some(point => point.z > 0)')) throw new Error('Topographic terrain is missing its result-derived ground skirt');
 if (!mainSource.includes('stitchContourSegments') || !mainSource.includes('drawSmoothContour') || !mainSource.includes('quadraticCurveTo')) throw new Error('Semantic envelope paths are not stitched and curve-smoothed');
 if (!mainSource.includes('slice(0, 3)') || !mainSource.includes('charge = -Math.min')) throw new Error('Sparse semantic attraction or full-plane repulsion is missing');
 if (!runtimeSource.includes('residualVector(entry.vector, queryVector)')) throw new Error('Search-map grouping still includes the shared query direction');
