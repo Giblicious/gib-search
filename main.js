@@ -71420,7 +71420,7 @@ var init_mobile_runtime = __esm({
         }
         return { nodes, edges };
       }
-      async semanticTerrain(query, files) {
+      async semanticQueryMap(query, files) {
         const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 50), vectors = this.fileVectors(ordered), queryVector = await this.queryVector(query);
         const entries = ordered.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), residuals = entries.map((entry) => ({ id: entry.id, vector: residualVector(entry.vector, queryVector) })), positions = semanticProjection("__query__", queryVector, residuals);
         const edges = [];
@@ -71881,37 +71881,6 @@ function stableMapAngle(value) {
 function mapEdgeKey(a2, b) {
   return [a2, b].sort().join("\0");
 }
-function circumcircle(first, second, third) {
-  const denominator = 2 * (first.x * (second.y - third.y) + second.x * (third.y - first.y) + third.x * (first.y - second.y));
-  if (Math.abs(denominator) < 1e-8) return null;
-  const a2 = first.x ** 2 + first.y ** 2, b = second.x ** 2 + second.y ** 2, c2 = third.x ** 2 + third.y ** 2;
-  const x = (a2 * (second.y - third.y) + b * (third.y - first.y) + c2 * (first.y - second.y)) / denominator, y = (a2 * (third.x - second.x) + b * (first.x - third.x) + c2 * (second.x - first.x)) / denominator;
-  return { x, y, radiusSquared: (x - first.x) ** 2 + (y - first.y) ** 2 };
-}
-function triangulateTerrain(input) {
-  if (input.length < 3) return [];
-  const points = input.map((point) => ({ ...point }));
-  const extent = Math.max(1, ...points.flatMap((point) => [Math.abs(point.x), Math.abs(point.y)]));
-  const start2 = points.length;
-  points.push({ x: -20 * extent, y: -12 * extent }, { x: 0, y: 20 * extent }, { x: 20 * extent, y: -12 * extent });
-  let triangles = [[start2, start2 + 1, start2 + 2]];
-  for (let index3 = 0; index3 < start2; index3++) {
-    const bad = triangles.filter((triangle) => {
-      const circle = circumcircle(points[triangle[0]], points[triangle[1]], points[triangle[2]]);
-      return circle && (points[index3].x - circle.x) ** 2 + (points[index3].y - circle.y) ** 2 <= circle.radiusSquared + 1e-8;
-    });
-    const boundary = /* @__PURE__ */ new Map();
-    for (const triangle of bad) for (const edge of [[triangle[0], triangle[1]], [triangle[1], triangle[2]], [triangle[2], triangle[0]]]) {
-      const key = edge[0] < edge[1] ? `${edge[0]}:${edge[1]}` : `${edge[1]}:${edge[0]}`;
-      if (boundary.has(key)) boundary.delete(key);
-      else boundary.set(key, edge);
-    }
-    const removed = new Set(bad);
-    triangles = triangles.filter((triangle) => !removed.has(triangle));
-    for (const edge of boundary.values()) triangles.push([edge[0], edge[1], index3]);
-  }
-  return triangles.filter((triangle) => triangle.every((index3) => index3 < start2)).map((triangle) => triangle.map((index3) => points[index3]));
-}
 var SemanticMapCanvas = class {
   constructor(host, app, options = {}) {
     this.host = host;
@@ -71965,7 +71934,7 @@ var SemanticMapCanvas = class {
       const radius = 0.16 + (1 - relevance) * 0.7;
       const projected = Number.isFinite(value.x) && Number.isFinite(value.y), angle = projected ? Math.atan2(value.y, value.x) : stableMapAngle(value.id);
       const old = previous.get(value.id);
-      return { ...value, order, relevance, elevation: 0.12 + relevance * 0.76, radius, x: old?.x ?? 0, y: old?.y ?? 0, targetX: Math.cos(angle) * radius, targetY: Math.sin(angle) * radius };
+      return { ...value, order, relevance, radius, x: old?.x ?? 0, y: old?.y ?? 0, targetX: Math.cos(angle) * radius, targetY: Math.sin(angle) * radius };
     });
     this.settleLayout();
     this.byId = new Map(this.nodes.map((node) => [node.id, node]));
@@ -72040,35 +72009,6 @@ var SemanticMapCanvas = class {
     const scale = Math.max(20, Math.min(width, height) / 2 - 42);
     return [width / 2 + Number(node.renderX ?? node.targetX) * scale, height / 2 + Number(node.renderY ?? node.targetY) * scale];
   }
-  drawContours(ctx, width, height, colors2) {
-    const points = [{ x: 0, y: 0, z: 1 }, ...this.nodes.map((node) => ({ x: Number(node.renderX ?? node.targetX), y: Number(node.renderY ?? node.targetY), z: node.elevation }))], triangles = triangulateTerrain(points);
-    if (!triangles.length) return;
-    const scale = Math.max(20, Math.min(width, height) / 2 - 42), convert2 = (point) => [width / 2 + point.x * scale, height / 2 + point.y * scale];
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    for (let step = 1; step <= 9; step++) {
-      const level = step / 10, major = step % 2 === 0;
-      ctx.beginPath();
-      for (const triangle of triangles) {
-        const crossings = [];
-        for (const [first, second] of [[triangle[0], triangle[1]], [triangle[1], triangle[2]], [triangle[2], triangle[0]]]) {
-          if (first.z < level === second.z < level || first.z === second.z) continue;
-          const amount = (level - first.z) / (second.z - first.z);
-          crossings.push({ x: first.x + (second.x - first.x) * amount, y: first.y + (second.y - first.y) * amount });
-        }
-        if (crossings.length === 2) {
-          const from = convert2(crossings[0]), to2 = convert2(crossings[1]);
-          ctx.moveTo(from[0], from[1]);
-          ctx.lineTo(to2[0], to2[1]);
-        }
-      }
-      ctx.globalAlpha = major ? 0.34 : 0.2;
-      ctx.strokeStyle = major ? colors2.normal : colors2.muted;
-      ctx.lineWidth = major ? 1.05 : 0.7;
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-  }
   draw() {
     const rect = this.canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -72079,7 +72019,6 @@ var SemanticMapCanvas = class {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
     const colors2 = this.colors(), cx = rect.width / 2, cy = rect.height / 2;
-    this.drawContours(ctx, rect.width, rect.height, colors2);
     const focused = this.hovered || this.selected;
     this.hit = [];
     for (const node of this.nodes) {
@@ -72187,120 +72126,6 @@ var SemanticMapCanvas = class {
     this.resizeObserver?.disconnect();
   }
 };
-function median(values) {
-  if (!values.length) return 0;
-  const sorted = [...values].sort((a2, b) => a2 - b), middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-function contourSegments(field, size, level = 0) {
-  const segments = [], edgePoint = (edge, column, row, corners) => {
-    const definitions = [[0, 1, column, row, column + 1, row], [1, 2, column + 1, row, column + 1, row + 1], [2, 3, column + 1, row + 1, column, row + 1], [3, 0, column, row + 1, column, row]], [first, second, x1, y1, x2, y2] = definitions[edge], amount = (level - corners[first]) / (corners[second] - corners[first]);
-    return { x: x1 + (x2 - x1) * amount, y: y1 + (y2 - y1) * amount };
-  };
-  for (let row = 0; row < size - 1; row++) for (let column = 0; column < size - 1; column++) {
-    const corners = [field[row * size + column], field[row * size + column + 1], field[(row + 1) * size + column + 1], field[(row + 1) * size + column]], mask = corners.reduce((value, corner, index3) => value | (corner >= level ? 1 << index3 : 0), 0);
-    if (!mask || mask === 15) continue;
-    let pairs3 = { 1: [[3, 0]], 2: [[0, 1]], 3: [[3, 1]], 4: [[1, 2]], 6: [[0, 2]], 7: [[3, 2]], 8: [[2, 3]], 9: [[0, 2]], 11: [[1, 2]], 12: [[1, 3]], 13: [[0, 1]], 14: [[3, 0]] }[mask];
-    if (!pairs3) {
-      const centerInside = corners.reduce((sum, value) => sum + value, 0) / 4 >= level;
-      pairs3 = mask === 5 ? centerInside ? [[0, 1], [2, 3]] : [[3, 0], [1, 2]] : centerInside ? [[3, 0], [1, 2]] : [[0, 1], [2, 3]];
-    }
-    for (const [first, second] of pairs3) segments.push([edgePoint(first, column, row, corners), edgePoint(second, column, row, corners)]);
-  }
-  return segments;
-}
-function stitchContourSegments(segments) {
-  const key = (point) => `${Math.round(point.x * 1e3)}:${Math.round(point.y * 1e3)}`, byEndpoint = /* @__PURE__ */ new Map();
-  segments.forEach((segment, index3) => segment.forEach((point) => {
-    const value = key(point);
-    if (!byEndpoint.has(value)) byEndpoint.set(value, []);
-    byEndpoint.get(value).push(index3);
-  }));
-  const unused = new Set(segments.map((_2, index3) => index3)), paths = [];
-  while (unused.size) {
-    const firstIndex = unused.values().next().value, path2 = [...segments[firstIndex]];
-    unused.delete(firstIndex);
-    const extend2 = (atStart) => {
-      while (true) {
-        const endpoint = atStart ? path2[0] : path2[path2.length - 1], nextIndex = (byEndpoint.get(key(endpoint)) || []).find((index3) => unused.has(index3));
-        if (nextIndex === void 0) break;
-        const segment = segments[nextIndex], next = key(segment[0]) === key(endpoint) ? segment[1] : segment[0];
-        unused.delete(nextIndex);
-        if (atStart) path2.unshift(next);
-        else path2.push(next);
-      }
-    };
-    extend2(false);
-    extend2(true);
-    if (path2.length > 5) paths.push(path2);
-  }
-  return paths;
-}
-function prepareHeatInfluence(influence) {
-  const angle = influence.angle || 0;
-  return { ...influence, cosine: Math.cos(angle), sine: Math.sin(angle), inverseAlong: 1 / (influence.along * influence.along), inverseAcross: 1 / (influence.across * influence.across) };
-}
-function ellipticalHeat(x, y, influence) {
-  const dx = x - influence.x, dy = y - influence.y, along = dx * influence.cosine + dy * influence.sine, across = -dx * influence.sine + dy * influence.cosine;
-  return influence.weight * Math.exp(-0.5 * (along * along * influence.inverseAlong + across * across * influence.inverseAcross));
-}
-function buildSemanticHeatField(query, nodes, edges, size = 150) {
-  const bodies = [query, ...nodes], byId = new Map(nodes.map((node) => [node.id, node])), positiveByNode = new Map(nodes.map((node) => [node.id, []]));
-  for (const edge of edges || []) if (edge.residual > 0) {
-    positiveByNode.get(edge.source)?.push({ edge, other: byId.get(edge.target) });
-    positiveByNode.get(edge.target)?.push({ edge, other: byId.get(edge.source) });
-  }
-  const influences = bodies.map((body) => {
-    const distances = bodies.filter((other) => other !== body).map((other) => Math.hypot(other.x - body.x, other.y - body.y)).sort((a2, b) => a2 - b), localSpacing = median(distances.slice(0, 3)), bandwidth = Math.max(0.13, Math.min(0.27, 0.095 + localSpacing * 0.38));
-    if (body.isQuery) return prepareHeatInfluence({ x: body.x, y: body.y, weight: 1.7, along: bandwidth * 1.08, across: bandwidth * 1.08, angle: 0 });
-    let directionX = 0, directionY = 0, directionWeight = 0;
-    const relationships = [...positiveByNode.get(body.id) || [], { edge: { strength: 0.45 + body.relevance * 0.4, residual: 1 }, other: query }];
-    for (const { edge, other } of relationships) {
-      if (!other) continue;
-      const dx = other.x - body.x, dy = other.y - body.y, distance = Math.max(1e-3, Math.hypot(dx, dy)), weight = edge.strength * Math.max(0, edge.residual);
-      directionX += dx / distance * weight;
-      directionY += dy / distance * weight;
-      directionWeight += weight;
-    }
-    const coherence = directionWeight ? Math.min(1, Math.hypot(directionX, directionY) / directionWeight) : 0;
-    return prepareHeatInfluence({ x: body.x, y: body.y, weight: 0.2 + body.relevance * 0.58, along: bandwidth * (1 + coherence * 0.9), across: bandwidth * (1 - coherence * 0.18), angle: Math.atan2(directionY, directionX) });
-  });
-  const relational = (edges || []).map((edge) => {
-    const source = byId.get(edge.source), target = byId.get(edge.target);
-    if (!source || !target || Math.abs(edge.residual) < 0.04) return null;
-    const distance = Math.max(0.02, Math.hypot(target.x - source.x, target.y - source.y)), positive = edge.residual > 0;
-    return prepareHeatInfluence({ x: (source.x + target.x) / 2, y: (source.y + target.y) / 2, angle: Math.atan2(target.y - source.y, target.x - source.x), along: distance * 0.52 + 0.055, across: 0.055 + edge.strength * 0.035, weight: (positive ? 0.2 : -0.16) * edge.strength * Math.abs(edge.residual) });
-  }).filter(Boolean), extent = Math.min(1.18, Math.max(0.46, ...bodies.map((body) => Math.max(Math.abs(body.x), Math.abs(body.y)) + 0.32))), field = new Float32Array(size * size);
-  let maximum = 0;
-  for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
-    const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
-    let heat = 0;
-    for (const influence of influences) heat += ellipticalHeat(x, y, influence);
-    for (const influence of relational) heat += ellipticalHeat(x, y, influence);
-    heat = Math.max(0, heat);
-    field[row * size + column] = heat;
-    maximum = Math.max(maximum, heat);
-  }
-  if (maximum > 0) for (let index3 = 0; index3 < field.length; index3++) {
-    const normalized = Math.pow(field[index3] / maximum, 0.82);
-    field[index3] = normalized < 0.025 ? 0 : normalized;
-  }
-  return { size, field, extent };
-}
-function drawSmoothContour(ctx, path2, toCanvas) {
-  const points = path2.map((point) => toCanvas(point.x, point.y)), closed = Math.hypot(points[0][0] - points[points.length - 1][0], points[0][1] - points[points.length - 1][1]) < 2;
-  if (closed) points.pop();
-  if (points.length < 4) return;
-  const midpoint = (first, second) => [(first[0] + second[0]) / 2, (first[1] + second[1]) / 2], start2 = closed ? midpoint(points[points.length - 1], points[0]) : points[0];
-  ctx.moveTo(start2[0], start2[1]);
-  const end2 = closed ? points.length : points.length - 1;
-  for (let index3 = 0; index3 < end2; index3++) {
-    const point = points[index3], next = points[(index3 + 1) % points.length], middle = midpoint(point, next);
-    ctx.quadraticCurveTo(point[0], point[1], middle[0], middle[1]);
-  }
-  if (closed) ctx.closePath();
-  else ctx.lineTo(points[points.length - 1][0], points[points.length - 1][1]);
-}
 var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   constructor(host, app, options = {}) {
     super(host, app, options);
@@ -72308,7 +72133,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.animationFrame = null;
     this.simulationFrame = null;
     this.alpha = 0;
-    this.lastTerrainAt = 0;
   }
   setGraph(center, values, edges = []) {
     const sameCenter = this.center?.label === center?.label, previous = sameCenter ? this.byId : /* @__PURE__ */ new Map(), previousQuery = sameCenter ? this.queryNode : null, scores = values.map((value) => Number(value.score || 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(1e-3, high - low), vaultFiles = this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path)), vaultSizes = vaultFiles.map((file) => Math.log1p(Number(file.stat?.size || 0))), vaultLow = vaultSizes.length ? Math.min(...vaultSizes) : 0, vaultHigh = vaultSizes.length ? Math.max(...vaultSizes) : 1, vaultSpread = Math.max(1e-3, vaultHigh - vaultLow), vaultScale = new Map(vaultFiles.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - vaultLow) / vaultSpread]));
@@ -72317,7 +72141,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.queryNode = { id: "__query__", label: center?.label || "Query", isQuery: true, x: previousQuery?.x || 0, y: previousQuery?.y || 0, vx: previousQuery?.vx || 0, vy: previousQuery?.vy || 0 };
     this.nodes = values.map((value, order) => {
       const relevance = spread > 1e-3 && Number.isFinite(Number(value.score)) ? (Number(value.score) - low) / spread : 1 - order / Math.max(1, values.length), projected = Number.isFinite(value.x) && Number.isFinite(value.y), angle = stableMapAngle(value.id), old = previous.get(value.id);
-      return { ...value, fileScale: value.fileScale ?? vaultScale.get(value.id) ?? 0.35, order, relevance, elevation: 0.08 + relevance * 0.88, x: old?.x ?? (projected ? value.x : Math.cos(angle) * 0.45), y: old?.y ?? (projected ? value.y : Math.sin(angle) * 0.45), vx: old?.vx || 0, vy: old?.vy || 0 };
+      return { ...value, fileScale: value.fileScale ?? vaultScale.get(value.id) ?? 0.35, order, relevance, x: old?.x ?? (projected ? value.x : Math.cos(angle) * 0.45), y: old?.y ?? (projected ? value.y : Math.sin(angle) * 0.45), vx: old?.vx || 0, vy: old?.vy || 0 };
     });
     const overallScores = edges.map((edge) => Number(edge.score || 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow), relationships = edges.map((edge) => {
       const overall = (Number(edge.score || overallLow) - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0)));
@@ -72337,7 +72161,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.selected = this.byId.has(this.selected) ? this.selected : null;
     this.hovered = this.byId.has(this.hovered) ? this.hovered : null;
     this.statusEl.textContent = `${this.nodes.length} note${this.nodes.length === 1 ? "" : "s"}`;
-    this.terrain = null;
     this.startSimulation(0.9);
     this.updateDetail();
   }
@@ -72349,7 +72172,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const distance = Math.max(0.025, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const attraction = relationship && active.has(key) ? (distance - (0.14 + (1 - relationship.strength) * 0.3)) * (25e-4 + relationship.strength * 65e-4) * alpha2 : 0, contrast = relationship ? -Math.max(0, -relationship.residual) * 6e-3 * alpha2 : 0, charge = -Math.min(0.014, 22e-5 / (distance * distance)) * alpha2, collision = distance < 0.12 ? -(0.12 - distance) * 0.11 * alpha2 : 0, force = attraction + contrast + charge + collision;
+      const desired = relationship ? 0.16 + (1 - relationship.overall) * 0.34 + Math.max(0, -relationship.residual) * 0.1 : 0.5, attraction = relationship && active.has(key) ? (distance - desired) * (18e-4 + relationship.overall * 52e-4) * alpha2 : 0, contrast = relationship ? -Math.max(0, -relationship.residual) * (4e-3 + relationship.overall * 3e-3) * alpha2 : 0, charge = -Math.min(0.012, 2e-4 / (distance * distance)) * alpha2, collisionDistance = 0.085 + (Number(a2.fileScale ?? 0.35) + Number(b.fileScale ?? 0.35)) * 0.035, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.13 * alpha2 : 0, force = attraction + contrast + charge + collision;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -72404,42 +72227,18 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   startSimulation(alpha2 = 0.7) {
     this.alpha = Math.max(this.alpha, alpha2);
     if (this.simulationFrame) return;
-    const tick = (time) => {
+    const tick = () => {
       this.simulationFrame = null;
       if (!matchMedia("(prefers-reduced-motion: reduce)").matches) this.physicsStep(this.alpha);
-      this.alpha *= 0.985;
-      if (!this.terrain || time - this.lastTerrainAt > 105) {
-        this.terrain = buildSemanticHeatField(this.queryNode, this.nodes, this.activeEdges, this.alpha < 0.08 ? 180 : 105);
-        this.lastTerrainAt = time;
-      }
+      this.alpha *= 0.982;
       this.draw();
       if (this.alpha > 0.012 || this.dragging) this.simulationFrame = requestAnimationFrame(tick);
-      else {
-        this.terrain = buildSemanticHeatField(this.queryNode, this.nodes, this.activeEdges, 220);
-        this.draw();
-      }
     };
     this.simulationFrame = requestAnimationFrame(tick);
   }
   coordinates(node, width, height) {
     const scale = Math.max(20, Math.min(width, height) / 2 - 68);
     return [width / 2 + Number(node.x) * scale, height / 2 + Number(node.y) * scale];
-  }
-  drawContours(ctx, width, height, colors2) {
-    if (!this.terrain) return;
-    const { size, field, extent } = this.terrain, scale = Math.max(20, Math.min(width, height) / 2 - 68), toCanvas = (column, row) => [width / 2 + (column / (size - 1) * 2 - 1) * extent * scale, height / 2 + (row / (size - 1) * 2 - 1) * extent * scale], levels = [0.08, 0.21, 0.35, 0.5, 0.67, 0.84];
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    for (let band = 0; band < levels.length; band++) {
-      const outer = band === 0, paths = stitchContourSegments(contourSegments(field, size, levels[band]));
-      ctx.beginPath();
-      for (const path2 of paths) drawSmoothContour(ctx, path2, toCanvas);
-      ctx.globalAlpha = outer ? 0.16 : 0.21 + band * 0.025;
-      ctx.strokeStyle = outer ? colors2.muted : colors2.normal;
-      ctx.lineWidth = outer ? 0.68 : 0.76 + band * 0.05;
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
   }
   draw() {
     const rect = this.canvas.getBoundingClientRect();
@@ -72450,13 +72249,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const ctx = this.canvas.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    const colors2 = this.colors();
-    this.drawContours(ctx, rect.width, rect.height, colors2);
-    const focused = this.hovered || this.selected;
+    const colors2 = this.colors(), focused = this.hovered || this.selected, queryFocused = focused === this.queryNode.id;
     this.hit = [];
     for (const node of this.nodes) {
-      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, radius = 3.2 + Math.max(0, Math.min(1, Number(node.fileScale ?? 0.35))) * 4.8 + (active ? 1.2 : 0);
-      ctx.globalAlpha = focused && !active ? 0.45 : active ? 1 : 0.72 + node.relevance * 0.2;
+      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, relationship = focused && !queryFocused ? this.relationships.get(mapEdgeKey(node.id, focused)) : null, related = Number(relationship?.overall || 0), radius = 3.2 + Math.max(0, Math.min(1, Number(node.fileScale ?? 0.35))) * 4.8 + (active ? 1.2 : 0);
+      ctx.globalAlpha = !focused ? 0.72 + node.relevance * 0.2 : active ? 1 : queryFocused ? 0.4 + node.relevance * 0.48 : 0.3 + related * 0.55;
       ctx.fillStyle = active || node.id === this.selected ? colors2.accent : colors2.normal;
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
@@ -72492,7 +72289,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       this.dragging.x = (event.clientX - rect.left - rect.width / 2) / scale;
       this.dragging.y = (event.clientY - rect.top - rect.height / 2) / scale;
       this.dragging.vx = this.dragging.vy = 0;
-      this.terrain = null;
       this.startSimulation(0.38);
       return;
     }
@@ -72748,15 +72544,15 @@ var SemanticSearchModal = class extends SuggestModal {
     if (!this.map || !this.plugin.settings.searchMapEnabled) return;
     const version2 = ++this.mapVersion;
     const results = this.lastResults.slice(0, 40);
-    this.map.setTitle("Semantic terrain");
+    this.map.setTitle("Semantic map");
     if (!this.lastQuery || !results.length) {
       this.map.setGraph({ label: this.lastQuery || "Search" }, [], []);
       return;
     }
-    const terrain = await this.plugin.search.semanticTerrain(this.lastQuery, results.map((result) => result.file));
+    const graph = await this.plugin.search.semanticQueryMap(this.lastQuery, results.map((result) => result.file));
     if (version2 !== this.mapVersion) return;
     const byFile = new Map(results.map((result) => [result.file, result])), indexable = this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path)), sizes = indexable.map((file) => Math.log1p(Number(file.stat?.size || 0))), sizeLow = sizes.length ? Math.min(...sizes) : 0, sizeHigh = sizes.length ? Math.max(...sizes) : 1, sizeSpread = Math.max(1e-3, sizeHigh - sizeLow), fileScale = new Map(indexable.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - sizeLow) / sizeSpread]));
-    this.map.setGraph({ label: this.lastQuery }, terrain.nodes.map((node) => ({ ...node, score: Number(byFile.get(node.id)?.score || 0), fileScale: fileScale.get(node.id) ?? 0.35 })), terrain.edges || []);
+    this.map.setGraph({ label: this.lastQuery }, graph.nodes.map((node) => ({ ...node, score: Number(byFile.get(node.id)?.score || 0), fileScale: fileScale.get(node.id) ?? 0.35 })), graph.edges || []);
   }
   hoverResult(file) {
     for (const item2 of this.modalEl.querySelectorAll(".suggestion-item.is-map-hovered")) item2.removeClass("is-map-hovered");
