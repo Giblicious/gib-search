@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.6
+
+- Makes the query a draggable, unpinned participant in the same physics simulation as result notes.
+- Uses query-to-file relevance, overall file similarity, and signed query-conditioned residual similarity as distinct force layers.
+- Recenters the complete settled system without fixing any individual node to the canvas center.
+- Replaces ten contours with six simple relevance bands: five internal boundaries and the terrain's outer edge.
+- Connects terrain only along supported query and positive residual-semantic relationships without inventing ridge elevation.
+
 ## 0.5.5
 
 - Stops treating the map container as the terrain boundary.
