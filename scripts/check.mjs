@@ -50,12 +50,13 @@ if (builtMain.includes("if (!this.vectors.length) throw new Error(this.message |
 if (!builtMain.includes('searchLive(query')) throw new Error('Live semantic query scheduling is missing');
 if (!builtMain.includes('SemanticMapCanvas') || !builtMain.includes('Open note neighborhood') || !builtMain.includes('Explore from note')) throw new Error('Semantic search map or note neighborhood UI is missing');
 if (!builtMain.includes('semanticTerrain(query, files)') || !builtMain.includes('semanticNeighbors(file')) throw new Error('Local semantic terrain data is missing');
-if (!builtMain.includes('LivingSemanticMapCanvas') || !builtMain.includes('buildSmoothElevation') || !builtMain.includes('terrain.edges || []')) throw new Error('Living score-derived terrain or note gravity is missing');
+if (!builtMain.includes('LivingSemanticMapCanvas') || !builtMain.includes('buildSemanticEnvelopes') || !builtMain.includes('terrain.edges || []')) throw new Error('Living semantic envelopes or note gravity is missing');
 if (!modalSource.includes('new LivingSemanticMapCanvas') || modalSource.includes('this.map = new SemanticMapCanvas')) throw new Error('Search modal is not using the living semantic terrain');
 if (!mainSource.includes('this.startSimulation(.9)') || !mainSource.includes("id: '__query__'") || !mainSource.includes('const centerX = bodies.reduce')) throw new Error('Unpinned query physics or whole-system recentering is missing');
-if (!mainSource.includes('this.elevationSamples(), 220')) throw new Error('High-resolution final contours are missing');
-if (!mainSource.includes('distanceSquared >= radius ** 2') || !mainSource.includes('supportTotal * 1.28') || mainSource.includes('const perimeter = Array.from')) throw new Error('Terrain still expands to a container-shaped global boundary');
-if (!mainSource.includes('const levels = [.025, 1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6]')) throw new Error('Terrain must use six normalized relevance bands');
+if (!mainSource.includes('this.activeEdges, 220')) throw new Error('High-resolution final envelopes are missing');
+if (mainSource.includes('buildSmoothElevation') || mainSource.includes('elevationSamples()') || mainSource.includes('weightedElevation')) throw new Error('Synthetic continuous terrain is still bundled');
+if (!mainSource.includes('for (let band = 0; band < 6; band++)') || !mainSource.includes('const threshold = band / 6')) throw new Error('Map must use six threshold relevance envelopes');
+if (!mainSource.includes('pointSegmentDistance') || !mainSource.includes('edge.residual > 0 && eligibleIds.has')) throw new Error('Semantic envelopes are not limited to measured nodes and positive relationships');
 if (!mainSource.includes('slice(0, 3)') || !mainSource.includes('charge = -Math.min')) throw new Error('Sparse semantic attraction or full-plane repulsion is missing');
 if (!runtimeSource.includes('residualVector(entry.vector, queryVector)')) throw new Error('Search-map grouping still includes the shared query direction');
 if (!runtimeSource.includes('residualScore: dot(residuals[first].vector') || !mainSource.includes('relationship.residual') || !mainSource.includes('const desired = .14 + (1 - node.relevance)')) throw new Error('Three-layer query, file, and residual physics is incomplete');
