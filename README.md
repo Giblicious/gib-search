@@ -4,6 +4,8 @@ Local semantic search and a similarity graph for Obsidian.
 
 Gib Search indexes note content, headings, filenames, entities, and optional folder-path signals. Search results include compact source excerpts, semantic phrase emphasis, ranking controls, and a living graph of related notes.
 
+The search popup includes four coordinated lenses. **Relevance** gives the strongest overall matches, **Concepts** groups distinct facets, **Arguments** separates support and tension, and **Context** favors notes connected to the wider vault. A lens changes both result ordering and the map layout; Relevance is the default and can be changed in settings.
+
 The optional magic graph combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. These signals form one multi-relational distance model that is reduced into a query-conditioned 2D layout. Hue represents semantic direction, while lightweight physics animates and gently relaxes the calculated geometry.
 
 ## Install with BRAT
@@ -22,7 +24,7 @@ Each device builds its own local index. The first index can take several minutes
 - Notes, queries, embeddings, and indexes remain on the local device.
 - Inference runs directly inside Obsidian using the bundled WebAssembly engine.
 - BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached.
-- If relationship intelligence is enabled, MobileBERT MNLI is downloaded on its first graph analysis. It runs locally and its judgments are cached on the device.
+- If relationship intelligence is enabled, MobileBERT MNLI is downloaded the first time the Arguments lens needs it. It runs locally and its judgments are cached on the device.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 

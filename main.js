@@ -71790,6 +71790,60 @@ var init_mobile_runtime = __esm({
         const item = this.meta.find((value) => value.file === file);
         return item?.contentHash || `${file}:${item?.mtime || 0}`;
       }
+      async conceptFacets(query, files) {
+        const ordered = [...new Set((files || []).filter(Boolean))], vectors = this.fileVectors(ordered), queryVector = await this.queryVector(this.correctQuery(query)), entries = ordered.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: residualVector(vectors.get(id2).vector, queryVector) }));
+        if (!entries.length) return /* @__PURE__ */ new Map();
+        const neighbors = entries.map((entry, first) => entries.map((other, second) => first === second ? null : { second, score: dot(entry.vector, other.vector) }).filter(Boolean).sort((a2, b) => b.score - a2.score).slice(0, Math.min(4, Math.max(1, entries.length - 1)))), directed = neighbors.map((list4) => new Map(list4.map((item) => [item.second, item.score]))), edges = [];
+        for (let first = 0; first < entries.length; first++) for (const relation of neighbors[first]) {
+          if (relation.second <= first || !directed[relation.second].has(first)) continue;
+          edges.push({ source: entries[first].id, target: entries[relation.second].id, affinity: Math.max(1e-3, (relation.score + 1) / 2) });
+        }
+        const communities = consolidateCommunities(entries, louvainCommunities(entries.map((entry) => entry.id), edges)), entitySets = this.fileEntities(ordered), entityFrequency = /* @__PURE__ */ new Map();
+        for (const entities of entitySets.values()) for (const entity2 of entities) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
+        const groups = /* @__PURE__ */ new Map();
+        for (const entry of entries) {
+          const id2 = communities.get(entry.id) ?? 0, group = groups.get(id2) || [];
+          group.push(entry.id);
+          groups.set(id2, group);
+        }
+        const labels = /* @__PURE__ */ new Map();
+        for (const [community, members] of groups) {
+          const counts = /* @__PURE__ */ new Map();
+          for (const file of members) for (const entity2 of entitySets.get(file) || []) counts.set(entity2, (counts.get(entity2) || 0) + 1);
+          const ranked = [...counts].map(([value, count]) => ({ value, score: count * Math.log(1 + entries.length / Math.max(1, entityFrequency.get(value) || 1)) })).sort((a2, b) => b.score - a2.score || a2.value.localeCompare(b.value));
+          let label = ranked[0]?.value;
+          if (!label) {
+            const words = /* @__PURE__ */ new Map();
+            for (const file of members) for (const token of tokens(basename(file))) if (!STOP_WORDS.has(token) && !GENERIC_CONCEPTS.has(token) && !/^\d+$/.test(token)) words.set(token, (words.get(token) || 0) + 1);
+            label = [...words].sort((a2, b) => b[1] - a2[1] || a2[0].localeCompare(b[0]))[0]?.[0] || `Facet ${community + 1}`;
+          }
+          labels.set(community, String(label).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()));
+        }
+        return new Map(entries.map((entry) => {
+          const facet = communities.get(entry.id) ?? 0;
+          return [entry.id, { facet, label: labels.get(facet) || `Facet ${facet + 1}` }];
+        }));
+      }
+      contextScores(files) {
+        const ordered = [...new Set((files || []).filter(Boolean))], all4 = this.fileVectors(), semantic = /* @__PURE__ */ new Map();
+        for (const file of ordered) {
+          const vector = all4.get(file)?.vector;
+          if (!vector) {
+            semantic.set(file, 0);
+            continue;
+          }
+          const nearby = [...all4].filter(([id2]) => id2 !== file).map(([, entry]) => dot(vector, entry.vector)).sort((a2, b) => b - a2).slice(0, 6);
+          semantic.set(file, nearby.length ? nearby.reduce((sum, value) => sum + value, 0) / nearby.length : 0);
+        }
+        const resolved = this.plugin.app.metadataCache?.resolvedLinks || {}, degree = new Map(ordered.map((file) => [file, Object.keys(resolved[file] || {}).length]));
+        for (const targets of Object.values(resolved)) for (const target of Object.keys(targets || {})) if (degree.has(target)) degree.set(target, degree.get(target) + 1);
+        const normalize2 = (values) => {
+          const low = Math.min(...values), high = Math.max(...values), spread = Math.max(1e-3, high - low);
+          return (value) => (value - low) / spread;
+        }, semanticNorm = normalize2([...semantic.values()]), linkValues = [...degree.values()].map((value) => Math.log1p(value)), linkNorm = normalize2(linkValues), output = /* @__PURE__ */ new Map();
+        ordered.forEach((file, index3) => output.set(file, semanticNorm(semantic.get(file) || 0) * 0.72 + linkNorm(linkValues[index3] || 0) * 0.28));
+        return output;
+      }
       async multiRelationalLayout(query, nodes, relationships = /* @__PURE__ */ new Map(), options = {}) {
         const values = [...new Map((nodes || []).filter((node) => node?.id).map((node) => [node.id, node])).values()], nodeById = new Map(values.map((node) => [node.id, node])), files = values.map((node) => node.id), vectors = this.fileVectors(files), entries = values.filter((node) => vectors.has(node.id)).map((node) => ({ id: node.id, vector: vectors.get(node.id).vector }));
         if (!entries.length) return /* @__PURE__ */ new Map();
@@ -71816,25 +71870,14 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, trimmed && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = ["__center__", ...entries.map((entry) => entry.id)], distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
+        const lens = options.magic === false ? "relevance" : ["relevance", "concepts", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = { relevance: { semantic: 0.34, residual: 0.42, entity: 0.08, angular: 0.1, community: 0.06, stance: 0, relation: 0 }, concepts: { semantic: 0.2, residual: 0.28, entity: 0.12, angular: 0.08, community: 0.32, stance: 0, relation: 0 }, arguments: { semantic: 0.22, residual: 0.2, entity: 0.06, angular: 0.04, community: 0.06, stance: 0.18, relation: 0.24 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, stance: 0, relation: 0 } }[lens];
         for (let index3 = 1; index3 < ids.length; index3++) {
-          const value = 0.06 + (1 - relevance.get(ids[index3])) * 0.88;
+          const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
           distances[index3][0] = value;
         }
-        const magic = options.magic !== false;
         for (let first = 0; first < entries.length; first++) for (let second = first + 1; second < entries.length; second++) {
-          const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), firstTopic = topics.get(a2.id), secondTopic = topics.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstCommunity = nodeById.get(a2.id)?.community, secondCommunity = nodeById.get(b.id)?.community, community = firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1, relation = magic ? relationships.get([a2.id, b.id].sort().join("\0")) : null;
-          let weighted = 0.38 * semantic ** 2 + 0.32 * residual ** 2, weight = 0.7;
-          if (magic) {
-            weighted += 0.1 * entity2 ** 2 + 0.08 * angular ** 2 + 0.04 * community ** 2;
-            weight += 0.22;
-          }
-          if (relation) {
-            const relationDistance = relation.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46;
-            weighted += 0.08 * relationDistance ** 2;
-            weight += 0.08;
-          }
-          const distance = Math.sqrt(weighted / weight), row = first + 1, column = second + 1;
+          const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), firstTopic = topics.get(a2.id), secondTopic = topics.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, community = firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1, stance = !firstNode?.argumentGroup || !secondNode?.argumentGroup || firstNode.argumentGroup === secondNode.argumentGroup ? 0 : 1, relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.stance * stance ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + 1, column = second + 1;
           distances[row][column] = distance;
           distances[column][row] = distance;
         }
@@ -72029,7 +72072,16 @@ var MODEL_PROFILES = {
 var MODEL_TWEAK_DEFAULTS = {
   bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 }
 };
-var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
+var SEARCH_LENSES = {
+  relevance: { label: "Relevance", description: "Rank by overall relevance to the search." },
+  concepts: { label: "Concepts", description: "Group results into distinct conceptual facets." },
+  arguments: { label: "Arguments", description: "Organize results by support, tension, and related argument." },
+  context: { label: "Context", description: "Favor results that connect strongly to the wider vault." }
+};
+function validSearchLens(value) {
+  return SEARCH_LENSES[value] ? value : "relevance";
+}
+var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
 function activeIndexDir(plugin6) {
   return path.join(plugin6.pluginDir, "embeddings", MODEL_PROFILES.bge.indexFolder);
 }
@@ -73154,6 +73206,9 @@ var SemanticSearchModal = class extends SuggestModal {
     this.navigationHandler = null;
     this.map = null;
     this.mapVersion = 0;
+    this.lensVersion = 0;
+    this.lens = validSearchLens(plugin6.settings.defaultSearchLens);
+    this.lensRelationships = /* @__PURE__ */ new Map();
     this.mapGenerations = Math.max(1, Math.min(3, Number(plugin6.settings.searchMapGenerations) || 1));
     const fileName = filePath ? filePath.split("/").pop().replace(/\.md$/i, "") : "";
     this.setPlaceholder(filePath ? `Search within ${fileName}\u2026` : "Search vault by meaning\u2026");
@@ -73163,10 +73218,12 @@ var SemanticSearchModal = class extends SuggestModal {
     if (!query || query.trim().length < 2) {
       clearTimeout(this.debounceTimer);
       this.searchVersion++;
+      this.lensVersion++;
       const changed = Boolean(this.lastQuery);
       this.lastQuery = "";
       this.lastResults = [];
       this.mapResults = [];
+      this.lensRelationships = /* @__PURE__ */ new Map();
       if (changed) {
         this.map?.endQuery();
         window.setTimeout(() => this.updateMap(), 0);
@@ -73204,11 +73261,92 @@ var SemanticSearchModal = class extends SuggestModal {
             this.renderShowMore();
             this.updateMap();
           }, 0);
+          this.applyLens();
         }
       } catch (error) {
         if (error?.name !== "AbortError") this.plugin.reportOnce(error.message);
       }
     }, immediate ? 0 : 75);
+  }
+  commitLensResults(results, version2) {
+    if (version2 !== this.lensVersion || !this.lastQuery) return;
+    const requested = Math.max(this.visibleLimit || activeTweaks(this.plugin).topK, activeTweaks(this.plugin).topK);
+    this.lastResults = results.slice(0, requested);
+    this.updateSuggestions();
+    window.setTimeout(() => {
+      this.renderShowMore();
+      this.updateMap();
+    }, 0);
+  }
+  async applyLens() {
+    const version2 = ++this.lensVersion, lens = this.lens, query = this.lastQuery, source = this.mapResults.map((result) => ({ ...result, lensLabel: "", lensScore: Number(result.score || 0), facet: void 0, argumentGroup: void 0, contextScore: void 0 }));
+    this.lensRelationships = /* @__PURE__ */ new Map();
+    if (!query || !source.length) return;
+    this.lensSelect?.toggleClass("is-working", lens !== "relevance");
+    try {
+      if (lens === "relevance") return this.commitLensResults(source, version2);
+      const files = source.map((result) => result.file);
+      if (lens === "concepts") {
+        const facets = await this.plugin.search.conceptFacets(query, files);
+        if (version2 !== this.lensVersion) return;
+        const strongest = /* @__PURE__ */ new Map();
+        for (const result of source) {
+          const facet = facets.get(result.file)?.facet ?? Number.MAX_SAFE_INTEGER;
+          strongest.set(facet, Math.max(strongest.get(facet) || 0, Number(result.score || 0)));
+        }
+        const facetOrder = new Map([...strongest].sort((a2, b) => b[1] - a2[1]).map(([facet], index3) => [facet, index3]));
+        for (const result of source) {
+          const info = facets.get(result.file);
+          result.facet = info?.facet;
+          result.lensLabel = info?.label || "Other";
+        }
+        source.sort((a2, b) => (facetOrder.get(a2.facet ?? Number.MAX_SAFE_INTEGER) ?? 999) - (facetOrder.get(b.facet ?? Number.MAX_SAFE_INTEGER) ?? 999) || b.score - a2.score);
+        return this.commitLensResults(source, version2);
+      }
+      if (lens === "context") {
+        const context = this.plugin.search.contextScores(files);
+        for (const result of source) {
+          result.contextScore = Number(context.get(result.file) || 0);
+          result.lensScore = Number(result.score || 0) * 0.62 + result.contextScore * 0.38;
+          result.lensLabel = "Vault context";
+        }
+        source.sort((a2, b) => b.lensScore - a2.lensScore || b.score - a2.score);
+        return this.commitLensResults(source, version2);
+      }
+      const anchor = source[0];
+      for (const result of source) {
+        result.argumentGroup = result === anchor ? "anchor" : "related";
+        result.lensLabel = result === anchor ? "Anchor" : "Related";
+      }
+      this.commitLensResults(source, version2);
+      if (!this.plugin.settings.graphRelationshipIntelligence || source.length < 2) return;
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+      if (version2 !== this.lensVersion) return;
+      const candidates = source.slice(1, Math.min(source.length, Math.max(this.visibleLimit || 10, 10))), edges = candidates.map((result) => ({ source: anchor.file, target: result.file, affinity: Number(result.score || 0), score: Number(result.semanticScore || 0) })), budget = this.plugin.isMobile ? this.plugin.settings.graphRelationshipBudgetMobile : this.plugin.settings.graphRelationshipBudgetDesktop;
+      this.map?.setIntelligenceStatus("Reading arguments\u2026");
+      const details = await this.plugin.search.graphRelationships(edges, budget);
+      if (version2 !== this.lensVersion) return;
+      this.lensRelationships = details;
+      const order = { anchor: 0, support: 1, tension: 2, related: 3 };
+      for (const result of source) {
+        if (result === anchor) continue;
+        const relation = details.get([anchor.file, result.file].sort().join("\0"));
+        result.argumentGroup = relation?.type === "support" ? "support" : relation?.type === "contrast" ? "tension" : "related";
+        result.lensLabel = result.argumentGroup === "support" ? "Support" : result.argumentGroup === "tension" ? "Tension" : "Related";
+        result.relationConfidence = Number(relation?.confidence || 0);
+      }
+      source.sort((a2, b) => order[a2.argumentGroup] - order[b.argumentGroup] || Number(b.relationConfidence || 0) - Number(a2.relationConfidence || 0) || b.score - a2.score);
+      this.commitLensResults(source, version2);
+      this.map?.setIntelligenceStatus("");
+    } catch (error) {
+      if (version2 === this.lensVersion) {
+        this.plugin.logDiagnostic(`Search lens failed: ${error.message}`, true);
+        this.commitLensResults(source, version2);
+        this.map?.setIntelligenceStatus("");
+      }
+    } finally {
+      if (version2 === this.lensVersion) this.lensSelect?.removeClass("is-working");
+    }
   }
   renderShowMore() {
     this.modalEl.querySelector(".gib-show-more")?.remove();
@@ -73255,19 +73393,21 @@ var SemanticSearchModal = class extends SuggestModal {
     const pathParts = result.file.replace(/\.md$/i, "").split("/");
     const fileName = pathParts.pop() || result.file.replace(/\.md$/i, "");
     const container = el2.createDiv({ cls: "gib-semantic-result" });
-    const folder = container.createDiv({ cls: "gib-semantic-result-folder" });
+    const meta = container.createDiv({ cls: "gib-semantic-result-meta" });
+    const folder = meta.createDiv({ cls: "gib-semantic-result-folder" });
     (pathParts.length ? pathParts : ["Vault"]).forEach((part, index3) => {
       if (index3) folder.createSpan({ cls: "gib-semantic-result-folder-separator", text: "/" });
       folder.createSpan({ text: part });
     });
+    if (result.lensLabel) meta.createSpan({ cls: "gib-semantic-result-lens", text: result.lensLabel });
     const header = container.createDiv({ cls: "gib-semantic-result-header" });
     const icon = header.createSpan({ cls: "gib-semantic-result-icon" });
     setIcon(icon, "sticky-note");
     const fileTitle = header.createSpan({ cls: "gib-semantic-result-file" });
     renderHighlighted(fileTitle, fileName, this.lastQuery, result.filenameHighlights);
-    const score = header.createSpan({ cls: "gib-semantic-result-score", text: `${(Number(result.score || 0) * 100).toFixed(0)}%` });
+    const displayedScore = Number(result.lensScore ?? result.score ?? 0), score = header.createSpan({ cls: "gib-semantic-result-score", text: `${(displayedScore * 100).toFixed(0)}%` });
     const semantic = Math.round(Number(result.semanticScore || 0) * 100), filename = Math.round(Number(result.filenameBoost || 0) * 100), folderBoost = Math.round(Number(result.folderPathBoost || 0) * 100);
-    score.setAttribute("title", `Total relevance: ${(Number(result.score || 0) * 100).toFixed(0)}% \xB7 Semantic: ${semantic}% \xB7 Filename: +${filename} \xB7 Folder: +${folderBoost}`);
+    score.setAttribute("title", `${SEARCH_LENSES[this.lens].label} score: ${(displayedScore * 100).toFixed(0)}% \xB7 Semantic: ${semantic}% \xB7 Filename: +${filename} \xB7 Folder: +${folderBoost}`);
     const snippets = container.createDiv({ cls: "gib-semantic-snippets" });
     result.snippets.forEach((snippet, index3) => {
       const block = snippets.createDiv({ cls: "gib-semantic-snippet" });
@@ -73321,6 +73461,7 @@ var SemanticSearchModal = class extends SuggestModal {
   onClose() {
     clearTimeout(this.debounceTimer);
     this.searchVersion++;
+    this.lensVersion++;
     if (this.navigationHandler) this.modalEl.removeEventListener("keydown", this.navigationHandler, true);
     this.map?.destroy();
     this.map = null;
@@ -73338,6 +73479,16 @@ var SemanticSearchModal = class extends SuggestModal {
     shell.appendChild(suggestions);
     const panel = shell.createDiv({ cls: "gib-search-map-panel" });
     const inputContainer = this.modalEl.querySelector(".prompt-input-container") || this.inputEl.parentElement;
+    this.lensSelect = inputContainer?.createEl("select", { cls: "dropdown gib-search-lens-select", attr: { "aria-label": "Search lens", title: SEARCH_LENSES[this.lens].description } });
+    if (this.lensSelect) {
+      for (const [value, lens] of Object.entries(SEARCH_LENSES)) this.lensSelect.createEl("option", { text: lens.label, attr: { value } });
+      this.lensSelect.value = this.lens;
+      this.lensSelect.addEventListener("change", () => {
+        this.lens = validSearchLens(this.lensSelect.value);
+        this.lensSelect.title = SEARCH_LENSES[this.lens].description;
+        this.applyLens();
+      });
+    }
     this.mapToggle = inputContainer?.createEl("button", { cls: "gib-search-map-toggle", attr: { type: "button", "aria-label": "Toggle semantic map", title: "Toggle semantic map" } });
     if (this.mapToggle) {
       const mapIcon = this.mapToggle.createSpan({ cls: "gib-search-map-toggle-icon" });
@@ -73379,15 +73530,15 @@ var SemanticSearchModal = class extends SuggestModal {
   async updateMap() {
     if (!this.map || !this.plugin.settings.searchMapEnabled) return;
     const version2 = ++this.mapVersion, query = this.lastQuery, results = this.lastResults.slice(0, 80);
-    this.map.setTitle("Semantic map");
+    this.map.setTitle(`${SEARCH_LENSES[this.lens].label} map`);
     const indexable = this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path)), paths = indexable.map((file) => file.path), sizes = indexable.map((file) => Math.log1p(Number(file.stat?.size || 0))), sizeLow = sizes.length ? Math.min(...sizes) : 0, sizeHigh = sizes.length ? Math.max(...sizes) : 1, sizeSpread = Math.max(1e-3, sizeHigh - sizeLow), fileScale = new Map(indexable.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - sizeLow) / sizeSpread]));
     const roots = results.map((result) => result.file), generations = query ? this.plugin.search.semanticGenerations(roots, this.mapGenerations, 5) : { nodes: [], edges: [] }, generationByFile = new Map(generations.nodes.map((node) => [node.id, node])), activeFiles = generations.nodes.map((node) => node.id), graph = await this.plugin.search.semanticStarfield(query, query ? activeFiles : paths, activeFiles);
     if (version2 !== this.mapVersion) return;
-    const byFile = new Map(results.map((result) => [result.file, result])), rankingScores = results.map((result) => Number(result.score || 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = generations.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
+    const byFile = new Map(results.map((result) => [result.file, result])), rankingScores = results.map((result) => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = generations.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
     const graphNodes = graph.nodes.map((node) => {
-      const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.score || 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
-      return { ...node, generation: generation?.generation || 1, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : semanticRelevance, fileScale: fileScale.get(node.id) ?? 0.35 };
-    }), layoutOptions = { magic: this.plugin.settings.magicGraphEnabled }, initialLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, /* @__PURE__ */ new Map(), layoutOptions);
+      const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
+      return { ...node, generation: generation?.generation || 1, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : semanticRelevance, fileScale: fileScale.get(node.id) ?? 0.35, facet: result?.facet, argumentGroup: result?.argumentGroup, contextScore: result?.contextScore };
+    }), layoutOptions = { magic: this.plugin.settings.magicGraphEnabled, lens: this.lens }, initialLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, this.lens === "arguments" ? this.lensRelationships : /* @__PURE__ */ new Map(), layoutOptions);
     if (version2 !== this.mapVersion) return;
     for (const node of graphNodes) {
       const target = initialLayout.get(node.id);
@@ -73397,25 +73548,6 @@ var SemanticSearchModal = class extends SuggestModal {
       }
     }
     this.map.setGraph({ label: query || "Search", hasQuery: Boolean(query), resultCount: results.length }, graphNodes, combinedEdges);
-    if (query && this.plugin.settings.graphRelationshipIntelligence && combinedEdges.length) {
-      const budget = this.plugin.isMobile ? this.plugin.settings.graphRelationshipBudgetMobile : this.plugin.settings.graphRelationshipBudgetDesktop;
-      await new Promise((resolve) => window.setTimeout(resolve, 320));
-      if (version2 !== this.mapVersion) return;
-      this.map.setIntelligenceStatus("Reading relationships\u2026");
-      try {
-        const details = await this.plugin.search.graphRelationships(combinedEdges, budget);
-        if (version2 !== this.mapVersion) return;
-        const enrichedLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, details, layoutOptions);
-        if (version2 !== this.mapVersion) return;
-        this.map.applyCalculatedLayout(enrichedLayout, details);
-        this.map.setIntelligenceStatus("");
-      } catch (error) {
-        if (version2 === this.mapVersion) {
-          this.map.setIntelligenceStatus("Relationship model unavailable");
-          this.plugin.logDiagnostic(`Relationship intelligence failed: ${error.message}`, true);
-        }
-      }
-    }
   }
   hoverResult(file) {
     for (const item2 of this.modalEl.querySelectorAll(".suggestion-item.is-map-hovered")) item2.removeClass("is-map-hovered");
@@ -73775,6 +73907,13 @@ var SearchSettings = class extends PluginSettingTab {
       }));
     }
     new Setting(this.containerEl).setName("Graph").setHeading();
+    new Setting(this.containerEl).setName("Default search lens").setDesc("Choose how new searches rank results and arrange the semantic map. You can switch lenses inside the search popup.").addDropdown((d2) => {
+      for (const [value, lens] of Object.entries(SEARCH_LENSES)) d2.addOption(value, lens.label);
+      d2.setValue(validSearchLens(this.plugin.settings.defaultSearchLens)).onChange(async (value) => {
+        this.plugin.settings.defaultSearchLens = validSearchLens(value);
+        await this.plugin.save();
+      });
+    });
     new Setting(this.containerEl).setName("Magic graph intelligence").setDesc("Combine topic direction, entities, communities, residual meaning, and relationships into a query-conditioned dimensional layout.").addToggle((t3) => t3.setValue(this.plugin.settings.magicGraphEnabled).onChange(async (value) => {
       this.plugin.settings.magicGraphEnabled = value;
       await this.plugin.save();
