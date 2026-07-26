@@ -70518,6 +70518,36 @@ function topicCoordinates(entries, center, axes) {
     return [point.id, { topicAngle: angle, topicStrength: strength, topicHue: (angle * 180 / Math.PI + 360) % 360 }];
   }));
 }
+function classicalDistanceLayout(ids, distances, topics = /* @__PURE__ */ new Map()) {
+  const count = ids.length;
+  if (!count) return /* @__PURE__ */ new Map();
+  if (count === 1) return /* @__PURE__ */ new Map([[ids[0], { x: 0, y: 0 }]]);
+  const squared = distances.map((row) => Float64Array.from(row, (value) => value * value)), means = squared.map((row) => row.reduce((sum, value) => sum + value, 0) / count), total = means.reduce((sum, value) => sum + value, 0) / count, gram = Array.from({ length: count }, (_2, row) => Float64Array.from({ length: count }, (_3, column) => -0.5 * (squared[row][column] - means[row] - means[column] + total))), multiply = (vector) => Float64Array.from({ length: count }, (_2, row) => gram[row].reduce((sum, value, column) => sum + value * vector[column], 0));
+  const component = (seed, previous = null) => {
+    let vector = Float64Array.from({ length: count }, (_2, index3) => Math.sin((index3 + 1) * seed) + Math.cos((index3 + 1) * (seed + 0.61)));
+    for (let iteration = 0; iteration < 72; iteration++) {
+      vector = multiply(vector);
+      if (previous) {
+        const overlap = vector.reduce((sum, value, index3) => sum + value * previous[index3], 0);
+        for (let index3 = 0; index3 < count; index3++) vector[index3] -= overlap * previous[index3];
+      }
+      const norm = Math.hypot(...vector) || 1;
+      for (let index3 = 0; index3 < count; index3++) vector[index3] /= norm;
+    }
+    const projected = multiply(vector), eigenvalue = Math.max(0, vector.reduce((sum, value, index3) => sum + value * projected[index3], 0));
+    return { vector, scale: Math.sqrt(eigenvalue) };
+  }, first = component(1.41), second = component(2.87, first.vector), originX = first.vector[0] * first.scale, originY = second.vector[0] * second.scale, raw = ids.map((id2, index3) => ({ id: id2, x: first.vector[index3] * first.scale - originX, y: second.vector[index3] * second.scale - originY }));
+  const anchor = raw.slice(1).filter((point) => topics.has(point.id)).sort((a2, b) => Number(topics.get(b.id)?.topicStrength || 0) - Number(topics.get(a2.id)?.topicStrength || 0))[0], orient = (mirror) => {
+    const sourceAngle = anchor ? Math.atan2(anchor.y * mirror, anchor.x) : 0, targetAngle = anchor ? Number(topics.get(anchor.id)?.topicAngle || 0) : 0, rotation = targetAngle - sourceAngle, cosine = Math.cos(rotation), sine = Math.sin(rotation);
+    return raw.map((point) => ({ id: point.id, x: point.x * cosine - point.y * mirror * sine, y: point.x * sine + point.y * mirror * cosine }));
+  }, candidates = [orient(1), orient(-1)], error = (points) => points.slice(1).reduce((sum, point) => {
+    const topic = topics.get(point.id);
+    if (!topic) return sum;
+    const difference = Math.atan2(Math.sin(Math.atan2(point.y, point.x) - topic.topicAngle), Math.cos(Math.atan2(point.y, point.x) - topic.topicAngle));
+    return sum + difference * difference * (0.2 + topic.topicStrength);
+  }, 0), oriented = error(candidates[0]) <= error(candidates[1]) ? candidates[0] : candidates[1], extent = Math.max(1e-3, ...oriented.slice(1).map((point) => Math.hypot(point.x, point.y))), scale = 0.78 / extent;
+  return new Map(oriented.map((point) => [point.id, { x: point.x * scale, y: point.y * scale }]));
+}
 function semanticProjection(centerId, centerVector, entries) {
   const points = [{ id: centerId, vector: centerVector }, ...entries];
   const count = points.length;
@@ -71760,6 +71790,58 @@ var init_mobile_runtime = __esm({
         const item = this.meta.find((value) => value.file === file);
         return item?.contentHash || `${file}:${item?.mtime || 0}`;
       }
+      async multiRelationalLayout(query, nodes, relationships = /* @__PURE__ */ new Map(), options = {}) {
+        const values = [...new Map((nodes || []).filter((node) => node?.id).map((node) => [node.id, node])).values()], nodeById = new Map(values.map((node) => [node.id, node])), files = values.map((node) => node.id), vectors = this.fileVectors(files), entries = values.filter((node) => vectors.has(node.id)).map((node) => ({ id: node.id, vector: vectors.get(node.id).vector }));
+        if (!entries.length) return /* @__PURE__ */ new Map();
+        const basis = this.topicBasis(), trimmed = String(query || "").trim();
+        let center = trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
+        if (!trimmed) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
+        const topics = topicCoordinates(entries, center, basis.axes), residuals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
+        for (const entities of entitySets.values()) for (const entity2 of entities) frequency.set(entity2, (frequency.get(entity2) || 0) + 1);
+        const entitySimilarity = (first, second) => {
+          const a2 = entitySets.get(first) || /* @__PURE__ */ new Set(), b = entitySets.get(second) || /* @__PURE__ */ new Set();
+          let shared = 0, firstWeight = 0, secondWeight = 0;
+          for (const entity2 of a2) {
+            const weight = Math.log(1 + entries.length / Math.max(1, frequency.get(entity2) || 1));
+            firstWeight += weight * weight;
+            if (b.has(entity2)) shared += weight * weight;
+          }
+          for (const entity2 of b) {
+            const weight = Math.log(1 + entries.length / Math.max(1, frequency.get(entity2) || 1));
+            secondWeight += weight * weight;
+          }
+          return shared / Math.max(1e-3, Math.sqrt(firstWeight * secondWeight));
+        };
+        const semanticScores = entries.map((entry) => dot(center, entry.vector)), low = Math.min(...semanticScores), high = Math.max(...semanticScores), spread = Math.max(1e-3, high - low), relevance = new Map(entries.map((entry, index3) => {
+          const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
+          return [entry.id, trimmed && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
+        })), ids = ["__center__", ...entries.map((entry) => entry.id)], distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
+        for (let index3 = 1; index3 < ids.length; index3++) {
+          const value = 0.06 + (1 - relevance.get(ids[index3])) * 0.88;
+          distances[0][index3] = value;
+          distances[index3][0] = value;
+        }
+        const magic = options.magic !== false;
+        for (let first = 0; first < entries.length; first++) for (let second = first + 1; second < entries.length; second++) {
+          const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), firstTopic = topics.get(a2.id), secondTopic = topics.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstCommunity = nodeById.get(a2.id)?.community, secondCommunity = nodeById.get(b.id)?.community, community = firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1, relation = magic ? relationships.get([a2.id, b.id].sort().join("\0")) : null;
+          let weighted = 0.38 * semantic ** 2 + 0.32 * residual ** 2, weight = 0.7;
+          if (magic) {
+            weighted += 0.1 * entity2 ** 2 + 0.08 * angular ** 2 + 0.04 * community ** 2;
+            weight += 0.22;
+          }
+          if (relation) {
+            const relationDistance = relation.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46;
+            weighted += 0.08 * relationDistance ** 2;
+            weight += 0.08;
+          }
+          const distance = Math.sqrt(weighted / weight), row = first + 1, column = second + 1;
+          distances[row][column] = distance;
+          distances[column][row] = distance;
+        }
+        const layout = classicalDistanceLayout(ids, distances, topics);
+        layout.delete("__center__");
+        return layout;
+      }
       semanticMap(files) {
         const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 60);
         const vectors = this.fileVectors(ordered);
@@ -72676,16 +72758,18 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const count = this.center?.resultCount || this.nodes.filter((node) => node.matched).length;
     this.statusEl.textContent = value || (this.hasQuery ? `${count} results${this.nodes.length > count ? ` \xB7 ${this.nodes.length} shown` : ""}` : `${this.nodes.length} notes`);
   }
-  applyRelationships(details) {
-    if (!(details instanceof Map) || !details.size) return;
-    this.activeEdges = (this.activeEdges || []).map((edge) => {
-      const relation = details.get(mapEdgeKey(edge.source, edge.target));
-      if (!relation) return edge;
-      const support = relation.type === "support", contrast = relation.type === "contrast";
-      return { ...edge, relation, residual: support ? Math.max(edge.residual, 0.58 + relation.confidence * 0.24) : contrast ? Math.min(edge.residual, -0.58 - relation.confidence * 0.24) : edge.residual, strength: support ? edge.strength * (1.18 + relation.confidence * 0.22) : edge.strength };
-    });
+  applyCalculatedLayout(layout, details = null) {
+    if (details instanceof Map) this.activeEdges = (this.activeEdges || []).map((edge) => ({ ...edge, relation: details.get(mapEdgeKey(edge.source, edge.target)) || edge.relation }));
     this.relationships = new Map(this.activeEdges.map((edge) => [mapEdgeKey(edge.source, edge.target), edge]));
-    this.startSimulation(0.78);
+    if (layout instanceof Map) for (const node of this.nodes) {
+      const target = layout.get(node.id);
+      if (!target) continue;
+      node.layoutX = target.x;
+      node.layoutY = target.y;
+    }
+    this.queryNode.layoutX = 0;
+    this.queryNode.layoutY = 0;
+    this.startSimulation(0.82);
   }
   setupViewportControls() {
     this.headingEl.addClass("has-viewport");
@@ -72736,11 +72820,12 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.edges = edges;
     this.hasQuery = hasQuery;
     this.targetQueryPresence = hasQuery ? 1 : 0;
-    this.queryNode = { id: "__query__", label: center?.label || "Search", isQuery: true, x: previousQuery?.x || 0, y: previousQuery?.y || 0, vx: previousQuery?.vx || 0, vy: previousQuery?.vy || 0 };
+    this.queryNode = { id: "__query__", label: center?.label || "Search", isQuery: true, x: previousQuery?.x || 0, y: previousQuery?.y || 0, layoutX: 0, layoutY: 0, vx: previousQuery?.vx || 0, vy: previousQuery?.vy || 0 };
     this.nodes = values.map((value, order) => {
       const old = previous.get(value.id), angle = stableMapAngle(value.id), normalized = hasQuery ? Math.max(0, Math.min(1, (Number(value.semanticScore || 0) - low) / spread)) : 0.5, relevance = Number.isFinite(Number(value.relevance)) ? Number(value.relevance) : normalized, fileScale = Math.max(0, Math.min(1, Number(value.fileScale ?? 0.35))), targetVisibility = hasQuery ? 0.12 + relevance * 0.88 : 0.38 + fileScale * 0.42;
       const matched = Boolean(value.matched), generation = Math.max(1, Math.min(3, Number(value.generation) || 1)), generationVisibility = generation === 1 ? 0.78 + relevance * 0.22 : generation === 2 ? 0.68 : 0.52;
-      return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : 0 : targetVisibility, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, x: old?.x ?? (Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64)), y: old?.y ?? (Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64)), vx: old?.vx || 0, vy: old?.vy || 0 };
+      const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64);
+      return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : 0 : targetVisibility, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: old?.vx || 0, vy: old?.vy || 0 };
     });
     const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
@@ -72795,31 +72880,23 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       node.visibility += (node.targetVisibility - node.visibility) * 0.09;
       node.accent += (node.targetAccent - node.accent) * 0.09;
     }
-    for (const edge of this.activeEdges || []) {
-      const a2 = this.byId.get(edge.source), b = this.byId.get(edge.target);
-      if (!a2 || !b || this.hasQuery && !this.pendingQuery && (!a2.matched || !b.matched)) continue;
-      let dx = b.x - a2.x, dy = b.y - a2.y;
-      const distance = Math.max(0.025, Math.hypot(dx, dy));
-      dx /= distance;
-      dy /= distance;
-      const layerStrength = !this.hasQuery || this.pendingQuery ? 1.45 : 1.55, residualDistance = (1 - edge.residual) * 0.11, desired = 0.045 + (1 - edge.overall) * 0.34 + residualDistance, spring = (distance - desired) * (38e-4 + edge.strength * 0.017) * alpha2 * layerStrength, contrast = -Math.max(0, -edge.residual) * 9e-3 * alpha2 * layerStrength, force = spring + contrast;
-      if (a2 !== this.dragging) {
-        a2.vx += dx * force;
-        a2.vy += dy * force;
-      }
-      if (b !== this.dragging) {
-        b.vx -= dx * force;
-        b.vy -= dy * force;
-      }
+    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), activeNodes = this.hasQuery && !this.pendingQuery ? foreground : this.nodes;
+    for (const node of activeNodes) {
+      if (node === this.dragging) continue;
+      node.vx += (node.layoutX - node.x) * 0.018 * alpha2;
+      node.vy += (node.layoutY - node.y) * 0.018 * alpha2;
     }
-    for (let first = 0; first < this.nodes.length; first++) for (let second = first + 1; second < this.nodes.length; second++) {
-      const a2 = this.nodes[first], b = this.nodes[second];
-      if (this.hasQuery && !this.pendingQuery && (!a2.matched || !b.matched)) continue;
+    if (this.queryPresence > 0.01 && query !== this.dragging) {
+      query.vx += (query.layoutX - query.x) * 0.012 * alpha2;
+      query.vy += (query.layoutY - query.y) * 0.012 * alpha2;
+    }
+    for (let first = 0; first < activeNodes.length; first++) for (let second = first + 1; second < activeNodes.length; second++) {
+      const a2 = activeNodes[first], b = activeNodes[second];
       let dx = b.x - a2.x, dy = b.y - a2.y;
       const distance = Math.max(0.018, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const collisionDistance = 0.035 + (a2.fileScale + b.fileScale) * 0.022, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.19 * alpha2 : 0, charge = -Math.min(42e-4, 3e-5 / (distance * distance)) * alpha2, force = collision + charge;
+      const collisionDistance = 0.035 + (a2.fileScale + b.fileScale) * 0.022, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.1 * alpha2 : 0, relaxation = -Math.min(12e-4, 8e-6 / (distance * distance)) * alpha2, force = collision + relaxation;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -72829,66 +72906,13 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         b.vy -= dy * force;
       }
     }
-    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched);
-    if (this.queryPresence > 0.01 && this.pendingQuery) {
-      for (const node of this.nodes) {
-        let dx = node.x - query.x, dy = node.y - query.y;
-        const distance = Math.max(0.035, Math.hypot(dx, dy));
-        dx /= distance;
-        dy /= distance;
-        const force = Math.min(0.012, 34e-5 / (distance * distance)) * alpha2 * this.queryPresence;
-        if (query !== this.dragging) {
-          query.vx -= dx * force * 0.08;
-          query.vy -= dy * force * 0.08;
-        }
-        if (node !== this.dragging) {
-          node.vx += dx * force;
-          node.vy += dy * force;
-        }
-      }
-      if (query !== this.dragging && this.nodes.length) {
-        const centerX = this.nodes.reduce((sum, node) => sum + node.x, 0) / this.nodes.length, centerY = this.nodes.reduce((sum, node) => sum + node.y, 0) / this.nodes.length;
-        query.vx += (centerX - query.x) * 0.035 * alpha2;
-        query.vy += (centerY - query.y) * 0.035 * alpha2;
-      }
-    } else if (this.queryPresence > 0.01) for (const node of foreground.filter((value) => value.generation === 1)) {
-      let dx = node.x - query.x, dy = node.y - query.y;
-      const distance = Math.max(0.025, Math.hypot(dx, dy));
-      dx /= distance;
-      dy /= distance;
-      const desired = 0.065 + (1 - node.relevance) * 0.58, force = (distance - desired) * (28e-4 + node.relevance * 85e-4) * alpha2 * this.queryPresence;
-      if (query !== this.dragging) {
-        query.vx += dx * force * 0.18;
-        query.vy += dy * force * 0.18;
-      }
-      if (node !== this.dragging) {
-        node.vx -= dx * force;
-        node.vy -= dy * force;
-      }
-    }
-    if (this.options.magicGraph !== false) {
-      const compassNodes = this.hasQuery && !this.pendingQuery ? foreground : this.nodes, originX = this.hasQuery ? query.x : compassNodes.reduce((sum, node) => sum + node.x, 0) / Math.max(1, compassNodes.length), originY = this.hasQuery ? query.y : compassNodes.reduce((sum, node) => sum + node.y, 0) / Math.max(1, compassNodes.length);
-      for (const node of compassNodes) {
-        if (node === this.dragging || !Number.isFinite(node.topicAngle)) continue;
-        const radius = this.hasQuery ? 0.075 + (1 - node.relevance) * 0.56 : 0.2 + Number(node.topicStrength || 0) * 0.48, targetX2 = originX + Math.cos(node.topicAngle) * radius, targetY2 = originY + Math.sin(node.topicAngle) * radius, strength = (28e-4 + Number(node.topicStrength || 0) * 42e-4) * alpha2;
-        node.vx += (targetX2 - node.x) * strength;
-        node.vy += (targetY2 - node.y) * strength;
-      }
-    }
-    const corralBodies = this.hasQuery && !this.pendingQuery ? [query, ...foreground] : this.queryPresence > 0.04 ? [query, ...this.nodes] : this.nodes;
-    if (corralBodies.length) {
-      const centerX = corralBodies.reduce((sum, body) => sum + body.x, 0) / corralBodies.length, centerY = corralBodies.reduce((sum, body) => sum + body.y, 0) / corralBodies.length, radius = this.hasQuery && !this.pendingQuery ? 0.74 : 0.88;
-      for (const body of corralBodies) {
-        if (body === this.dragging) continue;
-        let dx = body.x - centerX, dy = body.y - centerY;
-        const distance = Math.max(1e-3, Math.hypot(dx, dy));
-        if (distance <= radius) continue;
-        dx /= distance;
-        dy /= distance;
-        const force = (distance - radius) * 0.055 * alpha2;
-        body.vx -= dx * force;
-        body.vy -= dy * force;
-      }
+    const corralBodies = this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes;
+    for (const body of corralBodies) {
+      if (body === this.dragging) continue;
+      const distance = Math.hypot(body.x, body.y);
+      if (distance <= 0.92) continue;
+      body.vx -= body.x / distance * (distance - 0.92) * 0.045 * alpha2;
+      body.vy -= body.y / distance * (distance - 0.92) * 0.045 * alpha2;
     }
     const bodies = this.queryPresence > 0.04 ? [query, ...this.nodes] : this.nodes;
     for (const body of bodies) {
@@ -72896,17 +72920,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         body.vx = body.vy = 0;
         continue;
       }
-      body.vx *= 0.89;
-      body.vy *= 0.89;
+      body.vx *= 0.86;
+      body.vy *= 0.86;
       body.x += body.vx;
       body.y += body.vy;
-    }
-    if (!this.dragging && !this.hasQuery && bodies.length) {
-      const centerX = bodies.reduce((sum, body) => sum + body.x, 0) / bodies.length, centerY = bodies.reduce((sum, body) => sum + body.y, 0) / bodies.length;
-      for (const body of bodies) {
-        body.x -= centerX * 0.035;
-        body.y -= centerY * 0.035;
-      }
     }
     const cameraBodies = this.hasQuery ? this.pendingQuery ? this.nodes : [query, ...foreground] : this.nodes, targetX = this.hasQuery && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.x, 0) / cameraBodies.length : 0, targetY = this.hasQuery && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.y, 0) / cameraBodies.length : 0, extent = this.hasQuery && cameraBodies.length ? Math.max(0.16, ...cameraBodies.map((body) => Math.hypot(body.x - targetX, body.y - targetY))) : 0.8, targetZoom = this.hasQuery && !this.pendingQuery ? Math.max(1.12, Math.min(2.15, 0.7 / extent)) : 1;
     this.cameraX += (targetX - this.cameraX) * 0.055;
@@ -72922,10 +72939,14 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       else {
         this.queryPresence = this.targetQueryPresence;
         this.cameraZoom = this.hasQuery ? 1.35 : 1;
+        this.queryNode.x = this.queryNode.layoutX;
+        this.queryNode.y = this.queryNode.layoutY;
         for (const node of this.nodes) {
           node.relevance = node.targetRelevance;
           node.visibility = node.targetVisibility;
           node.accent = node.targetAccent;
+          node.x = node.layoutX;
+          node.y = node.layoutY;
         }
       }
       this.alpha *= 0.986;
@@ -73363,10 +73384,19 @@ var SemanticSearchModal = class extends SuggestModal {
     const roots = results.map((result) => result.file), generations = query ? this.plugin.search.semanticGenerations(roots, this.mapGenerations, 5) : { nodes: [], edges: [] }, generationByFile = new Map(generations.nodes.map((node) => [node.id, node])), activeFiles = generations.nodes.map((node) => node.id), graph = await this.plugin.search.semanticStarfield(query, query ? activeFiles : paths, activeFiles);
     if (version2 !== this.mapVersion) return;
     const byFile = new Map(results.map((result) => [result.file, result])), rankingScores = results.map((result) => Number(result.score || 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = generations.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
-    this.map.setGraph({ label: query || "Search", hasQuery: Boolean(query), resultCount: results.length }, graph.nodes.map((node) => {
+    const graphNodes = graph.nodes.map((node) => {
       const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.score || 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
-      return { ...node, generation: generation?.generation || 1, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : 0.5, fileScale: fileScale.get(node.id) ?? 0.35 };
-    }), combinedEdges);
+      return { ...node, generation: generation?.generation || 1, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : semanticRelevance, fileScale: fileScale.get(node.id) ?? 0.35 };
+    }), layoutOptions = { magic: this.plugin.settings.magicGraphEnabled }, initialLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, /* @__PURE__ */ new Map(), layoutOptions);
+    if (version2 !== this.mapVersion) return;
+    for (const node of graphNodes) {
+      const target = initialLayout.get(node.id);
+      if (target) {
+        node.layoutX = target.x;
+        node.layoutY = target.y;
+      }
+    }
+    this.map.setGraph({ label: query || "Search", hasQuery: Boolean(query), resultCount: results.length }, graphNodes, combinedEdges);
     if (query && this.plugin.settings.graphRelationshipIntelligence && combinedEdges.length) {
       const budget = this.plugin.isMobile ? this.plugin.settings.graphRelationshipBudgetMobile : this.plugin.settings.graphRelationshipBudgetDesktop;
       await new Promise((resolve) => window.setTimeout(resolve, 320));
@@ -73375,7 +73405,9 @@ var SemanticSearchModal = class extends SuggestModal {
       try {
         const details = await this.plugin.search.graphRelationships(combinedEdges, budget);
         if (version2 !== this.mapVersion) return;
-        this.map.applyRelationships(details);
+        const enrichedLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, details, layoutOptions);
+        if (version2 !== this.mapVersion) return;
+        this.map.applyCalculatedLayout(enrichedLayout, details);
         this.map.setIntelligenceStatus("");
       } catch (error) {
         if (version2 === this.mapVersion) {
@@ -73743,7 +73775,7 @@ var SearchSettings = class extends PluginSettingTab {
       }));
     }
     new Setting(this.containerEl).setName("Graph").setHeading();
-    new Setting(this.containerEl).setName("Magic graph intelligence").setDesc("Use stable topic directions, entity-aware neighborhoods, and query-conditioned physics to shape the semantic map.").addToggle((t3) => t3.setValue(this.plugin.settings.magicGraphEnabled).onChange(async (value) => {
+    new Setting(this.containerEl).setName("Magic graph intelligence").setDesc("Combine topic direction, entities, communities, residual meaning, and relationships into a query-conditioned dimensional layout.").addToggle((t3) => t3.setValue(this.plugin.settings.magicGraphEnabled).onChange(async (value) => {
       this.plugin.settings.magicGraphEnabled = value;
       await this.plugin.save();
     }));
