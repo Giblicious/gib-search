@@ -71058,11 +71058,15 @@ var init_mobile_runtime = __esm({
       }
       async loadRelationCache() {
         try {
-          const stored = this.isMobile ? await new Promise(async (resolve, reject) => {
-            const database = await this.openDatabase(), request = database.transaction("indexes", "readonly").objectStore("indexes").get(`${this.indexKey}:relationships`);
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
-          }) : await this.plugin.desktopIndexStore.getRelations();
+          let stored;
+          if (this.isMobile) {
+            const database = await this.openDatabase();
+            stored = await new Promise((resolve, reject) => {
+              const request = database.transaction("indexes", "readonly").objectStore("indexes").get(`${this.indexKey}:relationships`);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+          } else stored = await this.plugin.desktopIndexStore.getRelations();
           this.relationCache = new Map(Array.isArray(stored) ? stored : []);
         } catch {
           this.relationCache = /* @__PURE__ */ new Map();
