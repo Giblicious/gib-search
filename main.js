@@ -73171,7 +73171,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
       const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
-    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), sigma = Math.max(9, 27 * zoom), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y, coreRadius: (2.8 + Number(point.node.fileScale || 0) * 2.6) * zoom })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
+    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), sigma = Math.max(9, 27 * zoom), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
@@ -73203,15 +73203,17 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       for (const target of directResults) addRidge(center, target, sigma * 0.46, this.queryPresence * target.node.visibility * (0.07 + Math.max(0, Math.min(1, target.node.relevance)) * 0.11));
       const supportMaximum = Math.max(0, ...values);
       addMass(centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
-      anchors.push({ ...center, coreRadius: 4.2 * zoom });
+      anchors.push(center);
     }
     this.suppressEmptySummits(values, columns, rows, step, anchors, sigma);
-    this.anchorSummitMesas(values, columns, rows, step, anchors, sigma);
     return { values, columns, rows, step };
   }
   suppressEmptySummits(values, columns, rows, step, anchors, sigma) {
     if (anchors.length < 2) return;
-    const anchorRadius = Math.max(step * 1.75, sigma * 0.38), nearbyRadius = sigma * 3.2, sample = ({ x, y }) => values[Math.max(0, Math.min(rows - 1, Math.round(y / step))) * columns + Math.max(0, Math.min(columns - 1, Math.round(x / step)))], anchorHeights = anchors.map((anchor) => ({ ...anchor, height: sample(anchor) })), candidates = [];
+    const anchorRadius = Math.max(step * 0.8, 3.2 * sigma / 27), sample = ({ x, y }) => {
+      const gridX = Math.max(0, Math.min(columns - 1, x / step)), gridY = Math.max(0, Math.min(rows - 1, y / step)), left = Math.floor(gridX), right = Math.min(columns - 1, left + 1), top = Math.floor(gridY), bottom = Math.min(rows - 1, top + 1), horizontal = gridX - left, vertical = gridY - top, upper = values[top * columns + left] * (1 - horizontal) + values[top * columns + right] * horizontal, lower = values[bottom * columns + left] * (1 - horizontal) + values[bottom * columns + right] * horizontal;
+      return upper * (1 - vertical) + lower * vertical;
+    }, anchorHeights = anchors.map((anchor) => ({ ...anchor, height: sample(anchor) })), candidates = [];
     for (let row = 1; row < rows - 1; row++) for (let column = 1; column < columns - 1; column++) {
       const index3 = row * columns + column, height = values[index3];
       if (height < 0.35) continue;
@@ -73226,39 +73228,21 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         if (neighbor < height) hasLowerNeighbor = true;
       }
       if (!maximum || !hasLowerNeighbor) continue;
-      const x = column * step, y = row * step, distances = anchorHeights.map((anchor) => ({ anchor, distance: Math.hypot(anchor.x - x, anchor.y - y) })).sort((first, second) => first.distance - second.distance), nearestDistance = distances[0]?.distance ?? Infinity;
+      const x = column * step, y = row * step, nearest = anchorHeights.map((anchor) => ({ anchor, distance: Math.hypot(anchor.x - x, anchor.y - y) })).sort((first, second) => first.distance - second.distance)[0], nearestDistance = nearest?.distance ?? Infinity;
       if (nearestDistance <= anchorRadius) continue;
-      const nearby = distances.filter((item) => item.distance <= nearbyRadius), anchorHeight = Math.max(0, ...(nearby.length ? nearby : distances.slice(0, 1)).map((item) => item.anchor.height)), excess = height - (anchorHeight - 0.025);
-      if (excess > 0.04) candidates.push({ x, y, excess, radius: Math.max(step * 1.4, Math.min(sigma * 0.68, nearestDistance * 0.48)) });
+      const excess = height - (Number(nearest.anchor.height) - 8e-3);
+      if (excess > 0.012) candidates.push({ x, y, excess, anchor: nearest.anchor, nearestDistance, safeRadius: Math.min(anchorRadius * 0.7, nearestDistance * 0.55), radius: Math.max(step * 0.9, Math.min(sigma * 0.55, nearestDistance * 0.8)) });
     }
     if (!candidates.length) return;
     const depression = new Float32Array(values.length);
     for (const candidate of candidates.slice(0, 24)) {
       const reach = candidate.radius * 2.6, left = Math.max(0, Math.floor((candidate.x - reach) / step)), right = Math.min(columns - 1, Math.ceil((candidate.x + reach) / step)), top = Math.max(0, Math.floor((candidate.y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((candidate.y + reach) / step)), divisor = 2 * candidate.radius * candidate.radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
-        const dx = column * step - candidate.x, dy = row * step - candidate.y, index3 = row * columns + column, amount = candidate.excess * Math.exp(-(dx * dx + dy * dy) / divisor);
+        const dx = column * step - candidate.x, dy = row * step - candidate.y, anchorDistance = Math.hypot(column * step - candidate.anchor.x, row * step - candidate.anchor.y), rawGuard = Math.max(0, Math.min(1, (anchorDistance - candidate.safeRadius) / Math.max(1, candidate.nearestDistance - candidate.safeRadius))), guard = rawGuard * rawGuard * (3 - 2 * rawGuard), index3 = row * columns + column, amount = candidate.excess * guard * Math.exp(-(dx * dx + dy * dy) / divisor);
         depression[index3] = Math.max(depression[index3], amount);
       }
     }
     for (let index3 = 0; index3 < values.length; index3++) values[index3] = Math.max(0, values[index3] - depression[index3]);
-  }
-  anchorSummitMesas(values, columns, rows, step, anchors, sigma) {
-    if (!anchors.length) return;
-    const source = Float32Array.from(values), terrainScale = sigma / 27, sample = (column, row) => source[Math.max(0, Math.min(rows - 1, row)) * columns + Math.max(0, Math.min(columns - 1, column))], mesas = anchors.map((anchor) => {
-      const coreRadius = Math.max(1.8, Number(anchor.coreRadius || 0)), searchRadius = coreRadius * 2.75, left = Math.max(0, Math.floor((anchor.x - searchRadius) / step)), right = Math.min(columns - 1, Math.ceil((anchor.x + searchRadius) / step)), top = Math.max(0, Math.floor((anchor.y - searchRadius) / step)), bottom = Math.min(rows - 1, Math.ceil((anchor.y + searchRadius) / step));
-      let summit = 0;
-      for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) if (Math.hypot(column * step - anchor.x, row * step - anchor.y) <= searchRadius) summit = Math.max(summit, sample(column, row));
-      return { ...anchor, coreRadius, featherRadius: coreRadius + Math.max(step, 7.5 * terrainScale), summit: summit * 0.985 };
-    });
-    for (const mesa of mesas) {
-      const left = Math.max(0, Math.floor((mesa.x - mesa.featherRadius) / step)), right = Math.min(columns - 1, Math.ceil((mesa.x + mesa.featherRadius) / step)), top = Math.max(0, Math.floor((mesa.y - mesa.featherRadius) / step)), bottom = Math.min(rows - 1, Math.ceil((mesa.y + mesa.featherRadius) / step));
-      for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
-        const distance = Math.hypot(column * step - mesa.x, row * step - mesa.y);
-        if (distance > mesa.featherRadius) continue;
-        const raw = Math.max(0, Math.min(1, (mesa.featherRadius - distance) / Math.max(1, mesa.featherRadius - mesa.coreRadius))), blend = raw * raw * (3 - 2 * raw), index3 = row * columns + column;
-        values[index3] += Math.max(0, mesa.summit - values[index3]) * blend;
-      }
-    }
   }
   paintDensityTerrain(ctx, width, height, colors2) {
     const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= 32;
