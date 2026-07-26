@@ -418,7 +418,7 @@ class SemanticSearchModal extends SuggestModal {
     try {
       const files = source.map(result => result.file);
       if (lens === 'relevance') {
-        const evidence = new Map(source.map(result => [result.file, result.snippets.map(snippet => `${snippet.heading || ''} ${snippet.text || ''}`).join(' ')])); const facets = await this.plugin.search.conceptFacets(query, files, evidence); if (version !== this.lensVersion) return; for (const result of source) { const info = facets.get(result.file); result.facet = info?.facet; result.conceptAffinities = info?.affinities; result.lensLabel = info?.confidence >= .44 ? info.label : ''; } return this.commitLensResults(source, version);
+        const facets = await this.plugin.search.conceptFacets(query, files); if (version !== this.lensVersion) return; for (const result of source) { const info = facets.get(result.file); result.facet = info?.facet; result.conceptAffinities = info?.affinities; result.lensLabel = info?.confidence >= .44 ? info.label : ''; } return this.commitLensResults(source, version);
       }
       if (lens === 'context') {
         const context = this.plugin.search.contextScores(files); for (const result of source) { result.contextScore = Number(context.get(result.file) || 0); result.lensScore = Number(result.score || 0) * .62 + result.contextScore * .38; result.lensLabel = 'Vault context'; } source.sort((a, b) => b.lensScore - a.lensScore || b.score - a.score); return this.commitLensResults(source, version);
