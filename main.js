@@ -71430,31 +71430,43 @@ var init_mobile_runtime = __esm({
         for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(entries[first].vector, entries[second].vector), residualScore: dot(residuals[first].vector, residuals[second].vector) });
         return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...positions.get(entry.id) || {} })), edges };
       }
-      async semanticStarfield(query, files = null) {
+      async semanticStarfield(query, files = null, focusFiles = []) {
         const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))];
         const signature = `${this.meta.length}:${this.vectors.length}:${requested.join("\0")}`;
         if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
           const vectors = this.fileVectors(requested), entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector }));
-          const edges2 = [], seen = /* @__PURE__ */ new Set();
-          for (let first = 0; first < entries2.length; first++) {
+          const edges2 = [], seen2 = /* @__PURE__ */ new Set();
+          for (let first2 = 0; first2 < entries2.length; first2++) {
             const nearby = [];
-            for (let second = 0; second < entries2.length; second++) if (first !== second) nearby.push({ source: entries2[first].id, target: entries2[second].id, score: dot(entries2[first].vector, entries2[second].vector) });
+            for (let second2 = 0; second2 < entries2.length; second2++) if (first2 !== second2) nearby.push({ source: entries2[first2].id, target: entries2[second2].id, score: dot(entries2[first2].vector, entries2[second2].vector) });
             nearby.sort((a2, b) => b.score - a2.score);
-            for (const edge of nearby.slice(0, 3)) {
+            for (const edge of nearby.slice(0, 6)) {
               const key = [edge.source, edge.target].sort().join("\0");
-              if (seen.has(key)) continue;
-              seen.add(key);
+              if (seen2.has(key)) continue;
+              seen2.add(key);
               edges2.push(edge);
             }
           }
-          this.starfieldCache = { signature, entries: entries2, edges: edges2 };
+          const first = entries2[0], second = first && entries2.reduce((best, entry) => dot(first.vector, entry.vector) < dot(first.vector, best.vector) ? entry : best, first), third = second && entries2.reduce((best, entry) => Math.max(dot(first.vector, entry.vector), dot(second.vector, entry.vector)) < Math.max(dot(first.vector, best.vector), dot(second.vector, best.vector)) ? entry : best, first);
+          const raw = entries2.map((entry) => ({ id: entry.id, x: first && second ? dot(entry.vector, first.vector) - dot(entry.vector, second.vector) : 0, y: third ? dot(entry.vector, third.vector) - (dot(entry.vector, first.vector) + dot(entry.vector, second.vector)) * 0.5 : 0 })), meanX = raw.reduce((sum, point) => sum + point.x, 0) / Math.max(1, raw.length), meanY = raw.reduce((sum, point) => sum + point.y, 0) / Math.max(1, raw.length), extent = Math.max(1e-3, ...raw.map((point) => Math.hypot(point.x - meanX, point.y - meanY))), positions2 = new Map(raw.map((point) => [point.id, { x: (point.x - meanX) / extent * 0.78, y: (point.y - meanY) / extent * 0.78 }]));
+          this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2 };
         }
-        const { entries, edges } = this.starfieldCache, trimmed = String(query || "").trim();
-        if (!trimmed) return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0 })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
+        const { entries, edges, positions } = this.starfieldCache, trimmed = String(query || "").trim();
+        if (!trimmed) return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, ...positions.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
         const queryVector = await this.queryVector(this.correctQuery(trimmed)), residuals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, queryVector)]));
+        const outputEdges = [...edges], seen = new Set(edges.map((edge) => [edge.source, edge.target].sort().join("\0"))), focus = new Set(focusFiles || []), focused = entries.filter((entry) => focus.has(entry.id));
+        for (const entry of focused) {
+          const nearby = focused.filter((other) => other.id !== entry.id).map((other) => ({ source: entry.id, target: other.id, score: dot(entry.vector, other.vector) })).sort((a2, b) => b.score - a2.score);
+          for (const edge of nearby.slice(0, 4)) {
+            const key = [edge.source, edge.target].sort().join("\0");
+            if (seen.has(key)) continue;
+            seen.add(key);
+            outputEdges.push(edge);
+          }
+        }
         return {
-          nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector) })),
-          edges: edges.map((edge) => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
+          nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...positions.get(entry.id) || {} })),
+          edges: outputEdges.map((edge) => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
         };
       }
       semanticNeighbors(file, limit = 18) {
@@ -72165,16 +72177,28 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.alpha = 0;
     this.queryPresence = 0;
     this.targetQueryPresence = 0;
+    this.cameraX = 0;
+    this.cameraY = 0;
+    this.cameraZoom = 1;
+    this.parallaxX = 0;
+    this.parallaxY = 0;
+    this.canvas.addEventListener("pointerleave", () => {
+      this.parallaxX = 0;
+      this.parallaxY = 0;
+      this.draw();
+    });
   }
   setGraph(center, values, edges = []) {
     const previous = this.byId || /* @__PURE__ */ new Map(), previousQuery = this.queryNode, hasQuery = Boolean(center?.hasQuery), semanticScores = values.map((value) => Number(value.semanticScore || 0)), low = semanticScores.length ? Math.min(...semanticScores) : 0, high = semanticScores.length ? Math.max(...semanticScores) : 1, spread = Math.max(1e-3, high - low);
     this.center = center;
     this.edges = edges;
+    this.hasQuery = hasQuery;
     this.targetQueryPresence = hasQuery ? 1 : 0;
     this.queryNode = { id: "__query__", label: center?.label || "Search", isQuery: true, x: previousQuery?.x || 0, y: previousQuery?.y || 0, vx: previousQuery?.vx || 0, vy: previousQuery?.vy || 0 };
     this.nodes = values.map((value, order) => {
       const old = previous.get(value.id), angle = stableMapAngle(value.id), normalized = hasQuery ? Math.max(0, Math.min(1, (Number(value.semanticScore || 0) - low) / spread)) : 0.5, relevance = Number.isFinite(Number(value.relevance)) ? Number(value.relevance) : normalized, fileScale = Math.max(0, Math.min(1, Number(value.fileScale ?? 0.35))), targetVisibility = hasQuery ? 0.12 + relevance * 0.88 : 0.38 + fileScale * 0.42;
-      return { ...value, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility, accent: old?.accent ?? 0, targetAccent: hasQuery && value.matched ? 0.3 + relevance * 0.7 : 0, x: old?.x ?? Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), y: old?.y ?? Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64), vx: old?.vx || 0, vy: old?.vy || 0 };
+      const matched = Boolean(value.matched), targetDepth = hasQuery ? matched ? 1 : -1 : 0;
+      return { ...value, matched, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? 0.72 + relevance * 0.28 : 0.08 : targetVisibility, accent: old?.accent ?? 0, targetAccent: hasQuery && matched ? 0.3 + relevance * 0.7 : 0, depth: old?.depth ?? 0, targetDepth, x: old?.x ?? (Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64)), y: old?.y ?? (Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64)), vx: old?.vx || 0, vy: old?.vy || 0 };
     });
     const overallScores = edges.map((edge) => Number(edge.score || 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
@@ -72189,21 +72213,49 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.startSimulation(previous.size ? 0.82 : 1);
     this.updateDetail();
   }
+  beginQuery(label) {
+    if (!this.queryNode || this.hasQuery) return;
+    this.hasQuery = true;
+    this.center = { ...this.center || {}, label, hasQuery: true, resultCount: 0 };
+    this.queryNode.label = label;
+    this.targetQueryPresence = 1;
+    for (const node of this.nodes) {
+      node.matched = false;
+      node.targetDepth = -1;
+      node.targetVisibility = 0.08;
+      node.targetAccent = 0;
+    }
+    this.startSimulation(0.7);
+  }
+  endQuery() {
+    if (!this.queryNode || !this.hasQuery) return;
+    this.hasQuery = false;
+    this.center = { ...this.center || {}, label: "Search", hasQuery: false, resultCount: 0 };
+    this.targetQueryPresence = 0;
+    for (const node of this.nodes) {
+      node.matched = false;
+      node.targetDepth = 0;
+      node.targetVisibility = 0.38 + node.fileScale * 0.42;
+      node.targetAccent = 0;
+    }
+    this.startSimulation(0.72);
+  }
   physicsStep(alpha2) {
     this.queryPresence += (this.targetQueryPresence - this.queryPresence) * 0.075;
     for (const node of this.nodes) {
       node.relevance += (node.targetRelevance - node.relevance) * 0.075;
       node.visibility += (node.targetVisibility - node.visibility) * 0.09;
       node.accent += (node.targetAccent - node.accent) * 0.09;
+      node.depth += (node.targetDepth - node.depth) * 0.075;
     }
     for (const edge of this.activeEdges || []) {
       const a2 = this.byId.get(edge.source), b = this.byId.get(edge.target);
-      if (!a2 || !b) continue;
+      if (!a2 || !b || this.hasQuery && a2.matched !== b.matched) continue;
       let dx = b.x - a2.x, dy = b.y - a2.y;
       const distance = Math.max(0.025, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const desired = 0.1 + (1 - edge.overall) * 0.31 + Math.max(0, -edge.residual) * 0.09, spring = (distance - desired) * (15e-4 + edge.strength * 5e-3) * alpha2, contrast = -Math.max(0, -edge.residual) * 35e-4 * alpha2, force = spring + contrast;
+      const layerStrength = !this.hasQuery ? 1.35 : a2.matched ? 1.25 : 0.28, desired = 0.075 + (1 - edge.overall) * 0.32 + Math.max(0, -edge.residual) * 0.09, spring = (distance - desired) * (25e-4 + edge.strength * 9e-3) * alpha2 * layerStrength, contrast = -Math.max(0, -edge.residual) * 4e-3 * alpha2 * layerStrength, force = spring + contrast;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -72215,12 +72267,12 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     for (let first = 0; first < this.nodes.length; first++) for (let second = first + 1; second < this.nodes.length; second++) {
       const a2 = this.nodes[first], b = this.nodes[second];
+      if (this.hasQuery && a2.matched !== b.matched) continue;
       let dx = b.x - a2.x, dy = b.y - a2.y;
       const distance = Math.max(0.018, Math.hypot(dx, dy));
-      if (distance > 0.22) continue;
       dx /= distance;
       dy /= distance;
-      const collisionDistance = 0.035 + (a2.fileScale + b.fileScale) * 0.022, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.16 * alpha2 : 0, charge = -Math.min(25e-4, 25e-6 / (distance * distance)) * alpha2, force = collision + charge;
+      const layerStrength = !this.hasQuery ? 1 : a2.matched ? 1 : 0.18, collisionDistance = 0.035 + (a2.fileScale + b.fileScale) * 0.022, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.16 * alpha2 : 0, charge = -Math.min(28e-4, 18e-6 / (distance * distance)) * alpha2, force = (collision + charge) * layerStrength;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -72230,16 +72282,16 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         b.vy -= dy * force;
       }
     }
-    const query = this.queryNode;
-    if (this.queryPresence > 0.01) for (const node of this.nodes) {
+    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched);
+    if (this.queryPresence > 0.01) for (const node of foreground) {
       let dx = node.x - query.x, dy = node.y - query.y;
       const distance = Math.max(0.025, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const desired = 0.09 + (1 - node.relevance) * 0.72, force = (distance - desired) * (18e-4 + node.relevance * 8e-3) * alpha2 * this.queryPresence;
+      const desired = 0.07 + (1 - node.relevance) * 0.48, force = (distance - desired) * (3e-3 + node.relevance * 0.011) * alpha2 * this.queryPresence;
       if (query !== this.dragging) {
-        query.vx += dx * force * 0.2;
-        query.vy += dy * force * 0.2;
+        query.vx += dx * force * 0.24;
+        query.vy += dy * force * 0.24;
       }
       if (node !== this.dragging) {
         node.vx -= dx * force;
@@ -72257,20 +72309,17 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       body.x += body.vx;
       body.y += body.vy;
     }
-    if (!this.dragging && bodies.length) {
-      const weight = (body) => body.isQuery ? Math.max(0.1, this.queryPresence) : 0.35 + body.visibility, total = bodies.reduce((sum, body) => sum + weight(body), 0), centerX = bodies.reduce((sum, body) => sum + body.x * weight(body), 0) / total, centerY = bodies.reduce((sum, body) => sum + body.y * weight(body), 0) / total;
+    if (!this.dragging && !this.hasQuery && bodies.length) {
+      const centerX = bodies.reduce((sum, body) => sum + body.x, 0) / bodies.length, centerY = bodies.reduce((sum, body) => sum + body.y, 0) / bodies.length;
       for (const body of bodies) {
-        body.x -= centerX * 0.045;
-        body.y -= centerY * 0.045;
-      }
-      const extent = Math.max(1e-3, ...bodies.map((body) => Math.hypot(body.x, body.y)));
-      if (extent > 0.96) for (const body of bodies) {
-        body.x *= 0.96 / extent;
-        body.y *= 0.96 / extent;
-        body.vx *= 0.96 / extent;
-        body.vy *= 0.96 / extent;
+        body.x -= centerX * 0.035;
+        body.y -= centerY * 0.035;
       }
     }
+    const cameraBodies = this.hasQuery && foreground.length ? [query, ...foreground] : this.nodes, targetX = this.hasQuery && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.x, 0) / cameraBodies.length : 0, targetY = this.hasQuery && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.y, 0) / cameraBodies.length : 0, extent = this.hasQuery && cameraBodies.length ? Math.max(0.16, ...cameraBodies.map((body) => Math.hypot(body.x - targetX, body.y - targetY))) : 0.8, targetZoom = this.hasQuery ? Math.max(1.12, Math.min(2.15, 0.7 / extent)) : 1;
+    this.cameraX += (targetX - this.cameraX) * 0.055;
+    this.cameraY += (targetY - this.cameraY) * 0.055;
+    this.cameraZoom += (targetZoom - this.cameraZoom) * 0.05;
   }
   startSimulation(alpha2 = 0.7) {
     this.alpha = Math.max(this.alpha, alpha2);
@@ -72280,21 +72329,24 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (!matchMedia("(prefers-reduced-motion: reduce)").matches) this.physicsStep(this.alpha);
       else {
         this.queryPresence = this.targetQueryPresence;
+        this.cameraZoom = this.hasQuery ? 1.35 : 1;
         for (const node of this.nodes) {
           node.relevance = node.targetRelevance;
           node.visibility = node.targetVisibility;
           node.accent = node.targetAccent;
+          node.depth = node.targetDepth;
         }
       }
       this.alpha *= 0.986;
       this.draw();
-      if (this.alpha > 0.01 || this.dragging || Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01) this.simulationFrame = requestAnimationFrame(tick);
+      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || Math.abs(this.cameraZoom - (this.hasQuery ? Math.max(1.12, this.cameraZoom) : 1)) > 0.01 || this.nodes.some((node) => Math.abs(node.depth - node.targetDepth) > 0.015);
+      if (this.alpha > 0.01 || this.dragging || transitioning) this.simulationFrame = requestAnimationFrame(tick);
     };
     this.simulationFrame = requestAnimationFrame(tick);
   }
   coordinates(node, width, height) {
-    const scale = Math.max(20, Math.min(width, height) / 2 - 68);
-    return [width / 2 + Number(node.x) * scale, height / 2 + Number(node.y) * scale];
+    const scale = Math.max(20, Math.min(width, height) / 2 - 68), background = !node.isQuery && node.depth < 0, depthScale = node.isQuery ? 1 : 1 + node.depth * 0.1, cameraInfluence = background ? 0.28 : 1, parallaxX = background ? this.parallaxX * 5 * -node.depth : 0, parallaxY = background ? this.parallaxY * 5 * -node.depth : 0;
+    return [width / 2 + (Number(node.x) - this.cameraX * cameraInfluence) * scale * this.cameraZoom * depthScale + parallaxX, height / 2 + (Number(node.y) - this.cameraY * cameraInfluence) * scale * this.cameraZoom * depthScale + parallaxY];
   }
   draw() {
     const rect = this.canvas.getBoundingClientRect();
@@ -72307,31 +72359,36 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     ctx.clearRect(0, 0, rect.width, rect.height);
     const colors2 = this.colors(), focused = this.hovered || this.selected, queryFocused = focused === "__query__", labelNodes = /* @__PURE__ */ new Set();
     this.hit = [];
-    const ranked = [...this.nodes].sort((a2, b) => this.targetQueryPresence ? b.relevance - a2.relevance : b.fileScale - a2.fileScale);
-    for (const node of ranked.slice(0, this.targetQueryPresence ? 6 : 4)) labelNodes.add(node.id);
+    const rankedSource = this.hasQuery ? this.nodes.filter((node) => node.matched) : this.nodes, ranked = [...rankedSource].sort((a2, b) => this.targetQueryPresence ? b.relevance - a2.relevance : b.fileScale - a2.fileScale);
+    for (const node of ranked.slice(0, this.targetQueryPresence ? 7 : 5)) labelNodes.add(node.id);
     if (focused && !queryFocused) {
       labelNodes.add(focused);
       const related = (this.activeEdges || []).filter((edge) => edge.source === focused || edge.target === focused).sort((a2, b) => b.overall - a2.overall).slice(0, 5);
       for (const edge of related) labelNodes.add(edge.source === focused ? edge.target : edge.source);
     }
-    const labels = [];
-    for (const node of this.nodes) {
-      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, relationship = focused && !queryFocused ? this.relationships.get(mapEdgeKey(node.id, focused)) : null, related = Number(relationship?.overall || 0), radius = 2 + node.fileScale * 4.4 + (active ? 1.5 : 0), focusAlpha = !focused ? 1 : active ? 1 : queryFocused ? 0.38 + node.relevance * 0.62 : 0.18 + related * 0.76, opacity = Math.max(0.06, node.visibility * focusAlpha);
-      ctx.globalAlpha = opacity;
-      ctx.fillStyle = colors2.normal;
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fill();
-      if (node.accent > 0.01 || active) {
-        ctx.globalAlpha = opacity * Math.max(node.accent, active ? 1 : 0);
-        ctx.fillStyle = colors2.accent;
+    const labels = [], background = this.hasQuery ? this.nodes.filter((node) => !node.matched) : [], foreground = this.hasQuery ? this.nodes.filter((node) => node.matched) : this.nodes, renderNodes = (nodes, isBackground) => {
+      ctx.filter = isBackground ? `blur(${Math.max(0, this.queryPresence * 1.45).toFixed(2)}px)` : "none";
+      for (const node of nodes) {
+        const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, relationship = focused && !queryFocused ? this.relationships.get(mapEdgeKey(node.id, focused)) : null, related = Number(relationship?.overall || 0), depthScale = 1 + node.depth * 0.13, radius = Math.max(1.1, (2 + node.fileScale * 4.4 + (active ? 1.5 : 0)) * depthScale), focusAlpha = !focused ? 1 : active ? 1 : queryFocused ? 0.38 + node.relevance * 0.62 : 0.18 + related * 0.76, opacity = Math.max(isBackground ? 0.018 : 0.06, node.visibility * focusAlpha);
+        ctx.globalAlpha = opacity;
+        ctx.fillStyle = isBackground ? colors2.faint : colors2.normal;
         ctx.beginPath();
-        ctx.arc(x, y, radius + (active ? 1 : 0), 0, Math.PI * 2);
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.fill();
+        if (!isBackground && (node.accent > 0.01 || active)) {
+          ctx.globalAlpha = opacity * Math.max(node.accent, active ? 1 : 0);
+          ctx.fillStyle = colors2.accent;
+          ctx.beginPath();
+          ctx.arc(x, y, radius + (active ? 1 : 0), 0, Math.PI * 2);
+          ctx.fill();
+        }
+        if (!isBackground && labelNodes.has(node.id)) labels.push({ node, x, y, radius, active, opacity });
+        if (!isBackground) this.hit.push({ node, x, y, radius: radius + 9 });
       }
-      if (labelNodes.has(node.id)) labels.push({ node, x, y, radius, active, opacity });
-      this.hit.push({ node, x, y, radius: radius + 9 });
-    }
+    };
+    renderNodes(background, true);
+    renderNodes(foreground, false);
+    ctx.filter = "none";
     this.drawLabels(ctx, labels, colors2, rect.width, rect.height);
     if (this.queryPresence > 0.02) {
       const [queryX, queryY] = this.coordinates(this.queryNode, rect.width, rect.height);
@@ -72380,10 +72437,13 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.startSimulation(0.45);
   }
   pointerMove(event) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.parallaxX = (event.clientX - rect.left) / Math.max(1, rect.width) - 0.5;
+    this.parallaxY = (event.clientY - rect.top) / Math.max(1, rect.height) - 0.5;
     if (this.dragging) {
-      const rect = this.canvas.getBoundingClientRect(), scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68);
-      this.dragging.x = (event.clientX - rect.left - rect.width / 2) / scale;
-      this.dragging.y = (event.clientY - rect.top - rect.height / 2) / scale;
+      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom;
+      this.dragging.x = (event.clientX - rect.left - rect.width / 2) / scale + this.cameraX;
+      this.dragging.y = (event.clientY - rect.top - rect.height / 2) / scale + this.cameraY;
       this.dragging.vx = this.dragging.vy = 0;
       this.startSimulation(0.38);
       return;
@@ -72391,6 +72451,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const node = this.hitAt(event);
     this.canvas.style.cursor = node ? "grab" : "default";
     this.setHover(node?.id || null, true);
+    this.draw();
   }
   pointerUp(event) {
     if (!this.dragging) return;
@@ -72442,12 +72503,17 @@ var SemanticSearchModal = class extends SuggestModal {
       this.lastQuery = "";
       this.lastResults = [];
       this.mapResults = [];
-      if (changed) window.setTimeout(() => this.updateMap(), 0);
+      if (changed) {
+        this.map?.endQuery();
+        window.setTimeout(() => this.updateMap(), 0);
+      }
       return [];
     }
     const trimmed = query.trim();
     if (trimmed !== this.lastQuery) {
+      const entering = !this.lastQuery;
       this.lastQuery = trimmed;
+      if (entering) this.map?.beginQuery(trimmed);
       this.visibleLimit = activeTweaks(this.plugin).topK;
       this.triggerSearch(trimmed);
     }
@@ -72646,7 +72712,7 @@ var SemanticSearchModal = class extends SuggestModal {
     const version2 = ++this.mapVersion, query = this.lastQuery, results = this.mapResults.slice(0, 80);
     this.map.setTitle("Semantic map");
     const indexable = this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path)), paths = indexable.map((file) => file.path), sizes = indexable.map((file) => Math.log1p(Number(file.stat?.size || 0))), sizeLow = sizes.length ? Math.min(...sizes) : 0, sizeHigh = sizes.length ? Math.max(...sizes) : 1, sizeSpread = Math.max(1e-3, sizeHigh - sizeLow), fileScale = new Map(indexable.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - sizeLow) / sizeSpread]));
-    const graph = await this.plugin.search.semanticStarfield(query, paths);
+    const graph = await this.plugin.search.semanticStarfield(query, paths, results.map((result) => result.file));
     if (version2 !== this.mapVersion) return;
     const byFile = new Map(results.map((result) => [result.file, result])), rankingScores = results.map((result) => Number(result.score || 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow);
     this.map.setGraph({ label: query || "Search", hasQuery: Boolean(query), resultCount: results.length }, graph.nodes.map((node) => {

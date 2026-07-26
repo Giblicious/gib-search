@@ -413,7 +413,7 @@ export class MobileSearchRuntime {
     const edges = []; for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(entries[first].vector, entries[second].vector), residualScore: dot(residuals[first].vector, residuals[second].vector) });
     return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...(positions.get(entry.id) || {}) })), edges };
   }
-  async semanticStarfield(query, files = null) {
+  async semanticStarfield(query, files = null, focusFiles = []) {
     const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map(item => item.file))];
     const signature = `${this.meta.length}:${this.vectors.length}:${requested.join('\0')}`;
     if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
@@ -423,16 +423,19 @@ export class MobileSearchRuntime {
         const nearby = [];
         for (let second = 0; second < entries.length; second++) if (first !== second) nearby.push({ source: entries[first].id, target: entries[second].id, score: dot(entries[first].vector, entries[second].vector) });
         nearby.sort((a, b) => b.score - a.score);
-        for (const edge of nearby.slice(0, 3)) { const key = [edge.source, edge.target].sort().join('\0'); if (seen.has(key)) continue; seen.add(key); edges.push(edge); }
+        for (const edge of nearby.slice(0, 6)) { const key = [edge.source, edge.target].sort().join('\0'); if (seen.has(key)) continue; seen.add(key); edges.push(edge); }
       }
-      this.starfieldCache = { signature, entries, edges };
+      const first = entries[0], second = first && entries.reduce((best, entry) => dot(first.vector, entry.vector) < dot(first.vector, best.vector) ? entry : best, first), third = second && entries.reduce((best, entry) => Math.max(dot(first.vector, entry.vector), dot(second.vector, entry.vector)) < Math.max(dot(first.vector, best.vector), dot(second.vector, best.vector)) ? entry : best, first); const raw = entries.map(entry => ({ id: entry.id, x: first && second ? dot(entry.vector, first.vector) - dot(entry.vector, second.vector) : 0, y: third ? dot(entry.vector, third.vector) - (dot(entry.vector, first.vector) + dot(entry.vector, second.vector)) * .5 : 0 })), meanX = raw.reduce((sum, point) => sum + point.x, 0) / Math.max(1, raw.length), meanY = raw.reduce((sum, point) => sum + point.y, 0) / Math.max(1, raw.length), extent = Math.max(.001, ...raw.map(point => Math.hypot(point.x - meanX, point.y - meanY))), positions = new Map(raw.map(point => [point.id, { x: (point.x - meanX) / extent * .78, y: (point.y - meanY) / extent * .78 }]));
+      this.starfieldCache = { signature, entries, edges, positions };
     }
-    const { entries, edges } = this.starfieldCache, trimmed = String(query || '').trim();
-    if (!trimmed) return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: 0 })), edges: edges.map(edge => ({ ...edge, residualScore: 0 })) };
+    const { entries, edges, positions } = this.starfieldCache, trimmed = String(query || '').trim();
+    if (!trimmed) return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, ...(positions.get(entry.id) || {}) })), edges: edges.map(edge => ({ ...edge, residualScore: 0 })) };
     const queryVector = await this.queryVector(this.correctQuery(trimmed)), residuals = new Map(entries.map(entry => [entry.id, residualVector(entry.vector, queryVector)]));
+    const outputEdges = [...edges], seen = new Set(edges.map(edge => [edge.source, edge.target].sort().join('\0'))), focus = new Set(focusFiles || []), focused = entries.filter(entry => focus.has(entry.id));
+    for (const entry of focused) { const nearby = focused.filter(other => other.id !== entry.id).map(other => ({ source: entry.id, target: other.id, score: dot(entry.vector, other.vector) })).sort((a, b) => b.score - a.score); for (const edge of nearby.slice(0, 4)) { const key = [edge.source, edge.target].sort().join('\0'); if (seen.has(key)) continue; seen.add(key); outputEdges.push(edge); } }
     return {
-      nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector) })),
-      edges: edges.map(edge => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
+      nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...(positions.get(entry.id) || {}) })),
+      edges: outputEdges.map(edge => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
     };
   }
   semanticNeighbors(file, limit = 18) {
