@@ -73176,6 +73176,13 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         values[row * columns + column] += amplitude * Math.exp(-(dx * dx + dy * dy) / divisor);
       }
     };
+    const addRidge = (source, target, radius, amplitude) => {
+      const reach = radius * 3, left = Math.max(0, Math.floor((Math.min(source.x, target.x) - reach) / step)), right = Math.min(columns - 1, Math.ceil((Math.max(source.x, target.x) + reach) / step)), top = Math.max(0, Math.floor((Math.min(source.y, target.y) - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((Math.max(source.y, target.y) + reach) / step)), dx = target.x - source.x, dy = target.y - source.y, lengthSquared = Math.max(1, dx * dx + dy * dy), divisor = 2 * radius * radius;
+      for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
+        const x = column * step, y = row * step, along = Math.max(0, Math.min(1, ((x - source.x) * dx + (y - source.y) * dy) / lengthSquared)), nearestX = source.x + dx * along, nearestY = source.y + dy * along, distanceX = x - nearestX, distanceY = y - nearestY, taper = Math.sin(Math.PI * along) ** 0.6;
+        values[row * columns + column] += amplitude * taper * Math.exp(-(distanceX * distanceX + distanceY * distanceY) / divisor);
+      }
+    };
     for (const { node, x, y } of points.values()) {
       const generationWeight = node.generation === 1 ? 1 : node.generation === 2 ? 0.58 : 0.36, amplitude = node.visibility * generationWeight * (0.82 + Math.max(0, Math.min(1, node.relevance)) * 0.18);
       addMass(x, y, sigma, amplitude);
@@ -73187,12 +73194,12 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       degree.set(edge.target, target + 1);
       return true;
     }).slice(0, 28), ridgeRadius = sigma * 0.58;
-    for (const edge of ridges) {
-      const source = points.get(edge.source), target = points.get(edge.target), reach = ridgeRadius * 3, left = Math.max(0, Math.floor((Math.min(source.x, target.x) - reach) / step)), right = Math.min(columns - 1, Math.ceil((Math.max(source.x, target.x) + reach) / step)), top = Math.max(0, Math.floor((Math.min(source.y, target.y) - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((Math.max(source.y, target.y) + reach) / step)), dx = target.x - source.x, dy = target.y - source.y, lengthSquared = Math.max(1, dx * dx + dy * dy), amplitude = 0.12 + Math.min(1, edge.strength) * 0.2, divisor = 2 * ridgeRadius * ridgeRadius;
-      for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
-        const x = column * step, y = row * step, along = Math.max(0, Math.min(1, ((x - source.x) * dx + (y - source.y) * dy) / lengthSquared)), nearestX = source.x + dx * along, nearestY = source.y + dy * along, distanceX = x - nearestX, distanceY = y - nearestY, taper = Math.sin(Math.PI * along) ** 0.6;
-        values[row * columns + column] += amplitude * taper * Math.exp(-(distanceX * distanceX + distanceY * distanceY) / divisor);
-      }
+    for (const edge of ridges) addRidge(points.get(edge.source), points.get(edge.target), ridgeRadius, 0.12 + Math.min(1, edge.strength) * 0.2);
+    if (this.hasQuery && this.queryPresence > 0.04) {
+      const [centerX, centerY] = this.coordinates(this.queryNode, width, height), center = { x: centerX, y: centerY }, directResults = [...points.values()].filter(({ node }) => node.matched && node.generation === 1).sort((first, second) => second.node.relevance - first.node.relevance).slice(0, 5);
+      for (const target of directResults) addRidge(center, target, sigma * 0.46, this.queryPresence * target.node.visibility * (0.07 + Math.max(0, Math.min(1, target.node.relevance)) * 0.11));
+      const supportMaximum = Math.max(0, ...values);
+      addMass(centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
     }
     return { values, columns, rows, step };
   }
