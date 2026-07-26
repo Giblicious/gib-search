@@ -72488,9 +72488,9 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     });
     const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
-      const weight = Number(edge.affinity ?? edge.score ?? overallLow), overall = (weight - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0))), crossCommunity = !hasQuery && communityById.get(edge.source) !== communityById.get(edge.target), baseStrength = edge.bridge ? 0.1 : overall * (0.65 + Math.max(0, residual) * 0.35), strength = crossCommunity ? baseStrength * 0.12 : baseStrength;
+      const weight = Number(edge.affinity ?? edge.score ?? overallLow), overall = (weight - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0))), crossCommunity = !hasQuery && communityById.get(edge.source) !== communityById.get(edge.target), baseStrength = edge.bridge ? 0.1 : overall * (0.65 + Math.max(0, residual) * 0.35), strength = crossCommunity ? baseStrength * 0.06 : baseStrength;
       return { ...edge, overall, residual, strength, crossCommunity };
-    }).filter((edge) => edge.strength > 0.012);
+    }).filter((edge) => edge.strength > 8e-3);
     this.relationships = new Map(this.activeEdges.map((edge) => [mapEdgeKey(edge.source, edge.target), edge]));
     this.pendingQuery = false;
     this.byId = new Map(this.nodes.map((node) => [node.id, node]));
@@ -72546,7 +72546,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const distance = Math.max(0.025, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const layerStrength = !this.hasQuery || this.pendingQuery ? 1.35 : 1.25, desired = 0.075 + (1 - edge.overall) * 0.32 + Math.max(0, -edge.residual) * 0.09, spring = (distance - desired) * (25e-4 + edge.strength * 9e-3) * alpha2 * layerStrength, contrast = -Math.max(0, -edge.residual) * 4e-3 * alpha2 * layerStrength, force = spring + contrast;
+      const layerStrength = !this.hasQuery || this.pendingQuery ? 1.45 : 1.35, desired = 0.055 + (1 - edge.overall) * 0.46 + Math.max(0, -edge.residual) * 0.13, spring = (distance - desired) * (32e-4 + edge.strength * 0.013) * alpha2 * layerStrength, contrast = -Math.max(0, -edge.residual) * 7e-3 * alpha2 * layerStrength, force = spring + contrast;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -72556,22 +72556,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         b.vy -= dy * force;
       }
     }
-    if (!this.hasQuery || this.pendingQuery) {
-      const communities = /* @__PURE__ */ new Map();
-      for (const node of this.nodes) {
-        const id2 = Number(node.community || 0), group = communities.get(id2) || { x: 0, y: 0, count: 0 };
-        group.x += node.x;
-        group.y += node.y;
-        group.count++;
-        communities.set(id2, group);
-      }
-      for (const node of this.nodes) {
-        const group = communities.get(Number(node.community || 0));
-        if (!group || group.count < 2 || node === this.dragging) continue;
-        node.vx += (group.x / group.count - node.x) * 45e-4 * alpha2;
-        node.vy += (group.y / group.count - node.y) * 45e-4 * alpha2;
-      }
-    }
     for (let first = 0; first < this.nodes.length; first++) for (let second = first + 1; second < this.nodes.length; second++) {
       const a2 = this.nodes[first], b = this.nodes[second];
       if (this.hasQuery && !this.pendingQuery && (!a2.matched || !b.matched)) continue;
@@ -72579,7 +72563,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const distance = Math.max(0.018, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const collisionDistance = 0.035 + (a2.fileScale + b.fileScale) * 0.022, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.16 * alpha2 : 0, charge = -Math.min(28e-4, 18e-6 / (distance * distance)) * alpha2, force = collision + charge;
+      const collisionDistance = 0.035 + (a2.fileScale + b.fileScale) * 0.022, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.19 * alpha2 : 0, charge = -Math.min(42e-4, 3e-5 / (distance * distance)) * alpha2, force = collision + charge;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -72626,14 +72610,29 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         node.vy -= dy * force;
       }
     }
+    const corralBodies = this.hasQuery && !this.pendingQuery ? [query, ...foreground] : this.queryPresence > 0.04 ? [query, ...this.nodes] : this.nodes;
+    if (corralBodies.length) {
+      const centerX = corralBodies.reduce((sum, body) => sum + body.x, 0) / corralBodies.length, centerY = corralBodies.reduce((sum, body) => sum + body.y, 0) / corralBodies.length, radius = this.hasQuery && !this.pendingQuery ? 0.74 : 0.88;
+      for (const body of corralBodies) {
+        if (body === this.dragging) continue;
+        let dx = body.x - centerX, dy = body.y - centerY;
+        const distance = Math.max(1e-3, Math.hypot(dx, dy));
+        if (distance <= radius) continue;
+        dx /= distance;
+        dy /= distance;
+        const force = (distance - radius) * 0.055 * alpha2;
+        body.vx -= dx * force;
+        body.vy -= dy * force;
+      }
+    }
     const bodies = this.queryPresence > 0.04 ? [query, ...this.nodes] : this.nodes;
     for (const body of bodies) {
       if (body === this.dragging) {
         body.vx = body.vy = 0;
         continue;
       }
-      body.vx *= 0.9;
-      body.vy *= 0.9;
+      body.vx *= 0.89;
+      body.vy *= 0.89;
       body.x += body.vx;
       body.y += body.vy;
     }
