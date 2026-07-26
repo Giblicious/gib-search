@@ -70410,7 +70410,8 @@ var init_three = __esm({
 var mobile_runtime_exports = {};
 __export(mobile_runtime_exports, {
   MobileSearchRuntime: () => MobileSearchRuntime,
-  buildHighlightCandidates: () => buildHighlightCandidates
+  buildHighlightCandidates: () => buildHighlightCandidates,
+  conceptLabelCandidates: () => conceptLabelCandidates
 });
 function basename(file) {
   return String(file).split("/").pop().replace(/\.(?:md|txt|markdown)$/i, "");
@@ -70950,6 +70951,21 @@ function indexedHighlightCandidates(field, source, maximum) {
   }
   return results;
 }
+function conceptLabelCandidates(source, query = "", field = "body") {
+  const anchors = queryAnchors(query), candidates = indexedHighlightCandidates(field, source, field === "filename" ? 8 : 36), unique2 = /* @__PURE__ */ new Map();
+  for (const candidate of candidates) {
+    if (!candidate.hasNoun || candidate.hasVerb) continue;
+    const words = sentenceWords(candidate.phrase), content = words.filter((word) => !word.stop), lemmas = content.map((word) => word.lemma);
+    if (!lemmas.length) continue;
+    const temporal = content.some((word) => /^(?:\d{1,2}(?:st|nd|rd|th)?[- ]?century|\d{3,4}s?)$/i.test(word.text));
+    const head = lemmas.at(-1);
+    if (temporal || GENERIC_CONCEPTS.has(head) || GENERIC_DEMOGRAPHICS.has(head)) continue;
+    const key = lemmas.join(" "), queryCoverage = lemmas.filter((word) => anchors.has(word)).length / lemmas.length, novelty = queryCoverage >= 1 ? 0.38 : queryCoverage > 0 ? 0.82 : 1, value = { key, phrase: candidate.phrase, quality: Number(candidate.quality || 0) + (field === "filename" ? 0.08 : 0), novelty };
+    const previous = unique2.get(key);
+    if (!previous || value.quality * value.novelty > previous.quality * previous.novelty) unique2.set(key, value);
+  }
+  return [...unique2.values()];
+}
 function quantizeHighlightVector(vector) {
   return Int16Array.from(vector, (value) => Math.max(-32767, Math.min(32767, Math.round(value * 32767))));
 }
@@ -70968,7 +70984,7 @@ function buildHighlightCandidates(file, chunk) {
     return true;
   });
 }
-var MODEL_ID, RELATION_MODEL_ID, DIMENSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, IRREGULAR_LEMMAS, MobileSearchRuntime;
+var MODEL_ID, RELATION_MODEL_ID, DIMENSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, IRREGULAR_LEMMAS, MobileSearchRuntime;
 var init_mobile_runtime = __esm({
   "src/mobile-runtime.js"() {
     init_transformers_web();
@@ -70982,6 +70998,7 @@ var init_mobile_runtime = __esm({
     INDEXABLE = /* @__PURE__ */ new Set(["md", "txt", "markdown"]);
     STOP_WORDS = /* @__PURE__ */ new Set(["a", "about", "an", "and", "are", "as", "at", "be", "because", "been", "being", "between", "but", "by", "can", "could", "do", "does", "for", "from", "had", "has", "have", "how", "i", "in", "into", "is", "it", "its", "may", "might", "more", "my", "not", "of", "on", "or", "our", "out", "over", "she", "so", "than", "that", "the", "their", "them", "then", "they", "this", "those", "through", "to", "under", "up", "vs", "was", "we", "were", "what", "when", "where", "which", "while", "who", "with", "without", "would", "you", "your"]);
     GENERIC_CONCEPTS = /* @__PURE__ */ new Set(["answer", "concept", "example", "fact", "idea", "kind", "part", "point", "question", "section", "thing", "thought", "type", "way"]);
+    GENERIC_DEMOGRAPHICS = /* @__PURE__ */ new Set(["adult", "female", "male", "man", "person", "woman"]);
     IRREGULAR_LEMMAS = /* @__PURE__ */ new Map([["felt", "feel"], ["feels", "feel"], ["feelings", "feel"], ["children", "child"], ["people", "person"], ["men", "man"], ["women", "woman"]]);
     MobileSearchRuntime = class {
       constructor(plugin6) {
@@ -71805,21 +71822,17 @@ var init_mobile_runtime = __esm({
           if (relation.second <= first || !directed[relation.second].has(first)) continue;
           edges.push({ source: entries[first].id, target: entries[relation.second].id, affinity: Math.max(1e-3, (relation.score + 1) / 2) });
         }
-        const communities = consolidateCommunities(entries, louvainCommunities(entries.map((entry) => entry.id), edges)), entitySets = this.fileEntities(ordered), entityFrequency = /* @__PURE__ */ new Map();
-        for (const entities of entitySets.values()) for (const entity2 of entities) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
-        const groups = /* @__PURE__ */ new Map();
+        const communities = consolidateCommunities(entries, louvainCommunities(entries.map((entry) => entry.id), edges)), groups = /* @__PURE__ */ new Map();
         for (const entry of entries) {
           const id2 = communities.get(entry.id) ?? 0, group = groups.get(id2) || [];
           group.push(entry.id);
           groups.set(id2, group);
         }
-        const queryWords = new Set(tokens(query)), candidateSets = /* @__PURE__ */ new Map(), documentFrequency = /* @__PURE__ */ new Map();
+        const candidateSets = /* @__PURE__ */ new Map(), documentFrequency = /* @__PURE__ */ new Map();
         for (const file of ordered) {
-          const source = `${evidence.get(file) || ""} ${basename(file)}`, words = (source.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) || []).filter((word) => word.length > 2 && !STOP_WORDS.has(word) && !GENERIC_CONCEPTS.has(word) && !queryWords.has(word) && !/^\d+$/.test(word)), candidates = new Set([...entitySets.get(file) || []].filter((value) => !queryWords.has(value) && !GENERIC_CONCEPTS.has(value)));
-          for (const word of words) candidates.add(word);
-          for (let index3 = 0; index3 < words.length - 1; index3++) candidates.add(`${words[index3]} ${words[index3 + 1]}`);
+          const candidates = new Map([...conceptLabelCandidates(evidence.get(file) || "", query), ...conceptLabelCandidates(basename(file), query, "filename")].map((candidate) => [candidate.key, candidate]));
           candidateSets.set(file, candidates);
-          for (const candidate of candidates) documentFrequency.set(candidate, (documentFrequency.get(candidate) || 0) + 1);
+          for (const key of candidates.keys()) documentFrequency.set(key, (documentFrequency.get(key) || 0) + 1);
         }
         const centroids = /* @__PURE__ */ new Map(), labels = /* @__PURE__ */ new Map();
         for (const [community, members] of groups) {
@@ -71831,9 +71844,16 @@ var init_mobile_runtime = __esm({
           const norm = Math.sqrt(dot(centroid, centroid)) || 1;
           for (let dimension = 0; dimension < DIMENSION; dimension++) centroid[dimension] /= norm;
           centroids.set(community, centroid);
-          const counts = /* @__PURE__ */ new Map();
-          for (const file of members) for (const candidate of candidateSets.get(file) || []) counts.set(candidate, (counts.get(candidate) || 0) + 1);
-          const ranked = [...counts].map(([value, count]) => ({ value, score: count * Math.log(1 + entries.length / Math.max(1, documentFrequency.get(value) || 1)) * (value.includes(" ") ? 1.18 : 1) })).sort((a2, b) => b.score - a2.score || a2.value.localeCompare(b.value));
+          const counts = /* @__PURE__ */ new Map(), displays = /* @__PURE__ */ new Map();
+          for (const file of members) for (const [key, candidate] of candidateSets.get(file) || []) {
+            const value = counts.get(key) || { count: 0, quality: 0, novelty: 0 };
+            value.count++;
+            value.quality += candidate.quality;
+            value.novelty += candidate.novelty;
+            counts.set(key, value);
+            if (!displays.has(key)) displays.set(key, candidate.phrase);
+          }
+          const ranked = [...counts].map(([key, value]) => ({ value: displays.get(key), score: value.count * Math.log(1 + entries.length / Math.max(1, documentFrequency.get(key) || 1)) * (1 + value.quality / value.count * 2.2) * value.novelty / value.count })).sort((a2, b) => b.score - a2.score || a2.value.localeCompare(b.value));
           const best = ranked[0], runnerUp = ranked[1], labelConfidence = best ? Math.min(1, 0.34 + best.score / Math.max(1e-3, best.score + Number(runnerUp?.score || 0)) * 0.5 + Math.min(0.16, members.length / entries.length * 0.3)) : 0;
           labels.set(community, { label: best ? String(best.value).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "", confidence: labelConfidence });
         }
