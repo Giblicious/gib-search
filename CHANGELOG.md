@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.9
+
+- Replaces stacked boundary envelopes with contours cut through one continuous semantic elevation surface.
+- Uses only the query and visible notes as elevated terrain controls; note height remains its displayed relevance.
+- Derives a tight zero-elevation ground skirt from the result footprint so contours close without filling the map panel.
+- Preserves the living semantic physics while allowing real slopes, ridges, saddles, and valleys to emerge between notes.
+
 ## 0.5.8
 
 - Replaces circular node-and-corridor envelopes with padded concave hulls around each relevance group.
