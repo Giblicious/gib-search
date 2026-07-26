@@ -8,6 +8,8 @@ The search popup includes four coordinated lenses. **Relevance** gives the stron
 
 The note-neighborhood pane offers the same lenses with the active note as its semantic center. Arguments compares relevant neighboring notes pairwise; it does not treat the first result or the active note as an authoritative claim.
 
+When Arguments finds a confident alignment or tension, its result card shows the exact query-relevant passage pair used for that judgment and names the counterpart note. These are source excerpts, not generated explanations.
+
 The optional magic graph combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. These signals form one multi-relational distance model that is reduced into a query-conditioned 2D layout. Hue represents semantic direction, while lightweight physics animates and gently relaxes the calculated geometry.
 
 ## Install with BRAT
