@@ -72187,48 +72187,22 @@ var SemanticMapCanvas = class {
     this.resizeObserver?.disconnect();
   }
 };
-function pointSegmentDistance(x, y, source, target) {
-  const dx = target.x - source.x, dy = target.y - source.y, lengthSquared = dx * dx + dy * dy;
-  if (!lengthSquared) return Math.hypot(x - source.x, y - source.y);
-  const amount = Math.max(0, Math.min(1, ((x - source.x) * dx + (y - source.y) * dy) / lengthSquared));
-  return Math.hypot(x - (source.x + dx * amount), y - (source.y + dy * amount));
-}
-function pointInTriangle(x, y, triangle) {
-  const [a2, b, c2] = triangle, first = (x - b.x) * (a2.y - b.y) - (a2.x - b.x) * (y - b.y), second = (x - c2.x) * (b.y - c2.y) - (b.x - c2.x) * (y - c2.y), third = (x - a2.x) * (c2.y - a2.y) - (c2.x - a2.x) * (y - a2.y), hasNegative = first < 0 || second < 0 || third < 0, hasPositive = first > 0 || second > 0 || third > 0;
-  return !(hasNegative && hasPositive);
-}
-function distanceToTriangle(x, y, triangle) {
-  if (pointInTriangle(x, y, triangle)) return 0;
-  return Math.min(pointSegmentDistance(x, y, triangle[0], triangle[1]), pointSegmentDistance(x, y, triangle[1], triangle[2]), pointSegmentDistance(x, y, triangle[2], triangle[0]));
-}
 function median(values) {
   if (!values.length) return 0;
   const sorted = [...values].sort((a2, b) => a2 - b), middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
-function buildPaddedFootprint(points, size = 105) {
-  const padding = 0.12, extent = Math.min(1.12, Math.max(0.36, ...points.map((point) => Math.max(Math.abs(point.x), Math.abs(point.y)) + padding + 0.045))), nearest = points.map((point, index3) => Math.min(...points.filter((_2, other) => other !== index3).map((other) => Math.hypot(point.x - other.x, point.y - other.y)))), typicalSpacing = median(nearest.filter(Number.isFinite)), wrapReach = Math.max(padding * 2.35, Math.min(0.62, typicalSpacing * 2.2 || padding * 2.35));
-  const triangles = triangulateTerrain(points).filter((triangle) => Math.max(Math.hypot(triangle[0].x - triangle[1].x, triangle[0].y - triangle[1].y), Math.hypot(triangle[1].x - triangle[2].x, triangle[1].y - triangle[2].y), Math.hypot(triangle[2].x - triangle[0].x, triangle[2].y - triangle[0].y)) <= wrapReach), field = new Float32Array(size * size);
-  for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
-    const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
-    let signedDistance = -Infinity;
-    for (const point of points) signedDistance = Math.max(signedDistance, padding - Math.hypot(x - point.x, y - point.y));
-    for (const triangle of triangles) signedDistance = Math.max(signedDistance, padding - distanceToTriangle(x, y, triangle));
-    field[row * size + column] = signedDistance;
-  }
-  return { size, field, extent };
-}
-function contourSegments(field, size) {
+function contourSegments(field, size, level = 0) {
   const segments = [], edgePoint = (edge, column, row, corners) => {
-    const definitions = [[0, 1, column, row, column + 1, row], [1, 2, column + 1, row, column + 1, row + 1], [2, 3, column + 1, row + 1, column, row + 1], [3, 0, column, row + 1, column, row]], [first, second, x1, y1, x2, y2] = definitions[edge], amount = -corners[first] / (corners[second] - corners[first]);
+    const definitions = [[0, 1, column, row, column + 1, row], [1, 2, column + 1, row, column + 1, row + 1], [2, 3, column + 1, row + 1, column, row + 1], [3, 0, column, row + 1, column, row]], [first, second, x1, y1, x2, y2] = definitions[edge], amount = (level - corners[first]) / (corners[second] - corners[first]);
     return { x: x1 + (x2 - x1) * amount, y: y1 + (y2 - y1) * amount };
   };
   for (let row = 0; row < size - 1; row++) for (let column = 0; column < size - 1; column++) {
-    const corners = [field[row * size + column], field[row * size + column + 1], field[(row + 1) * size + column + 1], field[(row + 1) * size + column]], mask = corners.reduce((value, corner, index3) => value | (corner >= 0 ? 1 << index3 : 0), 0);
+    const corners = [field[row * size + column], field[row * size + column + 1], field[(row + 1) * size + column + 1], field[(row + 1) * size + column]], mask = corners.reduce((value, corner, index3) => value | (corner >= level ? 1 << index3 : 0), 0);
     if (!mask || mask === 15) continue;
     let pairs3 = { 1: [[3, 0]], 2: [[0, 1]], 3: [[3, 1]], 4: [[1, 2]], 6: [[0, 2]], 7: [[3, 2]], 8: [[2, 3]], 9: [[0, 2]], 11: [[1, 2]], 12: [[1, 3]], 13: [[0, 1]], 14: [[3, 0]] }[mask];
     if (!pairs3) {
-      const centerInside = corners.reduce((sum, value) => sum + value, 0) >= 0;
+      const centerInside = corners.reduce((sum, value) => sum + value, 0) / 4 >= level;
       pairs3 = mask === 5 ? centerInside ? [[0, 1], [2, 3]] : [[3, 0], [1, 2]] : centerInside ? [[3, 0], [1, 2]] : [[0, 1], [2, 3]];
     }
     for (const [first, second] of pairs3) segments.push([edgePoint(first, column, row, corners), edgePoint(second, column, row, corners)]);
@@ -72262,33 +72236,56 @@ function stitchContourSegments(segments) {
   }
   return paths;
 }
-function buildTopographicTerrain(query, nodes) {
-  const elevated = [{ x: query.x, y: query.y, z: 1 }, ...nodes.map((node) => ({ x: node.x, y: node.y, z: node.elevation }))], footprint = buildPaddedFootprint(elevated), boundaryPaths = stitchContourSegments(contourSegments(footprint.field, footprint.size)), ground = [], seen = /* @__PURE__ */ new Set();
-  for (const path2 of boundaryPaths) {
-    const stride = Math.max(1, Math.ceil(path2.length / 48));
-    for (let index3 = 0; index3 < path2.length; index3 += stride) {
-      const point = path2[index3], sample = { x: (point.x / (footprint.size - 1) * 2 - 1) * footprint.extent, y: (point.y / (footprint.size - 1) * 2 - 1) * footprint.extent, z: 0 }, key = `${Math.round(sample.x * 1e4)}:${Math.round(sample.y * 1e4)}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        ground.push(sample);
-      }
-    }
-  }
-  const triangles = triangulateTerrain([...elevated, ...ground]).filter((triangle) => triangle.some((point) => point.z > 0));
-  return { triangles, extent: footprint.extent };
+function prepareHeatInfluence(influence) {
+  const angle = influence.angle || 0;
+  return { ...influence, cosine: Math.cos(angle), sine: Math.sin(angle), inverseAlong: 1 / (influence.along * influence.along), inverseAcross: 1 / (influence.across * influence.across) };
 }
-function topographicContourSegments(triangles, level) {
-  const segments = [];
-  for (const triangle of triangles) {
-    const crossings = [];
-    for (const [first, second] of [[triangle[0], triangle[1]], [triangle[1], triangle[2]], [triangle[2], triangle[0]]]) {
-      if (first.z < level === second.z < level || first.z === second.z) continue;
-      const amount = (level - first.z) / (second.z - first.z);
-      crossings.push({ x: first.x + (second.x - first.x) * amount, y: first.y + (second.y - first.y) * amount });
-    }
-    if (crossings.length === 2) segments.push(crossings);
+function ellipticalHeat(x, y, influence) {
+  const dx = x - influence.x, dy = y - influence.y, along = dx * influence.cosine + dy * influence.sine, across = -dx * influence.sine + dy * influence.cosine;
+  return influence.weight * Math.exp(-0.5 * (along * along * influence.inverseAlong + across * across * influence.inverseAcross));
+}
+function buildSemanticHeatField(query, nodes, edges, size = 150) {
+  const bodies = [query, ...nodes], byId = new Map(nodes.map((node) => [node.id, node])), positiveByNode = new Map(nodes.map((node) => [node.id, []]));
+  for (const edge of edges || []) if (edge.residual > 0) {
+    positiveByNode.get(edge.source)?.push({ edge, other: byId.get(edge.target) });
+    positiveByNode.get(edge.target)?.push({ edge, other: byId.get(edge.source) });
   }
-  return segments;
+  const influences = bodies.map((body) => {
+    const distances = bodies.filter((other) => other !== body).map((other) => Math.hypot(other.x - body.x, other.y - body.y)).sort((a2, b) => a2 - b), localSpacing = median(distances.slice(0, 3)), bandwidth = Math.max(0.13, Math.min(0.27, 0.095 + localSpacing * 0.38));
+    if (body.isQuery) return prepareHeatInfluence({ x: body.x, y: body.y, weight: 1.7, along: bandwidth * 1.08, across: bandwidth * 1.08, angle: 0 });
+    let directionX = 0, directionY = 0, directionWeight = 0;
+    const relationships = [...positiveByNode.get(body.id) || [], { edge: { strength: 0.45 + body.relevance * 0.4, residual: 1 }, other: query }];
+    for (const { edge, other } of relationships) {
+      if (!other) continue;
+      const dx = other.x - body.x, dy = other.y - body.y, distance = Math.max(1e-3, Math.hypot(dx, dy)), weight = edge.strength * Math.max(0, edge.residual);
+      directionX += dx / distance * weight;
+      directionY += dy / distance * weight;
+      directionWeight += weight;
+    }
+    const coherence = directionWeight ? Math.min(1, Math.hypot(directionX, directionY) / directionWeight) : 0;
+    return prepareHeatInfluence({ x: body.x, y: body.y, weight: 0.2 + body.relevance * 0.58, along: bandwidth * (1 + coherence * 0.9), across: bandwidth * (1 - coherence * 0.18), angle: Math.atan2(directionY, directionX) });
+  });
+  const relational = (edges || []).map((edge) => {
+    const source = byId.get(edge.source), target = byId.get(edge.target);
+    if (!source || !target || Math.abs(edge.residual) < 0.04) return null;
+    const distance = Math.max(0.02, Math.hypot(target.x - source.x, target.y - source.y)), positive = edge.residual > 0;
+    return prepareHeatInfluence({ x: (source.x + target.x) / 2, y: (source.y + target.y) / 2, angle: Math.atan2(target.y - source.y, target.x - source.x), along: distance * 0.52 + 0.055, across: 0.055 + edge.strength * 0.035, weight: (positive ? 0.2 : -0.16) * edge.strength * Math.abs(edge.residual) });
+  }).filter(Boolean), extent = Math.min(1.18, Math.max(0.46, ...bodies.map((body) => Math.max(Math.abs(body.x), Math.abs(body.y)) + 0.32))), field = new Float32Array(size * size);
+  let maximum = 0;
+  for (let row = 0; row < size; row++) for (let column = 0; column < size; column++) {
+    const x = (column / (size - 1) * 2 - 1) * extent, y = (row / (size - 1) * 2 - 1) * extent;
+    let heat = 0;
+    for (const influence of influences) heat += ellipticalHeat(x, y, influence);
+    for (const influence of relational) heat += ellipticalHeat(x, y, influence);
+    heat = Math.max(0, heat);
+    field[row * size + column] = heat;
+    maximum = Math.max(maximum, heat);
+  }
+  if (maximum > 0) for (let index3 = 0; index3 < field.length; index3++) {
+    const normalized = Math.pow(field[index3] / maximum, 0.82);
+    field[index3] = normalized < 0.025 ? 0 : normalized;
+  }
+  return { size, field, extent };
 }
 function drawSmoothContour(ctx, path2, toCanvas) {
   const points = path2.map((point) => toCanvas(point.x, point.y)), closed = Math.hypot(points[0][0] - points[points.length - 1][0], points[0][1] - points[points.length - 1][1]) < 2;
@@ -72412,13 +72409,13 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (!matchMedia("(prefers-reduced-motion: reduce)").matches) this.physicsStep(this.alpha);
       this.alpha *= 0.985;
       if (!this.terrain || time - this.lastTerrainAt > 105) {
-        this.terrain = buildTopographicTerrain(this.queryNode, this.nodes);
+        this.terrain = buildSemanticHeatField(this.queryNode, this.nodes, this.activeEdges, this.alpha < 0.08 ? 180 : 105);
         this.lastTerrainAt = time;
       }
       this.draw();
       if (this.alpha > 0.012 || this.dragging) this.simulationFrame = requestAnimationFrame(tick);
       else {
-        this.terrain = buildTopographicTerrain(this.queryNode, this.nodes);
+        this.terrain = buildSemanticHeatField(this.queryNode, this.nodes, this.activeEdges, 220);
         this.draw();
       }
     };
@@ -72430,16 +72427,16 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   drawContours(ctx, width, height, colors2) {
     if (!this.terrain) return;
-    const { triangles } = this.terrain, scale = Math.max(20, Math.min(width, height) / 2 - 68), toCanvas = (x, y) => [width / 2 + x * scale, height / 2 + y * scale], levels = [0.04, 0.2, 0.36, 0.52, 0.68, 0.84];
+    const { size, field, extent } = this.terrain, scale = Math.max(20, Math.min(width, height) / 2 - 68), toCanvas = (column, row) => [width / 2 + (column / (size - 1) * 2 - 1) * extent * scale, height / 2 + (row / (size - 1) * 2 - 1) * extent * scale], levels = [0.08, 0.21, 0.35, 0.5, 0.67, 0.84];
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     for (let band = 0; band < levels.length; band++) {
-      const outer = band === 0, paths = stitchContourSegments(topographicContourSegments(triangles, levels[band]));
+      const outer = band === 0, paths = stitchContourSegments(contourSegments(field, size, levels[band]));
       ctx.beginPath();
       for (const path2 of paths) drawSmoothContour(ctx, path2, toCanvas);
-      ctx.globalAlpha = outer ? 0.18 : 0.23 + band * 0.021;
+      ctx.globalAlpha = outer ? 0.16 : 0.21 + band * 0.025;
       ctx.strokeStyle = outer ? colors2.muted : colors2.normal;
-      ctx.lineWidth = outer ? 0.72 : 0.78 + band * 0.045;
+      ctx.lineWidth = outer ? 0.68 : 0.76 + band * 0.05;
       ctx.stroke();
     }
     ctx.globalAlpha = 1;

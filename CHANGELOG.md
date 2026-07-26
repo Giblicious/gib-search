@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.11
+
+- Replaces literal triangulated terrain with an adaptive semantic heat field.
+- Uses result relevance as heat intensity and local note spacing as each influence's natural spread.
+- Elongates note influence toward positive semantic neighbors, forming organic ridges without arbitrary control points.
+- Reinforces positive residual relationships and subtracts negative residual relationships to create meaningful saddles and valleys.
+- Draws six smooth contours from the normalized field without background shading.
+
 ## 0.5.10
 
 - Adds local typo tolerance for semantic queries using vocabulary derived from the indexed vault.
