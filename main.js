@@ -71965,7 +71965,7 @@ var init_mobile_runtime = __esm({
         const basis = this.topicBasis(), trimmed = String(query || "").trim(), centerFile = String(options.centerFile || ""), fileCenter = centerFile ? this.fileVectors([centerFile]).get(centerFile)?.vector : null, conditioned = Boolean(trimmed || fileCenter);
         let center = fileCenter ? Float32Array.from(fileCenter) : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
         if (!conditioned) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
-        const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
+        const topics = topicCoordinates(entries, conditioned ? center : basis.center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
         for (const entities of entitySets.values()) for (const entity2 of entities) frequency.set(entity2, (frequency.get(entity2) || 0) + 1);
         const entitySimilarity = (first, second) => {
           const a2 = entitySets.get(first) || /* @__PURE__ */ new Set(), b = entitySets.get(second) || /* @__PURE__ */ new Set();
@@ -71985,7 +71985,7 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = { relevance: { semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", baseWeights = { relevance: { semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens], weights = !conditioned && lens === "relevance" ? { semantic: 0.2, residual: 0.24, entity: 0.08, angular: 0.28, community: 0.2, relation: 0 } : baseWeights;
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
@@ -72012,9 +72012,17 @@ var init_mobile_runtime = __esm({
           return positioned;
         }
         const points = [...layout.values()], meanX = points.reduce((sum, point) => sum + point.x, 0) / Math.max(1, points.length), meanY = points.reduce((sum, point) => sum + point.y, 0) / Math.max(1, points.length), extent = Math.max(1e-3, ...points.map((point) => Math.hypot(point.x - meanX, point.y - meanY)));
+        for (const entry of entries) {
+          const point = layout.get(entry.id), topic = topics.get(entry.id);
+          if (!point || !topic) continue;
+          const localX = (point.x - meanX) / extent * 0.82, localY = (point.y - meanY) / extent * 0.82, radius = 0.14 + Math.pow(Math.max(0, Math.min(1, Number(topic.topicStrength || 0))), 0.72) * 0.72, compassX = Math.cos(topic.topicAngle) * radius, compassY = Math.sin(topic.topicAngle) * radius;
+          point.x = localX * 0.38 + compassX * 0.62;
+          point.y = localY * 0.38 + compassY * 0.62;
+        }
+        const shaped = [...layout.values()], shapedMeanX = shaped.reduce((sum, point) => sum + point.x, 0) / Math.max(1, shaped.length), shapedMeanY = shaped.reduce((sum, point) => sum + point.y, 0) / Math.max(1, shaped.length), shapedExtent = Math.max(1e-3, ...shaped.map((point) => Math.hypot(point.x - shapedMeanX, point.y - shapedMeanY)));
         for (const point of layout.values()) {
-          point.x = (point.x - meanX) / extent * 0.82;
-          point.y = (point.y - meanY) / extent * 0.82;
+          point.x = (point.x - shapedMeanX) / shapedExtent * 0.88;
+          point.y = (point.y - shapedMeanY) / shapedExtent * 0.88;
         }
         return layout;
       }
