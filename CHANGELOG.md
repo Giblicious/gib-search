@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.12
+
+- Removes all terrain, heatmap, contour, ridge, and connecting-line rendering from semantic maps.
+- Leaves a clean force-directed field containing only the query, note nodes, and restrained labels.
+- Refines note-to-note springs using overall similarity while signed residual similarity adds meaningful separation.
+- Scales collision distance with visible node size for more natural spacing.
+- Makes hover emphasis reveal related notes through opacity without drawing connections.
+- Removes all raster-field work from map animation for a lighter, more responsive interaction.
+
 ## 0.5.11
 
 - Replaces literal triangulated terrain with an adaptive semantic heat field.

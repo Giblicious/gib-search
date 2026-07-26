@@ -408,7 +408,7 @@ export class MobileSearchRuntime {
     }
     return { nodes, edges };
   }
-  async semanticTerrain(query, files) {
+  async semanticQueryMap(query, files) {
     const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 50), vectors = this.fileVectors(ordered), queryVector = await this.queryVector(query); const entries = ordered.filter(id => vectors.has(id)).map(id => ({ id, vector: vectors.get(id).vector })), residuals = entries.map(entry => ({ id: entry.id, vector: residualVector(entry.vector, queryVector) })), positions = semanticProjection('__query__', queryVector, residuals);
     const edges = []; for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(entries[first].vector, entries[second].vector), residualScore: dot(residuals[first].vector, residuals[second].vector) });
     return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...(positions.get(entry.id) || {}) })), edges };
