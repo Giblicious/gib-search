@@ -72918,6 +72918,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.queryPresence = 0;
     this.targetQueryPresence = 0;
     this.queryMarkerFocus = 0;
+    this.gaussianLookup = Float32Array.from({ length: 1025 }, (_2, index3) => Math.exp(-index3 / 1024 * 9));
     this.cameraX = 0;
     this.cameraY = 0;
     this.cameraZoom = 1;
@@ -73167,22 +73168,22 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     return [width / 2 + (Number(node.x) - this.cameraX) * scale + this.panX, height / 2 + (Number(node.y) - this.cameraY) * scale + this.panY];
   }
   semanticDensityField(width, height) {
-    const step = 6, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
+    const step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
       const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
-    })), zoom = Math.max(0.65, Math.min(2.4, this.cameraZoom * this.userZoom)), sigma = Math.max(20, Math.min(54, 27 * zoom)), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y, coreRadius: Math.max(5.5, Math.min(10, 4 + Number(point.node.fileScale || 0) * 4.4)) }));
+    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), sigma = Math.max(9, 27 * zoom), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y, coreRadius: (2.8 + Number(point.node.fileScale || 0) * 2.6) * zoom })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
         const dx = column * step - x, dy = row * step - y;
-        values[row * columns + column] += amplitude * Math.exp(-(dx * dx + dy * dy) / divisor);
+        values[row * columns + column] += amplitude * gaussian((dx * dx + dy * dy) / divisor);
       }
     };
     const addRidge = (source, target, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((Math.min(source.x, target.x) - reach) / step)), right = Math.min(columns - 1, Math.ceil((Math.max(source.x, target.x) + reach) / step)), top = Math.max(0, Math.floor((Math.min(source.y, target.y) - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((Math.max(source.y, target.y) + reach) / step)), dx = target.x - source.x, dy = target.y - source.y, lengthSquared = Math.max(1, dx * dx + dy * dy), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
         const x = column * step, y = row * step, along = Math.max(0, Math.min(1, ((x - source.x) * dx + (y - source.y) * dy) / lengthSquared)), nearestX = source.x + dx * along, nearestY = source.y + dy * along, distanceX = x - nearestX, distanceY = y - nearestY, taper = Math.sin(Math.PI * along) ** 0.6;
-        values[row * columns + column] += amplitude * taper * Math.exp(-(distanceX * distanceX + distanceY * distanceY) / divisor);
+        values[row * columns + column] += amplitude * taper * gaussian((distanceX * distanceX + distanceY * distanceY) / divisor);
       }
     };
     for (const { node, x, y } of points.values()) {
@@ -73202,7 +73203,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       for (const target of directResults) addRidge(center, target, sigma * 0.46, this.queryPresence * target.node.visibility * (0.07 + Math.max(0, Math.min(1, target.node.relevance)) * 0.11));
       const supportMaximum = Math.max(0, ...values);
       addMass(centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
-      anchors.push({ ...center, coreRadius: 8 });
+      anchors.push({ ...center, coreRadius: 4.2 * zoom });
     }
     this.suppressEmptySummits(values, columns, rows, step, anchors, sigma);
     this.anchorSummitMesas(values, columns, rows, step, anchors, sigma);
@@ -73243,11 +73244,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   anchorSummitMesas(values, columns, rows, step, anchors, sigma) {
     if (!anchors.length) return;
-    const source = Float32Array.from(values), sample = (column, row) => source[Math.max(0, Math.min(rows - 1, row)) * columns + Math.max(0, Math.min(columns - 1, column))], mesas = anchors.map((anchor) => {
-      const coreRadius = Math.max(Number(anchor.coreRadius || 0), Math.max(5.5, Math.min(9, sigma * 0.25))), searchRadius = coreRadius * 2.25, left = Math.max(0, Math.floor((anchor.x - searchRadius) / step)), right = Math.min(columns - 1, Math.ceil((anchor.x + searchRadius) / step)), top = Math.max(0, Math.floor((anchor.y - searchRadius) / step)), bottom = Math.min(rows - 1, Math.ceil((anchor.y + searchRadius) / step));
+    const source = Float32Array.from(values), terrainScale = sigma / 27, sample = (column, row) => source[Math.max(0, Math.min(rows - 1, row)) * columns + Math.max(0, Math.min(columns - 1, column))], mesas = anchors.map((anchor) => {
+      const coreRadius = Math.max(1.8, Number(anchor.coreRadius || 0)), searchRadius = coreRadius * 2.75, left = Math.max(0, Math.floor((anchor.x - searchRadius) / step)), right = Math.min(columns - 1, Math.ceil((anchor.x + searchRadius) / step)), top = Math.max(0, Math.floor((anchor.y - searchRadius) / step)), bottom = Math.min(rows - 1, Math.ceil((anchor.y + searchRadius) / step));
       let summit = 0;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) if (Math.hypot(column * step - anchor.x, row * step - anchor.y) <= searchRadius) summit = Math.max(summit, sample(column, row));
-      return { ...anchor, coreRadius, featherRadius: coreRadius + Math.max(4, step), summit: summit + 0.012 };
+      return { ...anchor, coreRadius, featherRadius: coreRadius + Math.max(step, 7.5 * terrainScale), summit: summit * 0.985 };
     });
     for (const mesa of mesas) {
       const left = Math.max(0, Math.floor((mesa.x - mesa.featherRadius) / step)), right = Math.min(columns - 1, Math.ceil((mesa.x + mesa.featherRadius) / step)), top = Math.max(0, Math.floor((mesa.y - mesa.featherRadius) / step)), bottom = Math.min(rows - 1, Math.ceil((mesa.y + mesa.featherRadius) / step));
@@ -73260,7 +73261,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
   }
   paintDensityTerrain(ctx, width, height, colors2) {
-    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= 48;
+    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= 32;
     if (refresh) {
       const field = this.semanticDensityField(width, height), maximum = Math.max(0, ...field.values);
       if (!this.terrainCanvas) this.terrainCanvas = document.createElement("canvas");
@@ -73287,6 +73288,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         terrainContext.imageSmoothingEnabled = true;
         terrainContext.drawImage(mask, 0, 0, field.columns, field.rows, 0, 0, field.columns * field.step, field.rows * field.step);
         const levels = [0.35, 0.62, 0.95, 1.35, 1.9, 2.6];
+        terrainContext.lineCap = "round";
+        terrainContext.lineJoin = "round";
         levels.forEach((level, index3) => {
           if (maximum < level) return;
           this.traceDensityLevel(terrainContext, field, level);
