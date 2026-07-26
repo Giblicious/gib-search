@@ -70565,6 +70565,70 @@ function classicalDistanceLayout(ids, distances, topics = /* @__PURE__ */ new Ma
   }, 0), oriented = error(candidates[0]) <= error(candidates[1]) ? candidates[0] : candidates[1], extent = Math.max(1e-3, ...oriented.slice(1).map((point) => Math.hypot(point.x, point.y))), scale = 0.78 / extent;
   return new Map(oriented.map((point) => [point.id, { x: point.x * scale, y: point.y * scale }]));
 }
+function localNeighborhoodLayout(ids, distances, topics = /* @__PURE__ */ new Map()) {
+  const count = ids.length;
+  if (count < 4) return classicalDistanceLayout(ids, distances, topics);
+  const seed = classicalDistanceLayout(ids, distances, topics), positions = ids.map((id2, index3) => {
+    const point = seed.get(id2) || { x: 0, y: 0 }, angle = stableAngle(id2);
+    return { x: point.x + Math.cos(angle) * 2e-3, y: point.y + Math.sin(angle) * 2e-3, vx: 0, vy: 0, index: index3 };
+  }), neighborCount = Math.min(8, Math.max(3, Math.ceil(Math.log2(count)))), directed = distances.map((row, first) => [...ids.keys()].filter((second) => second !== first).map((second) => ({ second, distance: Number(row[second]) })).sort((a2, b) => a2.distance - b.distance).slice(0, neighborCount)), directedWeights = directed.map((list4) => {
+    const floor = Number(list4[0]?.distance || 0), scale2 = Math.max(0.025, Number(list4.at(-1)?.distance || floor) - floor);
+    return new Map(list4.map((item) => [item.second, Math.exp(-Math.max(0, item.distance - floor) / scale2)]));
+  }), edges = [], edgeKeys = /* @__PURE__ */ new Set();
+  for (let first = 0; first < count; first++) for (const neighbor of directed[first]) {
+    const second = neighbor.second, key = first < second ? first * count + second : second * count + first;
+    if (edgeKeys.has(key)) continue;
+    edgeKeys.add(key);
+    const forward = Number(directedWeights[first].get(second) || 0), reverse3 = Number(directedWeights[second].get(first) || 0), mutual = forward > 0 && reverse3 > 0, combined = forward + reverse3 - forward * reverse3, weight = mutual ? combined : combined * 0.08;
+    edges.push({ first, second, distance: neighbor.distance, weight, mutual });
+  }
+  for (let step = 0; step < 150; step++) {
+    const cooling = 0.18 + 0.82 * (1 - step / 150);
+    for (const edge of edges) {
+      const first = positions[edge.first], second = positions[edge.second];
+      let dx = second.x - first.x, dy = second.y - first.y;
+      const distance = Math.max(8e-3, Math.hypot(dx, dy));
+      dx /= distance;
+      dy /= distance;
+      const desired = 0.025 + Math.min(0.72, edge.distance) * (edge.mutual ? 0.13 : 0.22), force = (distance - desired) * (6e-3 + edge.weight * 0.055) * cooling;
+      first.vx += dx * force;
+      first.vy += dy * force;
+      second.vx -= dx * force;
+      second.vy -= dy * force;
+    }
+    for (let firstIndex = 0; firstIndex < count; firstIndex++) {
+      const first = positions[firstIndex];
+      for (let sample = 0; sample < 7; sample++) {
+        let secondIndex = (firstIndex * 47 + step * 29 + sample * 71 + 13) % count;
+        if (secondIndex === firstIndex) secondIndex = (secondIndex + sample + 1) % count;
+        if (secondIndex === firstIndex) continue;
+        const pairKey = firstIndex < secondIndex ? firstIndex * count + secondIndex : secondIndex * count + firstIndex;
+        if (edgeKeys.has(pairKey)) continue;
+        const second = positions[secondIndex];
+        let dx = second.x - first.x, dy = second.y - first.y;
+        const distance = Math.max(0.012, Math.hypot(dx, dy));
+        dx /= distance;
+        dy /= distance;
+        const force = Math.min(42e-4, 13e-5 / (15e-4 + distance * distance)) * cooling;
+        first.vx -= dx * force;
+        first.vy -= dy * force;
+        second.vx += dx * force;
+        second.vy += dy * force;
+      }
+      const topic = topics.get(ids[firstIndex]), strength = Math.max(0, Math.min(1, Number(topic?.topicStrength || 0))), radius = 0.12 + Math.pow(strength, 0.72) * 0.66, targetX = Math.cos(Number(topic?.topicAngle || stableAngle(ids[firstIndex]))) * radius, targetY = Math.sin(Number(topic?.topicAngle || stableAngle(ids[firstIndex]))) * radius, anchor = (18e-4 + strength * 32e-4) * cooling;
+      first.vx += (targetX - first.x) * anchor;
+      first.vy += (targetY - first.y) * anchor;
+    }
+    for (const point of positions) {
+      point.vx *= 0.74;
+      point.vy *= 0.74;
+      point.x += point.vx;
+      point.y += point.vy;
+    }
+  }
+  const meanX = positions.reduce((sum, point) => sum + point.x, 0) / count, meanY = positions.reduce((sum, point) => sum + point.y, 0) / count, extent = Math.max(1e-3, ...positions.map((point) => Math.hypot(point.x - meanX, point.y - meanY))), scale = 0.88 / extent;
+  return new Map(positions.map((point, index3) => [ids[index3], { x: (point.x - meanX) * scale, y: (point.y - meanY) * scale }]));
+}
 function semanticProjection(centerId, centerVector, entries) {
   const points = [{ id: centerId, vector: centerVector }, ...entries];
   const count = points.length;
@@ -71996,7 +72060,7 @@ var init_mobile_runtime = __esm({
           distances[row][column] = distance;
           distances[column][row] = distance;
         }
-        const layout = classicalDistanceLayout(ids, distances, conditioned ? conceptTopics : topics);
+        const layout = conditioned ? classicalDistanceLayout(ids, distances, conceptTopics) : localNeighborhoodLayout(ids, distances, topics);
         layout.delete("__center__");
         if (conditioned) {
           const positioned = /* @__PURE__ */ new Map();
@@ -72010,19 +72074,6 @@ var init_mobile_runtime = __esm({
             positioned.set(entry.id, { x: parent.x + Math.cos(angle) * step, y: parent.y + Math.sin(angle) * step });
           }
           return positioned;
-        }
-        const points = [...layout.values()], meanX = points.reduce((sum, point) => sum + point.x, 0) / Math.max(1, points.length), meanY = points.reduce((sum, point) => sum + point.y, 0) / Math.max(1, points.length), extent = Math.max(1e-3, ...points.map((point) => Math.hypot(point.x - meanX, point.y - meanY)));
-        for (const entry of entries) {
-          const point = layout.get(entry.id), topic = topics.get(entry.id);
-          if (!point || !topic) continue;
-          const localX = (point.x - meanX) / extent * 0.82, localY = (point.y - meanY) / extent * 0.82, radius = 0.14 + Math.pow(Math.max(0, Math.min(1, Number(topic.topicStrength || 0))), 0.72) * 0.72, compassX = Math.cos(topic.topicAngle) * radius, compassY = Math.sin(topic.topicAngle) * radius;
-          point.x = localX * 0.38 + compassX * 0.62;
-          point.y = localY * 0.38 + compassY * 0.62;
-        }
-        const shaped = [...layout.values()], shapedMeanX = shaped.reduce((sum, point) => sum + point.x, 0) / Math.max(1, shaped.length), shapedMeanY = shaped.reduce((sum, point) => sum + point.y, 0) / Math.max(1, shaped.length), shapedExtent = Math.max(1e-3, ...shaped.map((point) => Math.hypot(point.x - shapedMeanX, point.y - shapedMeanY)));
-        for (const point of layout.values()) {
-          point.x = (point.x - shapedMeanX) / shapedExtent * 0.88;
-          point.y = (point.y - shapedMeanY) / shapedExtent * 0.88;
         }
         return layout;
       }
@@ -72104,7 +72155,7 @@ var init_mobile_runtime = __esm({
               edges2.push({ source: entries2[first].id, target: entries2[relation.second].id, score: dot(entries2[first].vector, entries2[relation.second].vector), entityScore: relation.score, affinity: 0.08 + relation.score * 0.28, entityBridge: true });
             }
           }
-          const communities2 = consolidateCommunities(entries2, louvainCommunities(entries2.map((entry) => entry.id), edges2)), positions2 = clusteredSemanticPositions(entries2, communities2);
+          const communities2 = louvainCommunities(entries2.map((entry) => entry.id), edges2), positions2 = clusteredSemanticPositions(entries2, communities2);
           this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, entitySets: entitySets2 };
         }
         const { entries, edges, positions, communities, entitySets } = this.starfieldCache, trimmed = String(query || "").trim(), basis = this.topicBasis();
