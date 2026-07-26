@@ -56,7 +56,8 @@ if (!mainSource.includes('this.startSimulation(.9)') || !mainSource.includes("id
 if (!mainSource.includes('this.activeEdges, 220')) throw new Error('High-resolution final envelopes are missing');
 if (mainSource.includes('buildSmoothElevation') || mainSource.includes('elevationSamples()') || mainSource.includes('weightedElevation')) throw new Error('Synthetic continuous terrain is still bundled');
 if (!mainSource.includes('for (let band = 0; band < 6; band++)') || !mainSource.includes('const threshold = band / 6')) throw new Error('Map must use six threshold relevance envelopes');
-if (!mainSource.includes('pointSegmentDistance') || !mainSource.includes('edge.residual > 0 && eligibleIds.has')) throw new Error('Semantic envelopes are not limited to measured nodes and positive relationships');
+if (!mainSource.includes('pointInTriangle') || !mainSource.includes('triangulateTerrain(points).filter') || !mainSource.includes('wrapReach')) throw new Error('Semantic envelopes are not padded concave hulls of their qualifying notes');
+if (!mainSource.includes('stitchContourSegments') || !mainSource.includes('drawSmoothContour') || !mainSource.includes('quadraticCurveTo')) throw new Error('Semantic envelope paths are not stitched and curve-smoothed');
 if (!mainSource.includes('slice(0, 3)') || !mainSource.includes('charge = -Math.min')) throw new Error('Sparse semantic attraction or full-plane repulsion is missing');
 if (!runtimeSource.includes('residualVector(entry.vector, queryVector)')) throw new Error('Search-map grouping still includes the shared query direction');
 if (!runtimeSource.includes('residualScore: dot(residuals[first].vector') || !mainSource.includes('relationship.residual') || !mainSource.includes('const desired = .14 + (1 - node.relevance)')) throw new Error('Three-layer query, file, and residual physics is incomplete');
