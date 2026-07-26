@@ -72398,6 +72398,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.cameraX = 0;
     this.cameraY = 0;
     this.cameraZoom = 1;
+    this.userZoom = 1;
+    this.panX = 0;
+    this.panY = 0;
+    this.pointers = /* @__PURE__ */ new Map();
     this.pendingQuery = false;
     if (options.onGenerations) {
       this.headingEl.addClass("has-generations");
@@ -72416,6 +72420,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       });
       this.setGenerations(options.generations || 1);
     }
+    this.setupViewportControls();
+    this.canvas.addEventListener("wheel", (event) => this.wheel(event), { passive: false });
   }
   setGenerations(value) {
     this.generations = Math.max(1, Math.min(3, Number(value) || 1));
@@ -72424,6 +72430,49 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       button.toggleClass("is-active", active);
       button.setAttribute("aria-pressed", String(active));
     });
+  }
+  setupViewportControls() {
+    this.headingEl.addClass("has-viewport");
+    this.viewportControls = this.headingEl.createDiv({ cls: "gib-search-map-viewport-controls", attr: { "aria-label": "Map view controls" } });
+    this.headingEl.insertBefore(this.viewportControls, this.statusEl);
+    const control = (iconName, label, action) => {
+      const button = this.viewportControls.createEl("button", { attr: { type: "button", title: label, "aria-label": label } });
+      setIcon(button, iconName);
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        action();
+      });
+      return button;
+    };
+    control("minus", "Zoom out", () => this.zoomBy(1 / 1.25));
+    control("maximize-2", "Fit graph", () => this.resetViewport());
+    control("plus", "Zoom in", () => this.zoomBy(1.25));
+    this.canvas.setAttribute("title", "Drag empty space to pan \xB7 scroll to zoom \xB7 double-click empty space to fit");
+  }
+  setUserZoom(value, x = null, y = null) {
+    const rect = this.canvas.getBoundingClientRect(), previous = this.userZoom, next = Math.max(0.45, Math.min(4.5, Number(value) || 1));
+    if (!rect.width || !rect.height || Math.abs(next - previous) < 1e-4) return;
+    const relativeX = (x ?? rect.width / 2) - rect.width / 2, relativeY = (y ?? rect.height / 2) - rect.height / 2, factor = next / previous;
+    this.panX = relativeX - (relativeX - this.panX) * factor;
+    this.panY = relativeY - (relativeY - this.panY) * factor;
+    this.userZoom = next;
+    this.draw();
+  }
+  zoomBy(factor) {
+    this.setUserZoom(this.userZoom * factor);
+  }
+  resetViewport() {
+    this.userZoom = 1;
+    this.panX = 0;
+    this.panY = 0;
+    this.draw();
+  }
+  wheel(event) {
+    event.preventDefault();
+    const rect = this.canvas.getBoundingClientRect(), factor = Math.exp(-Math.max(-120, Math.min(120, event.deltaY)) * 18e-4);
+    this.setUserZoom(this.userZoom * factor, event.clientX - rect.left, event.clientY - rect.top);
   }
   setGraph(center, values, edges = []) {
     const previous = this.byId || /* @__PURE__ */ new Map(), previousQuery = this.queryNode, hasQuery = Boolean(center?.hasQuery), semanticScores = values.map((value) => Number(value.semanticScore || 0)), low = semanticScores.length ? Math.min(...semanticScores) : 0, high = semanticScores.length ? Math.max(...semanticScores) : 1, spread = Math.max(1e-3, high - low);
@@ -72623,8 +72672,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.simulationFrame = requestAnimationFrame(tick);
   }
   coordinates(node, width, height) {
-    const scale = Math.max(20, Math.min(width, height) / 2 - 68);
-    return [width / 2 + (Number(node.x) - this.cameraX) * scale * this.cameraZoom, height / 2 + (Number(node.y) - this.cameraY) * scale * this.cameraZoom];
+    const scale = Math.max(20, Math.min(width, height) / 2 - 68) * this.cameraZoom * this.userZoom;
+    return [width / 2 + (Number(node.x) - this.cameraX) * scale + this.panX, height / 2 + (Number(node.y) - this.cameraY) * scale + this.panY];
   }
   draw() {
     const rect = this.canvas.getBoundingClientRect();
@@ -72701,44 +72750,101 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
   }
   pointerDown(event) {
-    const node = this.hitAt(event);
-    if (!node) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
     event.preventDefault();
-    this.dragging = node;
-    this.canvas.style.cursor = "grabbing";
+    this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     this.canvas.setPointerCapture?.(event.pointerId);
-    if (!node.isQuery) this.setSelected(node.id);
-    this.startSimulation(0.45);
+    if (this.pointers.size > 1) {
+      const points = [...this.pointers.values()].slice(0, 2), centerX = (points[0].x + points[1].x) / 2, centerY = (points[0].y + points[1].y) / 2;
+      this.pinch = { distance: Math.max(1, Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y)), centerX, centerY, zoom: this.userZoom, panX: this.panX, panY: this.panY };
+      this.dragging = null;
+      this.panning = null;
+      this.suppressClick = true;
+      return;
+    }
+    const node = this.hitAt(event);
+    this.canvas.style.cursor = "grabbing";
+    if (node) {
+      this.dragging = node;
+      this.draggingPointer = event.pointerId;
+      if (!node.isQuery) this.setSelected(node.id);
+      this.startSimulation(0.45);
+    } else this.panning = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
   }
   pointerMove(event) {
     const rect = this.canvas.getBoundingClientRect();
-    if (this.dragging) {
-      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom;
-      this.dragging.x = (event.clientX - rect.left - rect.width / 2) / scale + this.cameraX;
-      this.dragging.y = (event.clientY - rect.top - rect.height / 2) / scale + this.cameraY;
+    if (this.pointers.has(event.pointerId)) this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (this.pinch && this.pointers.size > 1) {
+      const points = [...this.pointers.values()].slice(0, 2), distance = Math.max(1, Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y)), centerX = (points[0].x + points[1].x) / 2, centerY = (points[0].y + points[1].y) / 2, next = Math.max(0.45, Math.min(4.5, this.pinch.zoom * distance / this.pinch.distance)), factor = next / this.pinch.zoom, startX = this.pinch.centerX - rect.left - rect.width / 2, startY = this.pinch.centerY - rect.top - rect.height / 2, currentX = centerX - rect.left - rect.width / 2, currentY = centerY - rect.top - rect.height / 2;
+      this.userZoom = next;
+      this.panX = currentX - (startX - this.pinch.panX) * factor;
+      this.panY = currentY - (startY - this.pinch.panY) * factor;
+      this.draw();
+      return;
+    }
+    if (this.panning?.pointerId === event.pointerId) {
+      const dx = event.clientX - this.panning.x, dy = event.clientY - this.panning.y;
+      this.panX += dx;
+      this.panY += dy;
+      this.panning.x = event.clientX;
+      this.panning.y = event.clientY;
+      if (Math.abs(dx) + Math.abs(dy) > 1) {
+        this.panning.moved = true;
+        this.suppressClick = true;
+      }
+      this.draw();
+      return;
+    }
+    if (this.dragging && this.draggingPointer === event.pointerId) {
+      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom * this.userZoom;
+      this.dragging.x = (event.clientX - rect.left - rect.width / 2 - this.panX) / scale + this.cameraX;
+      this.dragging.y = (event.clientY - rect.top - rect.height / 2 - this.panY) / scale + this.cameraY;
       this.dragging.vx = this.dragging.vy = 0;
       this.startSimulation(0.38);
       return;
     }
     const node = this.hitAt(event);
-    this.canvas.style.cursor = node ? "grab" : "default";
+    this.canvas.style.cursor = "grab";
     this.setHover(node?.id || null, true);
   }
   pointerUp(event) {
-    if (!this.dragging) return;
+    this.pointers.delete(event.pointerId);
+    if (this.pinch) {
+      if (this.pointers.size < 2) this.pinch = null;
+      this.canvas.releasePointerCapture?.(event.pointerId);
+      this.canvas.style.cursor = "grab";
+      return;
+    }
+    if (this.panning?.pointerId === event.pointerId) {
+      this.suppressClick || (this.suppressClick = this.panning.moved);
+      this.panning = null;
+      this.canvas.releasePointerCapture?.(event.pointerId);
+      this.canvas.style.cursor = "grab";
+      return;
+    }
+    if (!this.dragging || this.draggingPointer !== event.pointerId) return;
     this.dragging = null;
-    this.canvas.style.cursor = "default";
+    this.draggingPointer = null;
+    this.canvas.style.cursor = "grab";
     this.canvas.releasePointerCapture?.(event.pointerId);
     this.startSimulation(0.62);
   }
   click(event) {
+    if (this.suppressClick) {
+      this.suppressClick = false;
+      return;
+    }
     const node = this.hitAt(event);
     if (node?.isQuery) return;
     super.click(event);
   }
   open(event) {
     const node = this.hitAt(event);
-    if (node?.isQuery) return;
+    if (!node) {
+      this.resetViewport();
+      return;
+    }
+    if (node.isQuery) return;
     super.open(event);
   }
   destroy() {
