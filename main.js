@@ -70457,6 +70457,14 @@ function dotPacked(query, packed, offset2) {
   for (let i3 = 0; i3 < DIMENSION; i3 += 4) score += query[i3] * packed[offset2 + i3] + query[i3 + 1] * packed[offset2 + i3 + 1] + query[i3 + 2] * packed[offset2 + i3 + 2] + query[i3 + 3] * packed[offset2 + i3 + 3];
   return score;
 }
+function stableAngle(value) {
+  let hash = 2166136261;
+  for (const character of String(value || "")) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967295 * Math.PI * 2;
+}
 function residualVector(vector, axis) {
   const projection = dot(vector, axis), residual = new Float32Array(vector.length);
   let norm = 0;
@@ -70522,6 +70530,181 @@ function semanticProjection(centerId, centerVector, entries) {
   const extent = Math.max(...raw.slice(1).map((point) => Math.hypot(point.x, point.y)), 1e-3);
   const scale = 0.86 / extent;
   return new Map(raw.slice(1).map((point) => [point.id, { x: point.x * scale, y: point.y * scale }]));
+}
+function louvainCommunities(ids, edges) {
+  const index3 = new Map(ids.map((id2, position) => [id2, position])), adjacency = ids.map(() => /* @__PURE__ */ new Map()), degree = new Float64Array(ids.length);
+  for (const edge of edges) {
+    const first = index3.get(edge.source), second = index3.get(edge.target), weight = Math.max(1e-4, Number(edge.affinity || 0));
+    if (first === void 0 || second === void 0 || first === second) continue;
+    adjacency[first].set(second, (adjacency[first].get(second) || 0) + weight);
+    adjacency[second].set(first, (adjacency[second].get(first) || 0) + weight);
+    degree[first] += weight;
+    degree[second] += weight;
+  }
+  const communities = Int32Array.from(ids, (_2, position) => position), totals = Float64Array.from(degree), totalWeight = degree.reduce((sum, value) => sum + value, 0) || 1;
+  for (let pass = 0; pass < 24; pass++) {
+    let moved = 0;
+    const order = [...ids.keys()].sort((first, second) => degree[second] - degree[first] || ids[first].localeCompare(ids[second]));
+    for (const node of order) {
+      const current = communities[node], links = /* @__PURE__ */ new Map();
+      for (const [neighbor, weight] of adjacency[node]) links.set(communities[neighbor], (links.get(communities[neighbor]) || 0) + weight);
+      totals[current] -= degree[node];
+      let best = current, bestGain = (links.get(current) || 0) - degree[node] * totals[current] / totalWeight;
+      for (const [community, weight] of links) {
+        const gain = weight - degree[node] * totals[community] / totalWeight;
+        if (gain > bestGain + 1e-10 || Math.abs(gain - bestGain) <= 1e-10 && community < best) {
+          best = community;
+          bestGain = gain;
+        }
+      }
+      communities[node] = best;
+      totals[best] += degree[node];
+      if (best !== current) moved++;
+    }
+    if (!moved) break;
+  }
+  const groups = /* @__PURE__ */ new Map();
+  ids.forEach((id2, position) => {
+    const community = communities[position];
+    if (!groups.has(community)) groups.set(community, []);
+    groups.get(community).push(id2);
+  });
+  const ordered = [...groups.values()].sort((first, second) => first.slice().sort()[0].localeCompare(second.slice().sort()[0])), result = /* @__PURE__ */ new Map();
+  ordered.forEach((members, community) => members.forEach((id2) => result.set(id2, community)));
+  return result;
+}
+function consolidateCommunities(entries, communities) {
+  const byId = new Map(entries.map((entry) => [entry.id, entry.vector])), groups = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const community = communities.get(entry.id) ?? 0, group = groups.get(community) || { id: community, members: [], vector: new Float32Array(entry.vector.length) };
+    group.members.push(entry.id);
+    for (let dimension = 0; dimension < entry.vector.length; dimension++) group.vector[dimension] += entry.vector[dimension];
+    groups.set(community, group);
+  }
+  const values = [...groups.values()];
+  for (const group of values) {
+    const norm = Math.sqrt(dot(group.vector, group.vector)) || 1;
+    for (let dimension = 0; dimension < group.vector.length; dimension++) group.vector[dimension] /= norm;
+  }
+  const parent = Int32Array.from(values, (_2, index3) => index3), find9 = (value) => {
+    while (parent[value] !== value) {
+      parent[value] = parent[parent[value]];
+      value = parent[value];
+    }
+    return value;
+  }, merge2 = (first, second) => {
+    first = find9(first);
+    second = find9(second);
+    if (first !== second) parent[Math.max(first, second)] = Math.min(first, second);
+  };
+  for (let first = 0; first < values.length; first++) for (let second = first + 1; second < values.length; second++) if (dot(values[first].vector, values[second].vector) >= 0.8) merge2(first, second);
+  for (let index3 = 0; index3 < values.length; index3++) {
+    if (values[index3].members.length >= 3 || values.length < 2) continue;
+    let best = null;
+    for (let other = 0; other < values.length; other++) {
+      if (other === index3) continue;
+      const score = dot(values[index3].vector, values[other].vector);
+      if (!best || score > best.score) best = { other, score };
+    }
+    if (best) merge2(index3, best.other);
+  }
+  const maximum = Math.max(4, Math.round(Math.sqrt(entries.length / 3)));
+  while (new Set(values.map((_2, index3) => find9(index3))).size > maximum) {
+    const aggregates = /* @__PURE__ */ new Map();
+    for (let index3 = 0; index3 < values.length; index3++) {
+      const root = find9(index3), aggregate = aggregates.get(root) || { vector: new Float32Array(values[index3].vector.length), size: 0 };
+      for (let dimension = 0; dimension < aggregate.vector.length; dimension++) aggregate.vector[dimension] += values[index3].vector[dimension] * values[index3].members.length;
+      aggregate.size += values[index3].members.length;
+      aggregates.set(root, aggregate);
+    }
+    for (const aggregate of aggregates.values()) {
+      const norm = Math.sqrt(dot(aggregate.vector, aggregate.vector)) || 1;
+      for (let dimension = 0; dimension < aggregate.vector.length; dimension++) aggregate.vector[dimension] /= norm;
+    }
+    const roots = [...aggregates.keys()];
+    let closest = null;
+    for (let first = 0; first < roots.length; first++) for (let second = first + 1; second < roots.length; second++) {
+      const score = dot(aggregates.get(roots[first]).vector, aggregates.get(roots[second]).vector);
+      if (!closest || score > closest.score) closest = { first: roots[first], second: roots[second], score };
+    }
+    if (!closest) break;
+    merge2(closest.first, closest.second);
+  }
+  const merged = /* @__PURE__ */ new Map();
+  for (let index3 = 0; index3 < values.length; index3++) {
+    const root = find9(index3), members = merged.get(root) || [];
+    members.push(...values[index3].members);
+    merged.set(root, members);
+  }
+  const ordered = [...merged.values()].sort((first, second) => first.slice().sort()[0].localeCompare(second.slice().sort()[0])), result = /* @__PURE__ */ new Map();
+  ordered.forEach((members, community) => members.forEach((id2) => result.set(id2, community)));
+  return result;
+}
+function clusteredSemanticPositions(entries, communities) {
+  if (!entries.length) return /* @__PURE__ */ new Map();
+  const first = entries[0], second = entries.reduce((best, entry) => dot(first.vector, entry.vector) < dot(first.vector, best.vector) ? entry : best, first), third = entries.reduce((best, entry) => Math.max(dot(first.vector, entry.vector), dot(second.vector, entry.vector)) < Math.max(dot(first.vector, best.vector), dot(second.vector, best.vector)) ? entry : best, first);
+  const raw = entries.map((entry) => ({ id: entry.id, x: dot(entry.vector, first.vector) - dot(entry.vector, second.vector), y: dot(entry.vector, third.vector) - (dot(entry.vector, first.vector) + dot(entry.vector, second.vector)) * 0.5 })), meanX = raw.reduce((sum, point) => sum + point.x, 0) / raw.length, meanY = raw.reduce((sum, point) => sum + point.y, 0) / raw.length, rawExtent = Math.max(1e-3, ...raw.map((point) => Math.hypot(point.x - meanX, point.y - meanY)));
+  raw.forEach((point) => {
+    point.x = (point.x - meanX) / rawExtent * 0.58;
+    point.y = (point.y - meanY) / rawExtent * 0.58;
+  });
+  const groups = /* @__PURE__ */ new Map();
+  for (const point of raw) {
+    const community = communities.get(point.id) ?? 0, group = groups.get(community) || { id: community, points: [], x: 0, y: 0, seedX: 0, seedY: 0, vx: 0, vy: 0 };
+    group.points.push(point);
+    group.x += point.x;
+    group.y += point.y;
+    groups.set(community, group);
+  }
+  const centers = [...groups.values()];
+  for (const center of centers) {
+    center.x /= center.points.length;
+    center.y /= center.points.length;
+    if (Math.hypot(center.x, center.y) < 0.04) {
+      const angle = stableAngle(`community:${center.id}`);
+      center.x = Math.cos(angle) * 0.24;
+      center.y = Math.sin(angle) * 0.24;
+    }
+    center.seedX = center.x;
+    center.seedY = center.y;
+  }
+  for (let step = 0; step < 80; step++) {
+    for (let firstIndex = 0; firstIndex < centers.length; firstIndex++) for (let secondIndex = firstIndex + 1; secondIndex < centers.length; secondIndex++) {
+      const a2 = centers[firstIndex], b = centers[secondIndex];
+      let dx = b.x - a2.x, dy = b.y - a2.y;
+      const distance = Math.max(0.02, Math.hypot(dx, dy));
+      dx /= distance;
+      dy /= distance;
+      if (distance >= 0.34) continue;
+      const force = (0.34 - distance) * 0.018;
+      a2.vx -= dx * force;
+      a2.vy -= dy * force;
+      b.vx += dx * force;
+      b.vy += dy * force;
+    }
+    for (const center of centers) {
+      center.vx += (center.seedX * 1.35 - center.x) * 0.018;
+      center.vy += (center.seedY * 1.35 - center.y) * 0.018;
+      center.vx *= 0.78;
+      center.vy *= 0.78;
+      center.x += center.vx;
+      center.y += center.vy;
+    }
+  }
+  const positions = /* @__PURE__ */ new Map();
+  for (const center of centers) {
+    const groupX = center.points.reduce((sum, point) => sum + point.x, 0) / center.points.length, groupY = center.points.reduce((sum, point) => sum + point.y, 0) / center.points.length;
+    for (const point of center.points) {
+      const angle = stableAngle(point.id), jitter = 0.018 + Math.min(0.04, center.points.length * 1e-3);
+      positions.set(point.id, { x: center.x + (point.x - groupX) * 0.42 + Math.cos(angle) * jitter, y: center.y + (point.y - groupY) * 0.42 + Math.sin(angle) * jitter });
+    }
+  }
+  const extent = Math.max(1e-3, ...positions.values().map((point) => Math.hypot(point.x, point.y)));
+  if (extent > 0.86) for (const point of positions.values()) {
+    point.x *= 0.86 / extent;
+    point.y *= 0.86 / extent;
+  }
+  return positions;
 }
 function contentFingerprint(source) {
   const value = String(source || "");
@@ -71435,24 +71618,34 @@ var init_mobile_runtime = __esm({
         const signature = `${this.meta.length}:${this.vectors.length}:${requested.join("\0")}`;
         if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
           const vectors = this.fileVectors(requested), entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector }));
-          const edges2 = [], seen2 = /* @__PURE__ */ new Set();
-          for (let first2 = 0; first2 < entries2.length; first2++) {
-            const nearby = [];
-            for (let second2 = 0; second2 < entries2.length; second2++) if (first2 !== second2) nearby.push({ source: entries2[first2].id, target: entries2[second2].id, score: dot(entries2[first2].vector, entries2[second2].vector) });
-            nearby.sort((a2, b) => b.score - a2.score);
-            for (const edge of nearby.slice(0, 6)) {
-              const key = [edge.source, edge.target].sort().join("\0");
-              if (seen2.has(key)) continue;
-              seen2.add(key);
-              edges2.push(edge);
-            }
+          const neighbors = entries2.map((entry, first) => entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: dot(entry.vector, other.vector) }).filter(Boolean).sort((a2, b) => b.score - a2.score).slice(0, 8)), directed = neighbors.map((list4) => {
+            const floor = Number(list4.at(-1)?.score || 0), spread = Math.max(0.02, 1 - floor);
+            return new Map(list4.map((item) => [item.index, { ...item, affinity: Math.max(1e-3, (item.score - floor) / spread) }]));
+          }), edges2 = [], seen2 = /* @__PURE__ */ new Set(), incident = /* @__PURE__ */ new Set();
+          for (let first = 0; first < entries2.length; first++) for (const [second, relation] of directed[first]) {
+            if (second <= first) continue;
+            const reverse3 = directed[second].get(first);
+            if (!reverse3) continue;
+            const key = [entries2[first].id, entries2[second].id].sort().join("\0");
+            seen2.add(key);
+            incident.add(first);
+            incident.add(second);
+            edges2.push({ source: entries2[first].id, target: entries2[second].id, score: relation.score, affinity: Math.sqrt(relation.affinity * reverse3.affinity) });
           }
-          const first = entries2[0], second = first && entries2.reduce((best, entry) => dot(first.vector, entry.vector) < dot(first.vector, best.vector) ? entry : best, first), third = second && entries2.reduce((best, entry) => Math.max(dot(first.vector, entry.vector), dot(second.vector, entry.vector)) < Math.max(dot(first.vector, best.vector), dot(second.vector, best.vector)) ? entry : best, first);
-          const raw = entries2.map((entry) => ({ id: entry.id, x: first && second ? dot(entry.vector, first.vector) - dot(entry.vector, second.vector) : 0, y: third ? dot(entry.vector, third.vector) - (dot(entry.vector, first.vector) + dot(entry.vector, second.vector)) * 0.5 : 0 })), meanX = raw.reduce((sum, point) => sum + point.x, 0) / Math.max(1, raw.length), meanY = raw.reduce((sum, point) => sum + point.y, 0) / Math.max(1, raw.length), extent = Math.max(1e-3, ...raw.map((point) => Math.hypot(point.x - meanX, point.y - meanY))), positions2 = new Map(raw.map((point) => [point.id, { x: (point.x - meanX) / extent * 0.78, y: (point.y - meanY) / extent * 0.78 }]));
-          this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2 };
+          for (let first = 0; first < entries2.length; first++) {
+            if (incident.has(first) || !neighbors[first].length) continue;
+            const relation = directed[first].get(neighbors[first][0].index), second = relation.index, key = [entries2[first].id, entries2[second].id].sort().join("\0");
+            if (seen2.has(key)) continue;
+            seen2.add(key);
+            incident.add(first);
+            incident.add(second);
+            edges2.push({ source: entries2[first].id, target: entries2[second].id, score: relation.score, affinity: relation.affinity * 0.28, bridge: true });
+          }
+          const communities2 = consolidateCommunities(entries2, louvainCommunities(entries2.map((entry) => entry.id), edges2)), positions2 = clusteredSemanticPositions(entries2, communities2);
+          this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2 };
         }
-        const { entries, edges, positions } = this.starfieldCache, trimmed = String(query || "").trim();
-        if (!trimmed) return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, ...positions.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
+        const { entries, edges, positions, communities } = this.starfieldCache, trimmed = String(query || "").trim();
+        if (!trimmed) return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, community: communities.get(entry.id) ?? 0, ...positions.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
         const queryVector = await this.queryVector(this.correctQuery(trimmed)), residuals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, queryVector)]));
         const outputEdges = [...edges], seen = new Set(edges.map((edge) => [edge.source, edge.target].sort().join("\0"))), focus = new Set(focusFiles || []), focused = entries.filter((entry) => focus.has(entry.id));
         for (const entry of focused) {
@@ -71461,11 +71654,11 @@ var init_mobile_runtime = __esm({
             const key = [edge.source, edge.target].sort().join("\0");
             if (seen.has(key)) continue;
             seen.add(key);
-            outputEdges.push(edge);
+            outputEdges.push({ ...edge, affinity: Math.max(0.04, (edge.score + 1) * 0.5) });
           }
         }
         return {
-          nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...positions.get(entry.id) || {} })),
+          nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), community: communities.get(entry.id) ?? 0, ...positions.get(entry.id) || {} })),
           edges: outputEdges.map((edge) => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
         };
       }
@@ -72244,11 +72437,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const matched = Boolean(value.matched), generation = Math.max(1, Math.min(3, Number(value.generation) || 1)), generationVisibility = generation === 1 ? 0.78 + relevance * 0.22 : generation === 2 ? 0.68 : 0.52;
       return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : 0 : targetVisibility, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, x: old?.x ?? (Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64)), y: old?.y ?? (Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64)), vx: old?.vx || 0, vy: old?.vy || 0 };
     });
-    const overallScores = edges.map((edge) => Number(edge.score || 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
+    const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
-      const overall = (Number(edge.score || overallLow) - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0)));
-      return { ...edge, overall, residual, strength: overall * (0.65 + Math.max(0, residual) * 0.35) };
-    }).filter((edge) => edge.strength > 0.05);
+      const weight = Number(edge.affinity ?? edge.score ?? overallLow), overall = (weight - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0))), crossCommunity = !hasQuery && communityById.get(edge.source) !== communityById.get(edge.target), baseStrength = edge.bridge ? 0.1 : overall * (0.65 + Math.max(0, residual) * 0.35), strength = crossCommunity ? baseStrength * 0.12 : baseStrength;
+      return { ...edge, overall, residual, strength, crossCommunity };
+    }).filter((edge) => edge.strength > 0.012);
     this.relationships = new Map(this.activeEdges.map((edge) => [mapEdgeKey(edge.source, edge.target), edge]));
     this.pendingQuery = false;
     this.byId = new Map(this.nodes.map((node) => [node.id, node]));
@@ -72312,6 +72505,22 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (b !== this.dragging) {
         b.vx -= dx * force;
         b.vy -= dy * force;
+      }
+    }
+    if (!this.hasQuery || this.pendingQuery) {
+      const communities = /* @__PURE__ */ new Map();
+      for (const node of this.nodes) {
+        const id2 = Number(node.community || 0), group = communities.get(id2) || { x: 0, y: 0, count: 0 };
+        group.x += node.x;
+        group.y += node.y;
+        group.count++;
+        communities.set(id2, group);
+      }
+      for (const node of this.nodes) {
+        const group = communities.get(Number(node.community || 0));
+        if (!group || group.count < 2 || node === this.dragging) continue;
+        node.vx += (group.x / group.count - node.x) * 45e-4 * alpha2;
+        node.vy += (group.y / group.count - node.y) * 45e-4 * alpha2;
       }
     }
     for (let first = 0; first < this.nodes.length; first++) for (let second = first + 1; second < this.nodes.length; second++) {
