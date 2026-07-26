@@ -141,7 +141,7 @@ export function buildHighlightCandidates(file, chunk) {
 
 export class MobileSearchRuntime {
   constructor(plugin) {
-    this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.highlightVectors = []; this.highlightPhraseVectors = new Map(); this.packedVectors = new Float32Array(); this.packedHighlightVectors = new Int16Array(); this.lexical = []; this.spellingVocabulary = new Map(); this.spellingByLength = new Map();
+    this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.highlightVectors = []; this.highlightPhraseVectors = new Map(); this.packedVectors = new Float32Array(); this.packedHighlightVectors = new Int16Array(); this.lexical = []; this.spellingVocabulary = new Map(); this.spellingByLength = new Map(); this.starfieldCache = null;
     this.pipe = null; this.modelPromise = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Semantic search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
     this.listeners = new Set(); this.updateTimer = null; this.indexRun = null; this.indexAgain = false; this.indexForce = false; this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt;
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
@@ -260,7 +260,7 @@ export class MobileSearchRuntime {
     this.vectors.forEach((vector, index) => packed.set(vector, index * DIMENSION));
     const highlightCount = this.highlightVectors.reduce((total, vectors) => total + vectors.length, 0); const packedHighlights = new Int16Array(highlightCount * DIMENSION); let highlightOffset = 0;
     this.highlightVectors.forEach(vectors => vectors.forEach(vector => { packedHighlights.set(vector, highlightOffset); highlightOffset += DIMENSION; }));
-    this.packedVectors = packed; this.packedHighlightVectors = packedHighlights; this.vectors = this.meta.map((_, index) => packed.subarray(index * DIMENSION, (index + 1) * DIMENSION)); highlightOffset = 0; this.highlightVectors = this.meta.map(item => (item.highlightCandidates || []).map(() => { const vector = packedHighlights.subarray(highlightOffset, highlightOffset + DIMENSION); highlightOffset += DIMENSION; return vector; })); this.queryCache.clear(); this.resultCache.clear();
+    this.packedVectors = packed; this.packedHighlightVectors = packedHighlights; this.vectors = this.meta.map((_, index) => packed.subarray(index * DIMENSION, (index + 1) * DIMENSION)); highlightOffset = 0; this.highlightVectors = this.meta.map(item => (item.highlightCandidates || []).map(() => { const vector = packedHighlights.subarray(highlightOffset, highlightOffset + DIMENSION); highlightOffset += DIMENSION; return vector; })); this.queryCache.clear(); this.resultCache.clear(); this.starfieldCache = null;
     await this.databasePut({ meta: this.meta, vectors: packed.buffer, highlightVectors: packedHighlights.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }); this.refreshLexical(); this.refreshHighlightPhraseCache();
   }
   storageBytes() { return this.vectors.length * DIMENSION * 4 + this.highlightVectors.reduce((total, vectors) => total + vectors.length, 0) * DIMENSION * 2 + new TextEncoder().encode(JSON.stringify(this.meta)).length; }
@@ -330,7 +330,7 @@ export class MobileSearchRuntime {
   }
   stop() { this.cancelRequested = true; this.enabled = false; clearTimeout(this.updateTimer); this.updateTimer = null; if (this.livePending) { this.livePending.reject(staleSearchError()); this.livePending = null; } this.setState('offline', 'Semantic search is paused'); return true; }
   restart() { this.stop(); const resume = () => this.startPromise ? setTimeout(resume, 100) : this.start(); resume(); return true; }
-  rebuild() { this.stop(); const rebuild = () => { if (this.startPromise) return setTimeout(rebuild, 100); this.meta = []; this.vectors = []; this.highlightVectors = []; this.highlightPhraseVectors.clear(); this.packedVectors = new Float32Array(); this.packedHighlightVectors = new Int16Array(); this.queryCache.clear(); this.resultCache.clear(); this.refreshLexical(); this.enabled = true; this.cancelRequested = false; this.startPromise = (async () => { try { await this.updateIndex(true); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); }; rebuild(); return true; }
+  rebuild() { this.stop(); const rebuild = () => { if (this.startPromise) return setTimeout(rebuild, 100); this.meta = []; this.vectors = []; this.highlightVectors = []; this.highlightPhraseVectors.clear(); this.packedVectors = new Float32Array(); this.packedHighlightVectors = new Int16Array(); this.queryCache.clear(); this.resultCache.clear(); this.starfieldCache = null; this.refreshLexical(); this.enabled = true; this.cancelRequested = false; this.startPromise = (async () => { try { await this.updateIndex(true); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); }; rebuild(); return true; }
   watch() {
     const schedule = file => { if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || '').toLowerCase())) return; clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; this.updateIndex(); }, 1800); };
     this.plugin.registerEvent(this.plugin.app.vault.on('create', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('modify', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('delete', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('rename', schedule));
@@ -412,6 +412,28 @@ export class MobileSearchRuntime {
     const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 50), vectors = this.fileVectors(ordered), queryVector = await this.queryVector(query); const entries = ordered.filter(id => vectors.has(id)).map(id => ({ id, vector: vectors.get(id).vector })), residuals = entries.map(entry => ({ id: entry.id, vector: residualVector(entry.vector, queryVector) })), positions = semanticProjection('__query__', queryVector, residuals);
     const edges = []; for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(entries[first].vector, entries[second].vector), residualScore: dot(residuals[first].vector, residuals[second].vector) });
     return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...(positions.get(entry.id) || {}) })), edges };
+  }
+  async semanticStarfield(query, files = null) {
+    const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map(item => item.file))];
+    const signature = `${this.meta.length}:${this.vectors.length}:${requested.join('\0')}`;
+    if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
+      const vectors = this.fileVectors(requested), entries = requested.filter(id => vectors.has(id)).map(id => ({ id, vector: vectors.get(id).vector }));
+      const edges = [], seen = new Set();
+      for (let first = 0; first < entries.length; first++) {
+        const nearby = [];
+        for (let second = 0; second < entries.length; second++) if (first !== second) nearby.push({ source: entries[first].id, target: entries[second].id, score: dot(entries[first].vector, entries[second].vector) });
+        nearby.sort((a, b) => b.score - a.score);
+        for (const edge of nearby.slice(0, 3)) { const key = [edge.source, edge.target].sort().join('\0'); if (seen.has(key)) continue; seen.add(key); edges.push(edge); }
+      }
+      this.starfieldCache = { signature, entries, edges };
+    }
+    const { entries, edges } = this.starfieldCache, trimmed = String(query || '').trim();
+    if (!trimmed) return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: 0 })), edges: edges.map(edge => ({ ...edge, residualScore: 0 })) };
+    const queryVector = await this.queryVector(this.correctQuery(trimmed)), residuals = new Map(entries.map(entry => [entry.id, residualVector(entry.vector, queryVector)]));
+    return {
+      nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector) })),
+      edges: edges.map(edge => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
+    };
   }
   semanticNeighbors(file, limit = 18) {
     const vectors = this.fileVectors(); const center = vectors.get(file); if (!center) return { center: file, nodes: [], edges: [] };
