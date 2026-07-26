@@ -25,6 +25,7 @@ function dot(a, b) {
   let score = 0; for (let i = 0; i < a.length; i++) score += a[i] * b[i]; return score;
 }
 function dotPacked(query, packed, offset) { let score = 0; for (let i = 0; i < DIMENSION; i += 4) score += query[i] * packed[offset + i] + query[i + 1] * packed[offset + i + 1] + query[i + 2] * packed[offset + i + 2] + query[i + 3] * packed[offset + i + 3]; return score; }
+function residualVector(vector, axis) { const projection = dot(vector, axis), residual = new Float32Array(vector.length); let norm = 0; for (let index = 0; index < vector.length; index++) { residual[index] = vector[index] - projection * axis[index]; norm += residual[index] ** 2; } norm = Math.sqrt(norm); if (norm < 1e-6) return vector; for (let index = 0; index < residual.length; index++) residual[index] /= norm; return residual; }
 function semanticProjection(centerId, centerVector, entries) {
   const points = [{ id: centerId, vector: centerVector }, ...entries]; const count = points.length; if (count < 2) return new Map(); const distances = Array.from({ length: count }, () => new Float64Array(count));
   for (let row = 0; row < count; row++) for (let column = row + 1; column < count; column++) { const squared = Math.max(0, 2 - 2 * Math.max(-1, Math.min(1, dot(points[row].vector, points[column].vector)))); distances[row][column] = squared; distances[column][row] = squared; }
@@ -396,14 +397,14 @@ export class MobileSearchRuntime {
     return { nodes, edges };
   }
   async semanticTerrain(query, files) {
-    const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 50), vectors = this.fileVectors(ordered), queryVector = await this.queryVector(query); const entries = ordered.filter(id => vectors.has(id)).map(id => ({ id, vector: vectors.get(id).vector })); const positions = semanticProjection('__query__', queryVector, entries);
-    const edges = []; for (let first = 0; first < entries.length; first++) for (let second = first + 1; second < entries.length; second++) edges.push({ source: entries[first].id, target: entries[second].id, score: dot(entries[first].vector, entries[second].vector) });
+    const ordered = [...new Set((files || []).filter(Boolean))].slice(0, 50), vectors = this.fileVectors(ordered), queryVector = await this.queryVector(query); const entries = ordered.filter(id => vectors.has(id)).map(id => ({ id, vector: vectors.get(id).vector })), residuals = entries.map(entry => ({ id: entry.id, vector: residualVector(entry.vector, queryVector) })), positions = semanticProjection('__query__', queryVector, residuals);
+    const edges = []; for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(residuals[first].vector, residuals[second].vector) });
     return { nodes: entries.map(entry => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...(positions.get(entry.id) || {}) })), edges };
   }
   semanticNeighbors(file, limit = 18) {
     const vectors = this.fileVectors(); const center = vectors.get(file); if (!center) return { center: file, nodes: [], edges: [] };
     const ranked = [...vectors.entries()].filter(([id]) => id !== file).map(([id, entry]) => ({ id, label: basename(id), score: dot(center.vector, entry.vector) })).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(40, limit)));
-    const positions = semanticProjection(file, center.vector, ranked.map(node => ({ id: node.id, vector: vectors.get(node.id).vector }))), edges = []; for (let first = 0; first < ranked.length; first++) for (let second = first + 1; second < ranked.length; second++) edges.push({ source: ranked[first].id, target: ranked[second].id, score: dot(vectors.get(ranked[first].id).vector, vectors.get(ranked[second].id).vector) }); return { center: file, nodes: ranked.map(node => ({ ...node, ...(positions.get(node.id) || {}) })), edges };
+    const residuals = ranked.map(node => ({ id: node.id, vector: residualVector(vectors.get(node.id).vector, center.vector) })), positions = semanticProjection(file, center.vector, residuals), edges = []; for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(residuals[first].vector, residuals[second].vector) }); return { center: file, nodes: ranked.map(node => ({ ...node, ...(positions.get(node.id) || {}) })), edges };
   }
   async graph(k = 5, maxEdges = 2000) {
     const groups = new Map(); this.meta.forEach((item, index) => { const group = groups.get(item.file) || []; group.push(this.vectors[index]); groups.set(item.file, group); });
