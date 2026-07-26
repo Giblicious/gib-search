@@ -72213,7 +72213,7 @@ var SEARCH_LENSES = {
 function validSearchLens(value) {
   return value === "concepts" ? "relevance" : SEARCH_LENSES[value] ? value : "relevance";
 }
-var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
+var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
 function activeIndexDir(plugin6) {
   return path.join(plugin6.pluginDir, "embeddings", MODEL_PROFILES.bge.indexFolder);
 }
@@ -72934,6 +72934,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.roadEdges = [];
     this.roadIntroducedAt = /* @__PURE__ */ new Map();
     this.roadAnimationFrame = null;
+    this.manualLinkInfluence = options.manualLinkInfluence !== false;
     this.cameraX = 0;
     this.cameraY = 0;
     this.cameraZoom = 1;
@@ -72959,6 +72960,22 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       });
       this.setGenerations(options.generations || 1);
     }
+    if (options.onManualLinkInfluence) {
+      this.headingEl.addClass("has-link-influence");
+      this.linkInfluenceButton = this.headingEl.createEl("button", { cls: "gib-search-map-link-influence", attr: { type: "button", "aria-label": "Manual link influence" } });
+      this.headingEl.insertBefore(this.linkInfluenceButton, this.statusEl);
+      const icon = this.linkInfluenceButton.createSpan({ cls: "gib-search-map-link-influence-icon" });
+      setIcon(icon, "link-2");
+      this.linkInfluenceButton.createSpan({ text: "Links" });
+      this.linkInfluenceButton.addEventListener("mousedown", (event) => event.preventDefault());
+      this.linkInfluenceButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setManualLinkInfluence(!this.manualLinkInfluence);
+        options.onManualLinkInfluence(this.manualLinkInfluence);
+      });
+      this.setManualLinkInfluence(this.manualLinkInfluence, false);
+    }
     this.setupViewportControls();
     this.canvas.addEventListener("wheel", (event) => this.wheel(event), { passive: false });
   }
@@ -72969,6 +72986,13 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       button.toggleClass("is-active", active);
       button.setAttribute("aria-pressed", String(active));
     });
+  }
+  setManualLinkInfluence(value, animate = true) {
+    this.manualLinkInfluence = Boolean(value);
+    this.linkInfluenceButton?.toggleClass("is-active", this.manualLinkInfluence);
+    this.linkInfluenceButton?.setAttribute("aria-pressed", String(this.manualLinkInfluence));
+    this.linkInfluenceButton?.setAttribute("title", this.manualLinkInfluence ? "Manual links gently influence placement" : "Manual links do not influence placement");
+    if (animate) this.startSimulation(0.72);
   }
   setIntelligenceStatus(value = "") {
     this.intelligenceStatus = value;
@@ -73056,12 +73080,15 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.relationships = new Map(this.activeEdges.map((edge) => [mapEdgeKey(edge.source, edge.target), edge]));
     this.pendingQuery = false;
     this.byId = new Map(this.nodes.map((node) => [node.id, node]));
-    const validRoadEndpoint = (id2) => this.byId.has(id2) || id2 === center?.id, nextRoads = roads.filter((road) => validRoadEndpoint(road.source) && validRoadEndpoint(road.target)), introduced = /* @__PURE__ */ new Map();
+    const validRoadEndpoint = (id2) => this.byId.has(id2) || id2 === center?.id, nextRoads = roads.filter((road) => validRoadEndpoint(road.source) && validRoadEndpoint(road.target)), introduced = /* @__PURE__ */ new Map(), roadDegrees = /* @__PURE__ */ new Map();
     nextRoads.forEach((road) => {
       const key = road.key || mapEdgeKey(road.source, road.target);
       introduced.set(key, this.roadIntroducedAt.get(key) ?? performance.now());
+      roadDegrees.set(road.source, (roadDegrees.get(road.source) || 0) + 1);
+      roadDegrees.set(road.target, (roadDegrees.get(road.target) || 0) + 1);
     });
     this.roadEdges = nextRoads;
+    this.roadDegrees = roadDegrees;
     this.roadIntroducedAt = introduced;
     this.selected = this.byId.has(this.selected) ? this.selected : null;
     this.hovered = this.byId.has(this.hovered) || this.hovered === "__query__" ? this.hovered : null;
@@ -73133,6 +73160,26 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (b !== this.dragging) {
         b.vx -= dx * force;
         b.vy -= dy * force;
+      }
+    }
+    if (this.manualLinkInfluence && this.roadEdges.length) {
+      const isActive = (body) => body === query ? this.queryPresence > 0.04 : !this.hasQuery || this.pendingQuery || body.matched;
+      for (const edge of this.roadEdges) {
+        const source = edge.source === this.center?.id ? query : this.byId.get(edge.source), target = edge.target === this.center?.id ? query : this.byId.get(edge.target);
+        if (!source || !target || !isActive(source) || !isActive(target)) continue;
+        let dx = target.x - source.x, dy = target.y - source.y;
+        const distance = Math.max(0.018, Math.hypot(dx, dy));
+        dx /= distance;
+        dy /= distance;
+        const hubScale = 1 / Math.sqrt(Math.max(1, Number(this.roadDegrees?.get(edge.source) || 1), Number(this.roadDegrees?.get(edge.target) || 1))), desired = 0.2, force = Math.tanh((distance - desired) * 3.2) * 36e-4 * hubScale * alpha2;
+        if (source !== this.dragging) {
+          source.vx += dx * force;
+          source.vy += dy * force;
+        }
+        if (target !== this.dragging) {
+          target.vx -= dx * force;
+          target.vy -= dy * force;
+        }
       }
     }
     const corralBodies = this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes;
@@ -73921,11 +73968,14 @@ var SemanticSearchModal = class extends SuggestModal {
         this.applyMapState();
       });
     }
-    this.map = new LivingSemanticMapCanvas(panel, this.app, { title: "Search map", generations: this.mapGenerations, magicGraph: this.plugin.settings.magicGraphEnabled, semanticColors: this.plugin.settings.graphSemanticColors, onGenerations: async (value) => {
+    this.map = new LivingSemanticMapCanvas(panel, this.app, { title: "Search map", generations: this.mapGenerations, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, magicGraph: this.plugin.settings.magicGraphEnabled, semanticColors: this.plugin.settings.graphSemanticColors, onGenerations: async (value) => {
       this.mapGenerations = value;
       this.plugin.settings.searchMapGenerations = value;
       await this.plugin.save();
       this.updateMap();
+    }, onManualLinkInfluence: async (value) => {
+      this.plugin.settings.graphManualLinkInfluence = value;
+      await this.plugin.save();
     }, onHover: (file) => this.hoverResult(file), onSelect: (file) => this.focusResult(file), onOpen: (file) => this.openFile(file), onExplore: (file) => {
       this.close();
       this.plugin.openNeighborhood(file, true);
@@ -74041,7 +74091,10 @@ var NeighborhoodView = class extends ItemView {
       this.pinButton.setAttribute("title", this.pinned ? "Follow active note" : "Pin current note");
     });
     const mapHost = this.contentEl.createDiv({ cls: "gib-neighborhood-map" });
-    this.map = new LivingSemanticMapCanvas(mapHost, this.app, { title: "Closest notes", onSelect: (file) => this.openFile(file), onOpen: (file) => this.openFile(file) });
+    this.map = new LivingSemanticMapCanvas(mapHost, this.app, { title: "Closest notes", manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, onManualLinkInfluence: async (value) => {
+      this.plugin.settings.graphManualLinkInfluence = value;
+      await this.plugin.save();
+    }, onSelect: (file) => this.openFile(file), onOpen: (file) => this.openFile(file) });
     this.fileOpenRef = this.app.workspace.on("file-open", (file) => {
       if (!this.pinned && file instanceof TFile) this.centerOn(file.path);
     });
