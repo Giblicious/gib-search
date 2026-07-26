@@ -53,7 +53,8 @@ if (!builtMain.includes('semanticTerrain(query, files)') || !builtMain.includes(
 if (!builtMain.includes('LivingSemanticMapCanvas') || !builtMain.includes('buildSmoothElevation') || !builtMain.includes('terrain.edges || []')) throw new Error('Living score-derived terrain or note gravity is missing');
 if (!modalSource.includes('new LivingSemanticMapCanvas') || modalSource.includes('this.map = new SemanticMapCanvas')) throw new Error('Search modal is not using the living semantic terrain');
 if (!mainSource.includes('this.startSimulation(.9)') || !mainSource.includes('preferredRadius')) throw new Error('Continuous semantic spring simulation is missing');
-if (!mainSource.includes('this.elevationSamples(), 220') || !mainSource.includes('length: 24')) throw new Error('High-resolution contours or unclipped perimeter constraints are missing');
+if (!mainSource.includes('this.elevationSamples(), 220')) throw new Error('High-resolution final contours are missing');
+if (!mainSource.includes('distanceSquared >= radius ** 2') || !mainSource.includes('supportTotal * 1.28') || mainSource.includes('const perimeter = Array.from')) throw new Error('Terrain still expands to a container-shaped global boundary');
 if (!mainSource.includes('step <= 10') || !mainSource.includes('(step - .5) / 10')) throw new Error('Terrain must use ten equal normalized elevation contours');
 if (!mainSource.includes('slice(0, 3)') || !mainSource.includes('charge = -Math.min')) throw new Error('Sparse semantic attraction or full-plane repulsion is missing');
 if (!runtimeSource.includes('residualVector(entry.vector, queryVector)')) throw new Error('Search-map grouping still includes the shared query direction');
