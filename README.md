@@ -4,7 +4,7 @@ Local semantic search and a similarity graph for Obsidian.
 
 Gib Search indexes note content, headings, filenames, entities, and optional folder-path signals. Search results include compact source excerpts, semantic phrase emphasis, ranking controls, and a living graph of related notes.
 
-The optional magic graph combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. Hue represents semantic direction; distance represents query relevance; the strongest visible note relationships influence the graph's local shape.
+The optional magic graph combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. These signals form one multi-relational distance model that is reduced into a query-conditioned 2D layout. Hue represents semantic direction, while lightweight physics animates and gently relaxes the calculated geometry.
 
 ## Install with BRAT
 
