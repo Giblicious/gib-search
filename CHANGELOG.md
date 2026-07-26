@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.10
+
+- Adds local typo tolerance for semantic queries using vocabulary derived from the indexed vault.
+- Corrects high-confidence, single-edit misspellings before query embedding so tokenizer fragmentation cannot eliminate otherwise relevant results.
+- Retains both the entered and corrected terms for filename and folder matching.
+- Keeps correction entirely offline and refreshes its vocabulary with the semantic index.
+
 ## 0.5.9
 
 - Replaces stacked boundary envelopes with contours cut through one continuous semantic elevation surface.
