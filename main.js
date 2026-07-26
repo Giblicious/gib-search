@@ -73431,12 +73431,12 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
           split3 = index3;
         }
       }
-      if (farthest <= step * 0.55) return [first, last];
+      if (farthest <= step * 1.25) return [first, last];
       const left = simplify(points.slice(0, split3 + 1)), right = simplify(points.slice(split3));
       return [...left.slice(0, -1), ...right];
     };
     let smooth = simplify(raw);
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < 3; pass++) {
       const next = [smooth[0]];
       for (let index3 = 0; index3 < smooth.length - 1; index3++) {
         const first = smooth[index3], second = smooth[index3 + 1];
@@ -73445,7 +73445,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       next.push(smooth[smooth.length - 1]);
       smooth = next;
     }
-    return { points: this.resampleRoad(smooth, Math.max(16, Math.min(30, Math.ceil(gridDistance / 2.8)))), cells };
+    return { points: this.resampleRoad(smooth, Math.max(8, Math.min(14, Math.ceil(gridDistance / 6)))), cells };
   }
   cancelRoadWork() {
     this.roadWorkToken++;
@@ -73490,10 +73490,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       while (queue.length && processed < 1 && (processed === 0 || deadline.timeRemaining() > 3)) {
         const road = queue.shift(), key = road.key || mapEdgeKey(road.source, road.target), source = this.roadEndpoint(road.source, width, height), target = this.roadEndpoint(road.target, width, height);
         if (source && target) {
-          const routed = this.routeRoad(field, source, target, traffic), points = routed.points, cumulative = [0];
+          const routed = this.routeRoad(field, source, target, traffic), points = routed.points, cumulative = [0], previousRoute = this.roadRoutes.get(key), previousPoints = previousRoute ? this.resampleRoad(this.adjustedRoadPoints(previousRoute, source, target), points.length) : null;
           this.depositRoadTraffic(field, traffic, routed.cells, Math.max(1, Number(road.count || 1)));
           for (let index3 = 1; index3 < points.length; index3++) cumulative.push(cumulative[index3 - 1] + Math.hypot(points[index3].x - points[index3 - 1].x, points[index3].y - points[index3 - 1].y));
-          nextRoutes.set(key, { road, points, cells: routed.cells, cumulative, total: cumulative[cumulative.length - 1] || 1, source, target });
+          nextRoutes.set(key, { road, points, cells: routed.cells, cumulative, total: cumulative[cumulative.length - 1] || 1, source, target, previousPoints, transitionAt: performance.now() });
           if (!this.roadIntroducedAt.has(key)) this.roadIntroducedAt.set(key, performance.now());
         }
         processed++;
@@ -73514,15 +73514,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const fraction = route.cumulative[index3] / route.total;
       return { x: point.x + (source.x - route.source.x) * (1 - fraction) + (target.x - route.target.x) * fraction, y: point.y + (source.y - route.source.y) * (1 - fraction) + (target.y - route.target.y) * fraction };
     });
-  }
-  sampleRoadHeight(field, x, y) {
-    const { values, columns, rows, step } = field, gridX = Math.max(0, Math.min(columns - 1, x / step)), gridY = Math.max(0, Math.min(rows - 1, y / step)), left = Math.floor(gridX), right = Math.min(columns - 1, left + 1), top = Math.floor(gridY), bottom = Math.min(rows - 1, top + 1), horizontal = gridX - left, vertical = gridY - top, upper = values[top * columns + left] * (1 - horizontal) + values[top * columns + right] * horizontal, lower = values[bottom * columns + left] * (1 - horizontal) + values[bottom * columns + right] * horizontal;
-    return upper * (1 - vertical) + lower * vertical;
-  }
-  sampleRoadTraffic(field, x, y) {
-    if (!this.roadTrafficField) return 0;
-    const { columns, rows, step } = field, column = Math.max(0, Math.min(columns - 1, Math.round(x / step))), row = Math.max(0, Math.min(rows - 1, Math.round(y / step)));
-    return Number(this.roadTrafficField[row * columns + column] || 0);
   }
   rebuildRoadTrafficField(field, width, height) {
     const traffic = new Float32Array(field.values.length), { columns, rows, step } = field, clampCell = (point) => {
@@ -73548,36 +73539,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const cells = route.liveCells || [], own = Math.max(1, Number(route.road.count || 1)), shared = cells.length ? cells.reduce((sum, cell) => sum + Math.max(0, traffic[cell] - own), 0) / cells.length : 0;
       route.networkWeight = shared;
     }
-  }
-  conformRoadRoute(route, field, source, target) {
-    let points = this.adjustedRoadPoints(route, source, target);
-    const offsets = [-10, -6, -3, 0, 3, 6, 10], passes = this.alpha > 0.03 || this.dragging ? 1 : 2;
-    for (let pass = 0; pass < passes; pass++) {
-      const next = [points[0]];
-      for (let index3 = 1; index3 < points.length - 1; index3++) {
-        const previous = points[index3 - 1], current = points[index3], following = points[index3 + 1], tangentX = following.x - previous.x, tangentY = following.y - previous.y, length2 = Math.max(1, Math.hypot(tangentX, tangentY)), normalX = -tangentY / length2, normalY = tangentX / length2, midpoint = { x: (previous.x + following.x) / 2, y: (previous.y + following.y) / 2 }, origin = { x: current.x * 0.62 + midpoint.x * 0.38, y: current.y * 0.62 + midpoint.y * 0.38 }, previousHeight = this.sampleRoadHeight(field, previous.x, previous.y), followingHeight = this.sampleRoadHeight(field, following.x, following.y);
-        let best = current, bestCost = Infinity;
-        for (const offset2 of offsets) {
-          const candidate = { x: origin.x + normalX * offset2, y: origin.y + normalY * offset2 }, height = this.sampleRoadHeight(field, candidate.x, candidate.y), grade = (height - previousHeight) ** 2 + (followingHeight - height) ** 2, bend = ((candidate.x - midpoint.x) ** 2 + (candidate.y - midpoint.y) ** 2) / 400, movement = offset2 * offset2 / 400, sharedCorridor = Math.max(0, this.sampleRoadTraffic(field, candidate.x, candidate.y) - Math.max(1, Number(route.road.count || 1))), cost = grade * 1200 + bend * 0.34 + movement * 0.07 - Math.min(4, sharedCorridor) * 0.82;
-          if (cost < bestCost) {
-            best = candidate;
-            bestCost = cost;
-          }
-        }
-        next.push({ x: current.x * 0.34 + best.x * 0.66, y: current.y * 0.34 + best.y * 0.66 });
-      }
-      next.push(points[points.length - 1]);
-      points = next;
-    }
-    const cumulative = [0];
-    for (let index3 = 1; index3 < points.length; index3++) cumulative.push(cumulative[index3 - 1] + Math.hypot(points[index3].x - points[index3 - 1].x, points[index3].y - points[index3 - 1].y));
-    route.points = points;
-    route.cumulative = cumulative;
-    route.total = cumulative[cumulative.length - 1] || 1;
-    route.source = source;
-    route.target = target;
-    route.conformedAt = this.lastTerrainAt;
-    return points;
   }
   roadPointAt(points, fraction) {
     const lengths = [0];
@@ -73617,11 +73578,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   paintRoads(ctx, width, height, colors2) {
     if (!this.roadEdges.length || !this.lastTerrainField) return;
-    const now = performance.now();
-    if (this.roadsDirty && this.roadWorkHandle === null) this.beginRoadRouteRefresh(this.lastTerrainField, width, height);
-    if (this.roadTrafficAt !== this.lastTerrainAt || this.roadTrafficRouteCount !== this.roadRoutes.size) {
+    const now = performance.now(), moving = this.alpha >= 0.22 || this.dragging || this.panning;
+    if (this.roadsDirty && this.roadWorkHandle === null && !moving) this.beginRoadRouteRefresh(this.lastTerrainField, width, height);
+    if (this.roadTrafficRouteCount !== this.roadRoutes.size) {
       this.rebuildRoadTrafficField(this.lastTerrainField, width, height);
-      this.roadTrafficAt = this.lastTerrainAt;
       this.roadTrafficRouteCount = this.roadRoutes.size;
     }
     const focused = this.hovered || this.selected, reduced = matchMedia("(prefers-reduced-motion: reduce)").matches, orderedRoutes = [...this.roadRoutes].sort((first, second) => Number(first[1].networkWeight || 0) - Number(second[1].networkWeight || 0));
@@ -73631,17 +73591,16 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (!source || !target) continue;
       const opacity = Math.min(source.visibility, target.visibility);
       if (opacity < 0.035) continue;
-      const points = route.conformedAt === this.lastTerrainAt ? this.adjustedRoadPoints(route, source, target) : this.conformRoadRoute(route, this.lastTerrainField, source, target), introduced = this.roadIntroducedAt.get(key) || now, progress = reduced ? 1 : Math.max(0, Math.min(1, (now - introduced) / 430));
-      if (progress < 1) animating = true;
+      const targetPoints = this.adjustedRoadPoints(route, source, target), transition = reduced ? 1 : Math.max(0, Math.min(1, (now - Number(route.transitionAt || 0)) / 220)), eased = 1 - (1 - transition) ** 3, points = route.previousPoints && transition < 1 ? targetPoints.map((point, index3) => ({ x: route.previousPoints[index3].x + (point.x - route.previousPoints[index3].x) * eased, y: route.previousPoints[index3].y + (point.y - route.previousPoints[index3].y) * eased })) : targetPoints, introduced = this.roadIntroducedAt.get(key) || now, fade = reduced ? 1 : Math.max(0, Math.min(1, (now - introduced) / 160));
+      if (transition < 1 || fade < 1) animating = true;
       const active = focused === route.road.source || focused === route.road.target, trunk = Math.min(3.4, Math.sqrt(Math.max(0, Number(route.networkWeight || 0))) * 0.58);
-      ctx.globalAlpha = opacity * (active ? 0.82 : 0.22 + Math.min(0.18, trunk * 0.045));
+      ctx.globalAlpha = opacity * fade * (active ? 0.82 : 0.22 + Math.min(0.18, trunk * 0.045));
       ctx.strokeStyle = active ? colors2.normal : colors2.muted;
       ctx.lineWidth = (active ? 1.5 : 0.78) + trunk;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      if (this.traceRoad(ctx, points, progress)) ctx.stroke();
+      if (this.traceRoad(ctx, points, 1)) ctx.stroke();
       const chevron = (fraction, reverse3 = false) => {
-        if (progress < fraction + 0.04) return;
         const point = this.roadPointAt(points, fraction), angle = point.angle + (reverse3 ? Math.PI : 0), size = active ? 3.8 : 3.1;
         ctx.lineWidth = active ? 1.4 : 0.8;
         ctx.beginPath();
@@ -73852,6 +73811,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     if (!this.dragging || this.draggingPointer !== event.pointerId) return;
     this.dragging = null;
     this.draggingPointer = null;
+    this.roadsDirty = true;
     this.canvas.style.cursor = "grab";
     this.canvas.releasePointerCapture?.(event.pointerId);
     this.startSimulation(0.62);
