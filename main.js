@@ -72147,47 +72147,13 @@ var init_mobile_runtime = __esm({
         if (conditioned) {
           const primaryEntries = entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1), positioned = /* @__PURE__ */ new Map();
           for (const entry of primaryEntries) {
-            const topic = layoutTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = topicMode || Number(topic?.topicStrength || 0) > 0.015 ? Number(topic?.topicAngle || 0) : 0, angle = linkMode && point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle, radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
-            positioned.set(entry.id, vaultCentered && point ? { x: point.x, y: point.y } : { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+            const topic = layoutTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = topicMode || Number(topic?.topicStrength || 0) > 0.015 ? Number(topic?.topicAngle || 0) : 0, angle = lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle, radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
+            positioned.set(entry.id, (vaultCentered || linkMode) && point ? { x: point.x, y: point.y } : { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
           }
           const later = entries.filter((entry) => Number(nodeById.get(entry.id)?.generation || 1) > 1).sort((a2, b) => Number(nodeById.get(a2.id)?.generation || 1) - Number(nodeById.get(b.id)?.generation || 1));
           for (const entry of later) {
             const node = nodeById.get(entry.id), parent = positioned.get(node?.parent) || layout.get(node?.parent) || { x: 0, y: 0 }, topicAngle = Number(layoutTopics.get(entry.id)?.topicAngle ?? stableAngle(entry.id)), parentAngle = Math.atan2(parent.y, parent.x), blendX = Math.cos(topicAngle) * 0.68 + Math.cos(parentAngle) * 0.32, blendY = Math.sin(topicAngle) * 0.68 + Math.sin(parentAngle) * 0.32, jitter = (stableAngle(entry.id) / (Math.PI * 2) - 0.5) * 0.32, angle = Math.atan2(blendY, blendX) + jitter, step = 0.13 + (1 - Math.max(0, Math.min(1, Number(node?.relationScore || 0.5)))) * 0.1;
             positioned.set(entry.id, { x: parent.x + Math.cos(angle) * step, y: parent.y + Math.sin(angle) * step });
-          }
-          if (linkMode && positioned.size > 1) {
-            const originals = new Map([...positioned].map(([id2, point]) => [id2, { ...point }])), linked = [], seen = /* @__PURE__ */ new Set();
-            for (const source of positioned.keys()) for (const [target, count] of Object.entries(resolvedLinks[source] || {})) {
-              if (!positioned.has(target) || source === target) continue;
-              const key = [source, target].sort().join("\0");
-              if (seen.has(key)) continue;
-              seen.add(key);
-              linked.push({ source, target, count: Number(count || 1) + Number(resolvedLinks[target]?.[source] || 0) });
-            }
-            if (linked.length) for (let pass = 0; pass < 72; pass++) {
-              const movement = new Map([...positioned.keys()].map((id2) => [id2, { x: 0, y: 0 }]));
-              for (const edge of linked) {
-                const source = positioned.get(edge.source), target = positioned.get(edge.target), dx = target.x - source.x, dy = target.y - source.y, distance = Math.max(1e-3, Math.hypot(dx, dy)), desired = Math.max(0.075, 0.14 / Math.sqrt(Math.max(1, edge.count))), force = Math.tanh((distance - desired) * 4.5) * 0.052, shiftX = dx / distance * force, shiftY = dy / distance * force;
-                movement.get(edge.source).x += shiftX;
-                movement.get(edge.source).y += shiftY;
-                movement.get(edge.target).x -= shiftX;
-                movement.get(edge.target).y -= shiftY;
-              }
-              for (const [id2, point] of positioned) {
-                const delta = movement.get(id2), original = originals.get(id2);
-                point.x += delta.x;
-                point.y += delta.y;
-                if (!vaultCentered) {
-                  const targetRadius = Math.hypot(original.x, original.y), radius = Math.max(1e-3, Math.hypot(point.x, point.y)), correction = (targetRadius - radius) * 0.14;
-                  point.x += point.x / radius * correction;
-                  point.y += point.y / radius * correction;
-                } else {
-                  point.x += (original.x - point.x) * 0.018;
-                  point.y += (original.y - point.y) * 0.018;
-                }
-              }
-              if (pass % 18 === 17) await yieldToUi();
-            }
           }
           if (vaultCentered && positioned.size) {
             const points2 = [...positioned.values()], meanX2 = points2.reduce((sum, point) => sum + point.x, 0) / points2.length, meanY2 = points2.reduce((sum, point) => sum + point.y, 0) / points2.length, extent2 = Math.max(1e-3, ...points2.map((point) => Math.hypot(point.x - meanX2, point.y - meanY2))), scale = 0.82 / extent2;
@@ -73274,9 +73240,14 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.pointers = /* @__PURE__ */ new Map();
     this.pendingQuery = false;
     this.ambientStartedAt = performance.now();
-    this.ambientTimer = options.preserveBackground ? window.setInterval(() => {
-      if (this.hasQuery && !this.pendingQuery && !matchMedia("(prefers-reduced-motion: reduce)").matches) this.draw();
-    }, 80) : null;
+    this.ambientDrawing = false;
+    this.ambientTimer = window.setInterval(() => {
+      if (!this.pendingQuery && this.canvas.isConnected && !document.hidden && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        this.ambientDrawing = true;
+        this.draw();
+        this.ambientDrawing = false;
+      }
+    }, 80);
     if (options.onGenerations) {
       this.headingEl.addClass("has-generations");
       this.generationControl = this.headingEl.createDiv({ cls: "gib-search-map-generations", attr: { "aria-label": "Semantic generations" } });
@@ -73355,6 +73326,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       button.toggleClass("is-active", active);
       button.setAttribute("aria-pressed", String(active));
     });
+    if (this.linkInfluenceButton) {
+      const integrated = this.mapGroupingMode === "links";
+      this.linkInfluenceButton.disabled = integrated;
+      this.linkInfluenceButton.setAttribute("title", integrated ? "Links mode already uses manual links for placement" : this.manualLinkInfluence ? "Manual links gently influence placement" : "Manual links do not influence placement");
+    }
   }
   setupTuningPanel() {
     this.tuneButton = this.headingEl.createEl("button", { cls: "gib-search-map-tune", attr: { type: "button", title: "Tune vault map", "aria-label": "Tune vault map", "aria-expanded": "false" } });
@@ -73436,10 +73412,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   setManualLinkInfluence(value, animate = true) {
     this.manualLinkInfluence = Boolean(value);
-    this.linkInfluenceButton?.toggleClass("is-active", this.manualLinkInfluence);
-    this.linkInfluenceButton?.setAttribute("aria-pressed", String(this.manualLinkInfluence));
-    this.linkInfluenceButton?.setAttribute("title", this.manualLinkInfluence ? "Manual links gently influence placement" : "Manual links do not influence placement");
-    if (animate) this.startSimulation(0.72);
+    this.linkInfluenceButton?.toggleClass("is-active", this.manualLinkInfluence && this.mapGroupingMode !== "links");
+    this.linkInfluenceButton?.setAttribute("aria-pressed", String(this.manualLinkInfluence && this.mapGroupingMode !== "links"));
+    this.linkInfluenceButton?.setAttribute("title", this.mapGroupingMode === "links" ? "Links mode already uses manual links for placement" : this.manualLinkInfluence ? "Manual links gently influence placement" : "Manual links do not influence placement");
+    if (animate && this.mapGroupingMode !== "links") this.startSimulation(0.72);
   }
   setIntelligenceStatus(value = "") {
     this.intelligenceStatus = value;
@@ -73778,8 +73754,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         }
       }
     }
-    if ((this.manualLinkInfluence || this.mapGroupingMode === "links") && this.roadEdges.length) {
-      const isActive = (body) => body === query ? this.queryPresence > 0.04 : !this.hasQuery || this.pendingQuery || body.matched, linkMode = this.mapGroupingMode === "links";
+    if (this.manualLinkInfluence && this.mapGroupingMode !== "links" && this.roadEdges.length) {
+      const isActive = (body) => body === query ? this.queryPresence > 0.04 : !this.hasQuery || this.pendingQuery || body.matched;
       for (const edge of this.roadEdges) {
         const source = edge.source === this.center?.id ? query : this.byId.get(edge.source), target = edge.target === this.center?.id ? query : this.byId.get(edge.target);
         if (!source || !target || !isActive(source) || !isActive(target)) continue;
@@ -73787,7 +73763,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         const distance = Math.max(0.018, Math.hypot(dx, dy));
         dx /= distance;
         dy /= distance;
-        const hubScale = 1 / Math.sqrt(Math.max(1, Number(this.roadDegrees?.get(edge.source) || 1), Number(this.roadDegrees?.get(edge.target) || 1))), desired = linkMode ? 0.13 : 0.2, force = Math.tanh((distance - desired) * (linkMode ? 4.5 : 3.2)) * (linkMode ? 9e-3 : 36e-4) * hubScale * alpha2;
+        const hubScale = 1 / Math.sqrt(Math.max(1, Number(this.roadDegrees?.get(edge.source) || 1), Number(this.roadDegrees?.get(edge.target) || 1))), desired = 0.2, force = Math.tanh((distance - desired) * 3.2) * 36e-4 * hubScale * alpha2;
         if (source !== this.dragging) {
           source.vx += dx * force;
           source.vy += dy * force;
@@ -73860,15 +73836,16 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     };
     this.simulationFrame = requestAnimationFrame(tick);
   }
+  ambientAngle() {
+    return matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : Math.sin((performance.now() - this.ambientStartedAt) * 75e-6) * 0.014;
+  }
+  ambientPosition(x, y, inverse = false) {
+    const originX = this.queryPresence > 0.04 ? Number(this.queryNode.x) : 0, originY = this.queryPresence > 0.04 ? Number(this.queryNode.y) : 0, angle = this.ambientAngle() * (inverse ? -1 : 1), dx = Number(x) - originX, dy = Number(y) - originY, cosine = Math.cos(angle), sine = Math.sin(angle);
+    return { x: originX + dx * cosine - dy * sine, y: originY + dx * sine + dy * cosine };
+  }
   coordinates(node, width, height) {
-    let x = Number(node.x), y = Number(node.y);
-    if (this.options.preserveBackground && this.hasQuery && !this.pendingQuery && !node.matched && !node.isQuery) {
-      const angle = Math.sin((performance.now() - this.ambientStartedAt) * 18e-5) * 8e-3, dx = x - this.queryNode.x, dy = y - this.queryNode.y, cosine = Math.cos(angle), sine = Math.sin(angle);
-      x = this.queryNode.x + dx * cosine - dy * sine;
-      y = this.queryNode.y + dx * sine + dy * cosine;
-    }
-    const scale = Math.max(20, Math.min(width, height) / 2 - 68) * this.cameraZoom * this.userZoom;
-    return [width / 2 + (x - this.cameraX) * scale + this.panX, height / 2 + (y - this.cameraY) * scale + this.panY];
+    const point = node.isQuery ? { x: Number(node.x), y: Number(node.y) } : this.ambientPosition(node.x, node.y), scale = Math.max(20, Math.min(width, height) / 2 - 68) * this.cameraZoom * this.userZoom;
+    return [width / 2 + (point.x - this.cameraX) * scale + this.panX, height / 2 + (point.y - this.cameraY) * scale + this.panY];
   }
   semanticDensityField(width, height) {
     const tuning = this.tuning || MAP_TUNING_DEFAULTS, step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), heightWeights = new Float32Array(values.length), heightTotals = new Float32Array(values.length), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
@@ -73962,7 +73939,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   paintDensityTerrain(ctx, width, height, colors2) {
     if (this.tuning?.showTopography === false) return;
-    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= 32;
+    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refreshInterval = this.ambientDrawing ? 480 : 32, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= refreshInterval;
     if (refresh) {
       const field = this.semanticDensityField(width, height), maximum = Math.max(0, ...field.values), vaultTerrain = !this.hasQuery && !this.pendingQuery, terrainRange = vaultTerrain ? 0.92 : 3;
       this.lastTerrainField = field;
@@ -74311,9 +74288,9 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     if (this.dragging && this.draggingPointer === event.pointerId) {
       if (this.nodeDragOrigin && Math.hypot(event.clientX - this.nodeDragOrigin.x, event.clientY - this.nodeDragOrigin.y) > 3) this.suppressClick = true;
-      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom * this.userZoom;
-      this.dragging.x = (event.clientX - rect.left - rect.width / 2 - this.panX) / scale + this.cameraX;
-      this.dragging.y = (event.clientY - rect.top - rect.height / 2 - this.panY) / scale + this.cameraY;
+      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom * this.userZoom, viewX = (event.clientX - rect.left - rect.width / 2 - this.panX) / scale + this.cameraX, viewY = (event.clientY - rect.top - rect.height / 2 - this.panY) / scale + this.cameraY, point = this.dragging.isQuery ? { x: viewX, y: viewY } : this.ambientPosition(viewX, viewY, true);
+      this.dragging.x = point.x;
+      this.dragging.y = point.y;
       this.dragging.vx = this.dragging.vy = 0;
       this.startSimulation(0.38);
       return;
