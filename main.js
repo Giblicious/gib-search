@@ -70535,6 +70535,25 @@ function topicCoordinates(entries, center, axes) {
     return [point.id, { topicAngle: angle, topicStrength: strength, topicHue: (angle * 180 / Math.PI + 360) % 360 }];
   }));
 }
+function querySubtopicCoordinates(entries, topics, nodeById) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const node = nodeById.get(entry.id), community = node?.facet ?? node?.community ?? `note:${entry.id}`, topic = topics.get(entry.id), weight = Math.max(0.08, Number(node?.communityMembership || 0));
+    const group = groups.get(community) || { id: community, x: 0, y: 0, members: [] };
+    group.x += Math.cos(Number(topic?.topicAngle || 0)) * weight;
+    group.y += Math.sin(Number(topic?.topicAngle || 0)) * weight;
+    group.members.push(entry.id);
+    groups.set(community, group);
+  }
+  const ordered = [...groups.values()].map((group) => ({ ...group, natural: Math.atan2(group.y, group.x) })).sort((a2, b) => a2.natural - b.natural || String(a2.id).localeCompare(String(b.id)));
+  if (ordered.length < 2) return topics;
+  const step = Math.PI * 2 / ordered.length, offsetX = ordered.reduce((sum, group, index3) => sum + Math.cos(group.natural - index3 * step), 0), offsetY = ordered.reduce((sum, group, index3) => sum + Math.sin(group.natural - index3 * step), 0), offset2 = Math.atan2(offsetY, offsetX), byCommunity = new Map(ordered.map((group, index3) => [group.id, { natural: group.natural, target: offset2 + index3 * step }])), allowance = Math.min(0.42, step * 0.24), output = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const node = nodeById.get(entry.id), community = node?.facet ?? node?.community ?? `note:${entry.id}`, group = byCommunity.get(community), topic = topics.get(entry.id) || { topicAngle: 0, topicStrength: 0 }, difference = Math.atan2(Math.sin(Number(topic.topicAngle || 0) - group.natural), Math.cos(Number(topic.topicAngle || 0) - group.natural)), angle = group.target + Math.max(-allowance, Math.min(allowance, difference));
+    output.set(entry.id, { ...topic, topicAngle: angle, topicHue: (angle * 180 / Math.PI + 360) % 360 });
+  }
+  return output;
+}
 function classicalDistanceLayout(ids, distances, topics = /* @__PURE__ */ new Map()) {
   const count = ids.length;
   if (!count) return /* @__PURE__ */ new Map();
@@ -72089,7 +72108,7 @@ var init_mobile_runtime = __esm({
         let center = fileCenter ? Float32Array.from(fileCenter) : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
         if (!fileCenter && !trimmed) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
         const contentProfiles = vaultCentered ? this.vaultContentProfiles(files) : null;
-        const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
+        const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), topicMode = options.mapMode === "topics", layoutTopics = topicMode && !vaultCentered ? querySubtopicCoordinates(conceptEntries, conceptTopics, nodeById) : conceptTopics, entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
         for (const entities of entitySets.values()) for (const entity2 of entities) frequency.set(entity2, (frequency.get(entity2) || 0) + 1);
         const entitySimilarity = (first, second) => {
           const a2 = entitySets.get(first) || /* @__PURE__ */ new Set(), b = entitySets.get(second) || /* @__PURE__ */ new Set();
@@ -72109,7 +72128,7 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && !vaultCentered && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", topicMode = options.mapMode === "topics", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), lensWeights = { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens], topicalWeights = lens === "arguments" ? { content: 0, semantic: 0.1, residual: 0.14, entity: 0.04, angular: 0.04, community: 0.48, relation: 0.2 } : { content: 0, semantic: 0.12, residual: 0.18, entity: 0.05, angular: 0.05, community: 0.6, relation: 0 }, weights = vaultCentered ? topicMode ? { content: 0.38, semantic: 0.03, residual: 0.08, entity: 0.03, angular: 0, community: 0.48, relation: 0 } : { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, relation: 0 } : topicMode ? topicalWeights : lensWeights;
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), lensWeights = { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens], topicalWeights = lens === "arguments" ? { content: 0, semantic: 0.1, residual: 0.14, entity: 0.04, angular: 0.04, community: 0.48, relation: 0.2 } : { content: 0, semantic: 0.12, residual: 0.18, entity: 0.05, angular: 0.05, community: 0.6, relation: 0 }, weights = vaultCentered ? topicMode ? { content: 0.38, semantic: 0.03, residual: 0.08, entity: 0.03, angular: 0, community: 0.48, relation: 0 } : { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, relation: 0 } : topicMode ? topicalWeights : lensWeights;
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
@@ -72117,23 +72136,23 @@ var init_mobile_runtime = __esm({
         }
         for (let first = 0; first < entries.length; first++) {
           for (let second = first + 1; second < entries.length; second++) {
-            const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), baseContent = vaultCentered ? Math.sqrt(Math.max(0, (1 - contentProfileSimilarity(contentProfiles.get(a2.id), contentProfiles.get(b.id), tuning.passageCoverage)) / 2)) : semantic, content = vaultCentered ? Math.pow(baseContent, Math.max(0.5, Math.min(2, Number(tuning.distanceContrast)))) : baseContent, residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? conceptTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.content * content ** 2 + weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
+            const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), baseContent = vaultCentered ? Math.sqrt(Math.max(0, (1 - contentProfileSimilarity(contentProfiles.get(a2.id), contentProfiles.get(b.id), tuning.passageCoverage)) / 2)) : semantic, content = vaultCentered ? Math.pow(baseContent, Math.max(0.5, Math.min(2, Number(tuning.distanceContrast)))) : baseContent, residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? layoutTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.content * content ** 2 + weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
             distances[row][column] = distance;
             distances[column][row] = distance;
           }
           if (first % 6 === 5) await yieldToUi();
         }
-        const layout = classicalDistanceLayout(ids, distances, conditioned ? conceptTopics : topics);
+        const layout = classicalDistanceLayout(ids, distances, conditioned ? layoutTopics : topics);
         layout.delete("__center__");
         if (conditioned) {
           const primaryEntries = entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1), positioned = /* @__PURE__ */ new Map();
           for (const entry of primaryEntries) {
-            const topic = conceptTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = Number(topic?.topicStrength || 0) > 0.015 ? Number(topic.topicAngle) : 0, angle = lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle, radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
+            const topic = layoutTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = topicMode || Number(topic?.topicStrength || 0) > 0.015 ? Number(topic?.topicAngle || 0) : 0, angle = lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle, radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
             positioned.set(entry.id, vaultCentered && point ? { x: point.x, y: point.y } : { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
           }
           const later = entries.filter((entry) => Number(nodeById.get(entry.id)?.generation || 1) > 1).sort((a2, b) => Number(nodeById.get(a2.id)?.generation || 1) - Number(nodeById.get(b.id)?.generation || 1));
           for (const entry of later) {
-            const node = nodeById.get(entry.id), parent = positioned.get(node?.parent) || layout.get(node?.parent) || { x: 0, y: 0 }, topicAngle = Number(conceptTopics.get(entry.id)?.topicAngle ?? stableAngle(entry.id)), parentAngle = Math.atan2(parent.y, parent.x), blendX = Math.cos(topicAngle) * 0.68 + Math.cos(parentAngle) * 0.32, blendY = Math.sin(topicAngle) * 0.68 + Math.sin(parentAngle) * 0.32, jitter = (stableAngle(entry.id) / (Math.PI * 2) - 0.5) * 0.32, angle = Math.atan2(blendY, blendX) + jitter, step = 0.13 + (1 - Math.max(0, Math.min(1, Number(node?.relationScore || 0.5)))) * 0.1;
+            const node = nodeById.get(entry.id), parent = positioned.get(node?.parent) || layout.get(node?.parent) || { x: 0, y: 0 }, topicAngle = Number(layoutTopics.get(entry.id)?.topicAngle ?? stableAngle(entry.id)), parentAngle = Math.atan2(parent.y, parent.x), blendX = Math.cos(topicAngle) * 0.68 + Math.cos(parentAngle) * 0.32, blendY = Math.sin(topicAngle) * 0.68 + Math.sin(parentAngle) * 0.32, jitter = (stableAngle(entry.id) / (Math.PI * 2) - 0.5) * 0.32, angle = Math.atan2(blendY, blendX) + jitter, step = 0.13 + (1 - Math.max(0, Math.min(1, Number(node?.relationScore || 0.5)))) * 0.1;
             positioned.set(entry.id, { x: parent.x + Math.cos(angle) * step, y: parent.y + Math.sin(angle) * step });
           }
           if (vaultCentered && positioned.size) {
@@ -72899,16 +72918,16 @@ async function buildQueryMapModel(plugin6, query, results, options = {}) {
     return clone(cached);
   }
   const pending = (async () => {
-    const facets = await plugin6.search.conceptFacets(query, roots);
+    const expansion = plugin6.search.semanticGenerations(roots, generations, 5), generationByFile = new Map(expansion.nodes.map((node) => [node.id, node])), activeFiles = expansion.nodes.map((node) => node.id), facets = await plugin6.search.conceptFacets(query, activeFiles);
     for (const result of sourceResults) {
       const facet = facets.get(result.file);
       result.facet = facet?.facet;
       result.conceptAffinities = facet?.affinities;
     }
-    const expansion = plugin6.search.semanticGenerations(roots, generations, 5), generationByFile = new Map(expansion.nodes.map((node) => [node.id, node])), activeFiles = expansion.nodes.map((node) => node.id), graph = await plugin6.search.semanticStarfield(query, activeFiles, activeFiles), byFile = new Map(sourceResults.map((result) => [result.file, result])), scales = options.fileScales || vaultFileScales(plugin6.app), rankingScores = sourceResults.map((result) => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = expansion.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
+    const graph = await plugin6.search.semanticStarfield(query, activeFiles, activeFiles), byFile = new Map(sourceResults.map((result) => [result.file, result])), scales = options.fileScales || vaultFileScales(plugin6.app), rankingScores = sourceResults.map((result) => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = expansion.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
     const nodes = graph.nodes.map((node) => {
-      const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
-      return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance, fileScale: scales.get(node.id) ?? 0.35, facet: result?.facet ?? node.community, conceptAffinities: result?.conceptAffinities || node.topicAffinities, contextScore: result?.contextScore };
+      const result = byFile.get(node.id), generation = generationByFile.get(node.id), subtopic = facets.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance, community = mapMode === "topics" && subtopic ? subtopic.facet : node.community, communityMembership = subtopic ? Number(subtopic.affinities?.[subtopic.facet] || 0) : Number(node.communityMembership || 0);
+      return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance, fileScale: scales.get(node.id) ?? 0.35, facet: subtopic?.facet ?? result?.facet ?? node.community, community, communityMembership: mapMode === "topics" ? communityMembership : node.communityMembership, communityLabel: mapMode === "topics" ? subtopic?.label || "" : node.communityLabel, communityLabelConfidence: mapMode === "topics" ? Number(subtopic?.confidence || 0) : node.communityLabelConfidence, conceptAffinities: subtopic?.affinities || result?.conceptAffinities || node.topicAffinities, topicAffinities: mapMode === "topics" && subtopic ? subtopic.affinities : node.topicAffinities, contextScore: result?.contextScore };
     }), layout = await plugin6.search.multiRelationalLayout(query, nodes, lens === "arguments" ? relationships : /* @__PURE__ */ new Map(), { magic: plugin6.settings.magicGraphEnabled, lens, mapMode });
     for (const node of nodes) {
       const target = layout.get(node.id);
@@ -73838,7 +73857,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   topicCommunityGroups(width, height) {
     if (this.mapGroupingMode !== "topics") return [];
-    const tuning = this.tuning || MAP_TUNING_DEFAULTS, threshold = Number(tuning.communityMembership || 0.42), minimum = Math.max(2, Number(tuning.communityMinSize || 3)), visible = this.nodes.filter((node) => node.visibility > 0.08 && (!this.hasQuery || this.pendingQuery || node.matched) && Number(node.communityMembership || 0) >= threshold), groups = /* @__PURE__ */ new Map();
+    const tuning = this.tuning || MAP_TUNING_DEFAULTS, threshold = this.hasQuery ? 0.01 : Number(tuning.communityMembership || 0.42), minimum = Math.max(2, Number(tuning.communityMinSize || 3)), visible = this.nodes.filter((node) => node.visibility > 0.08 && (!this.hasQuery || this.pendingQuery || node.matched) && Number(node.communityMembership || 0) >= threshold), groups = /* @__PURE__ */ new Map();
     for (const node of visible) {
       const values = groups.get(node.community) || [];
       const [x, y] = this.coordinates(node, width, height);
@@ -73847,27 +73866,46 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     return [...groups].filter(([, values]) => values.length >= minimum).map(([id2, values]) => ({ id: id2, values, label: values.find((value) => value.node.communityLabel)?.node.communityLabel || "", confidence: Math.max(...values.map((value) => Number(value.node.communityLabelConfidence || 0))) }));
   }
+  communityHull(points, padding) {
+    const samples = points.flatMap((point) => Array.from({ length: 12 }, (_2, index3) => {
+      const angle = index3 / 12 * Math.PI * 2;
+      return { x: point.x + Math.cos(angle) * padding, y: point.y + Math.sin(angle) * padding };
+    })).sort((a2, b) => a2.x - b.x || a2.y - b.y), cross = (origin, a2, b) => (a2.x - origin.x) * (b.y - origin.y) - (a2.y - origin.y) * (b.x - origin.x), half = (values) => {
+      const hull = [];
+      for (const point of values) {
+        while (hull.length >= 2 && cross(hull[hull.length - 2], hull[hull.length - 1], point) <= 0) hull.pop();
+        hull.push(point);
+      }
+      return hull;
+    }, lower = half(samples), upper = half(samples.slice().reverse());
+    lower.pop();
+    upper.pop();
+    return [...lower, ...upper];
+  }
+  paintSmoothCommunityHull(ctx, hull) {
+    if (hull.length < 3) return;
+    const midpoint = (a2, b) => ({ x: (a2.x + b.x) / 2, y: (a2.y + b.y) / 2 }), start2 = midpoint(hull[hull.length - 1], hull[0]);
+    ctx.beginPath();
+    ctx.moveTo(start2.x, start2.y);
+    for (let index3 = 0; index3 < hull.length; index3++) {
+      const point = hull[index3], next = hull[(index3 + 1) % hull.length], end2 = midpoint(point, next);
+      ctx.bezierCurveTo(point.x, point.y, point.x, point.y, end2.x, end2.y);
+    }
+    ctx.closePath();
+  }
   paintTopicCommunities(ctx, width, height, colors2) {
-    const groups = this.topicCommunityGroups(width, height), tuning = this.tuning || MAP_TUNING_DEFAULTS, step = 7, columns = Math.ceil(width / step) + 1, rows = Math.ceil(height / step) + 1, radius = 22 * Math.max(0.5, Math.min(2, Number(tuning.boundaryPadding || 1)));
+    const groups = this.topicCommunityGroups(width, height), tuning = this.tuning || MAP_TUNING_DEFAULTS, padding = 20 * Math.max(0.5, Math.min(2, Number(tuning.boundaryPadding || 1)));
     this.communityLabelsForDraw = [];
     for (const group of groups) {
-      const values = new Float32Array(columns * rows), reach = radius * 2.6, divisor = 2 * radius * radius;
-      for (const point of group.values) {
-        const left = Math.max(0, Math.floor((point.x - reach) / step)), right = Math.min(columns - 1, Math.ceil((point.x + reach) / step)), top = Math.max(0, Math.floor((point.y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((point.y + reach) / step));
-        for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
-          const dx = column * step - point.x, dy = row * step - point.y;
-          values[row * columns + column] += Math.exp(-(dx * dx + dy * dy) / divisor);
-        }
-      }
-      const hue = group.values.find((value) => Number.isFinite(value.node.topicHue))?.node.topicHue, color = this.options.semanticColors !== false && Number.isFinite(hue) ? `hsl(${hue} 48% 62%)` : colors2.muted;
-      this.traceDensityLevel(ctx, { values, columns, rows, step }, 0.34);
+      const hull = this.communityHull(group.values, padding), hue = group.values.find((value) => Number.isFinite(value.node.topicHue))?.node.topicHue, color = this.options.semanticColors !== false && Number.isFinite(hue) ? `hsl(${hue} 48% 62%)` : colors2.muted;
+      this.paintSmoothCommunityHull(ctx, hull);
       ctx.strokeStyle = color;
       ctx.globalAlpha = 0.3;
       ctx.lineWidth = 1.05;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.stroke();
-      const weight = group.values.reduce((sum, value) => sum + Number(value.node.communityMembership || 0), 0) || group.values.length, x = group.values.reduce((sum, value) => sum + value.x * Number(value.node.communityMembership || 0), 0) / weight, y = group.values.reduce((sum, value) => sum + value.y * Number(value.node.communityMembership || 0), 0) / weight;
+      const weight = group.values.reduce((sum, value) => sum + Math.max(0.01, Number(value.node.communityMembership || 0)), 0), x = group.values.reduce((sum, value) => sum + value.x * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight, y = group.values.reduce((sum, value) => sum + value.y * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight;
       if (group.label) this.communityLabelsForDraw.push({ x, y, text: group.label, color, confidence: group.confidence });
     }
     ctx.globalAlpha = 1;
@@ -74730,6 +74768,7 @@ var GraphView = class extends ItemView {
     this.searchVersion = 0;
     this.loadVersion = 0;
     this.results = [];
+    this.resultsCollapsed = true;
     this.baseNodes = [];
     this.baseEdges = [];
     this.baseRoads = [];
@@ -74881,7 +74920,8 @@ var GraphView = class extends ItemView {
     }
     this.map.beginQuery(query, true);
     this.map.setTitle(`Searching \u201C${query}\u201D\u2026`);
-    this.setResultsCollapsed(false);
+    this.resultsPanel.toggle(!this.resultsCollapsed);
+    this.reopenButton.toggle(this.resultsCollapsed);
     this.resultList.empty();
     this.resultList.createDiv({ cls: "gib-graph-results-empty", text: "Searching\u2026" });
     this.resultStatus.textContent = "";
@@ -74956,10 +74996,7 @@ var GraphView = class extends ItemView {
   }
   focusResult(file) {
     const item = [...this.resultList.querySelectorAll(".gib-graph-result")].find((value) => value.dataset.gibFile === file);
-    if (item) {
-      this.setResultsCollapsed(false);
-      item.scrollIntoView({ block: "nearest" });
-    }
+    if (item && !this.resultsCollapsed) item.scrollIntoView({ block: "nearest" });
   }
   async openFile(filePath) {
     const file = this.app.vault.getAbstractFileByPath(filePath);
