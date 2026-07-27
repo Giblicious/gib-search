@@ -70869,12 +70869,21 @@ function sampleEvenly(items, maximum) {
   if (items.length <= maximum) return items;
   return Array.from({ length: maximum }, (_2, index3) => items[Math.round(index3 * (items.length - 1) / (maximum - 1))]);
 }
-function topChunkSimilarity(first, second) {
-  const scores = [];
-  for (const a2 of first || []) for (const b of second || []) scores.push(dot(a2, b));
-  scores.sort((a2, b) => b - a2);
-  const weights = [0.55, 0.3, 0.15], count = Math.min(weights.length, scores.length), total = weights.slice(0, count).reduce((sum, value) => sum + value, 0);
-  return count ? scores.slice(0, count).reduce((sum, value, index3) => sum + value * weights[index3], 0) / total : -1;
+function contentProfileSimilarity(first, second) {
+  if (!first?.length || !second?.length) return -1;
+  const directional = (source, target) => {
+    let total = 0, weights = 0;
+    for (const passage of source) {
+      const best = Math.max(...target.map((other) => dot(passage.vector, other.vector)));
+      total += best * passage.weight;
+      weights += passage.weight;
+    }
+    return total / Math.max(1e-3, weights);
+  }, coverage = (directional(first, second) + directional(second, first)) / 2, strongest = [];
+  for (const a2 of first) for (const b of second) strongest.push({ score: dot(a2.vector, b.vector), weight: Math.sqrt(a2.weight * b.weight) });
+  strongest.sort((a2, b) => b.score * b.weight - a2.score * a2.weight);
+  const selected = strongest.slice(0, 3), peak = selected.reduce((sum, item) => sum + item.score * item.weight, 0) / Math.max(1e-3, selected.reduce((sum, item) => sum + item.weight, 0));
+  return Math.max(-1, Math.min(1, coverage * 0.72 + peak * 0.28));
 }
 function stripFrontmatter(content) {
   if (!content.startsWith("---")) return content;
@@ -71089,6 +71098,7 @@ var init_mobile_runtime = __esm({
         this.spellingByLength = /* @__PURE__ */ new Map();
         this.starfieldCache = null;
         this.topicBasisCache = null;
+        this.contentProfileCache = null;
         this.relationCache = /* @__PURE__ */ new Map();
         this.relationPipe = null;
         this.relationModelPromise = null;
@@ -71465,6 +71475,7 @@ var init_mobile_runtime = __esm({
         this.resultCache.clear();
         this.starfieldCache = null;
         this.topicBasisCache = null;
+        this.contentProfileCache = null;
         await this.databasePut({ meta: this.meta, vectors: packed.buffer, highlightVectors: packedHighlights.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
         this.refreshLexical();
         this.refreshHighlightPhraseCache();
@@ -71692,6 +71703,8 @@ var init_mobile_runtime = __esm({
           this.queryCache.clear();
           this.resultCache.clear();
           this.starfieldCache = null;
+          this.topicBasisCache = null;
+          this.contentProfileCache = null;
           this.refreshLexical();
           this.enabled = true;
           this.cancelRequested = false;
@@ -71855,16 +71868,42 @@ var init_mobile_runtime = __esm({
         }
         return groups;
       }
-      filePassageVectors(files = null, maximum = 8) {
-        const requested = files ? new Set(files) : null, groups = /* @__PURE__ */ new Map();
-        this.meta.forEach((item, index3) => {
-          if (requested && !requested.has(item.file) || !this.vectors[index3]) return;
-          const values = groups.get(item.file) || [];
-          values.push(this.vectors[index3]);
-          groups.set(item.file, values);
-        });
-        for (const [file, values] of groups) groups.set(file, sampleEvenly(values, maximum));
-        return groups;
+      vaultContentProfiles(files = null, maximum = 8) {
+        const signature = `${this.meta.length}:${this.vectors.length}:${this.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}`;
+        if (!this.contentProfileCache || this.contentProfileCache.signature !== signature) {
+          const center = Float32Array.from(this.topicBasis().center), centerNorm = Math.sqrt(dot(center, center)) || 1;
+          for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
+          const fileResiduals = new Map([...this.fileVectors()].map(([file, entry]) => [file, residualVector(entry.vector, center)])), passages = this.meta.map((item, index3) => this.vectors[index3] ? { file: item.file, vector: residualVector(this.vectors[index3], center), commonness: 0, weight: 1 } : null).filter(Boolean);
+          for (const passage of passages) {
+            const scores = [...fileResiduals].filter(([file]) => file !== passage.file).map(([, vector]) => dot(passage.vector, vector)).sort((a2, b) => b - a2).slice(0, 8);
+            passage.commonness = scores.reduce((sum, value) => sum + value, 0) / Math.max(1, scores.length);
+          }
+          const ranked = passages.slice().sort((a2, b) => a2.commonness - b.commonness), divisor = Math.max(1, ranked.length - 1);
+          ranked.forEach((passage, index3) => {
+            passage.weight = 0.25 + (1 - index3 / divisor) * 0.75;
+          });
+          const grouped = /* @__PURE__ */ new Map();
+          for (const passage of passages) {
+            const values = grouped.get(passage.file) || [];
+            values.push(passage);
+            grouped.set(passage.file, values);
+          }
+          const profiles = /* @__PURE__ */ new Map();
+          for (const [file, values] of grouped) {
+            const remaining = values.slice(), selected = [];
+            while (remaining.length && selected.length < maximum) {
+              remaining.sort((a2, b) => {
+                const diversity = (item) => selected.length ? 1 - Math.max(...selected.map((other) => dot(item.vector, other.vector))) : 1, first = a2.weight * 0.72 + diversity(a2) * 0.28, second = b.weight * 0.72 + diversity(b) * 0.28;
+                return second - first;
+              });
+              selected.push(remaining.shift());
+            }
+            profiles.set(file, selected.map(({ vector, weight }) => ({ vector, weight })));
+          }
+          this.contentProfileCache = { signature, profiles };
+        }
+        const requested = files ? new Set(files) : null;
+        return requested ? new Map([...this.contentProfileCache.profiles].filter(([file]) => requested.has(file))) : this.contentProfileCache.profiles;
       }
       fileEntities(files = null) {
         const requested = files ? new Set(files) : null, groups = /* @__PURE__ */ new Map();
@@ -72033,6 +72072,7 @@ var init_mobile_runtime = __esm({
         const basis = this.topicBasis(), trimmed = String(query || "").trim(), centerFile = String(options.centerFile || ""), fileCenter = centerFile ? this.fileVectors([centerFile]).get(centerFile)?.vector : null, vaultCentered = Boolean(options.vaultCenter) && !trimmed && !fileCenter, conditioned = Boolean(trimmed || fileCenter || vaultCentered);
         let center = fileCenter ? Float32Array.from(fileCenter) : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
         if (!fileCenter && !trimmed) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
+        const contentProfiles = vaultCentered ? this.vaultContentProfiles(files) : null;
         const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
         for (const entities of entitySets.values()) for (const entity2 of entities) frequency.set(entity2, (frequency.get(entity2) || 0) + 1);
         const entitySimilarity = (first, second) => {
@@ -72053,14 +72093,14 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && !vaultCentered && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = vaultCentered ? { semantic: 0.18, residual: 0.74, entity: 0.08, angular: 0, community: 0, relation: 0 } : { relevance: { semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = vaultCentered ? { content: 0.72, semantic: 0.06, residual: 0.18, entity: 0.04, angular: 0, community: 0, relation: 0 } : { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
           distances[index3][0] = value;
         }
         for (let first = 0; first < entries.length; first++) for (let second = first + 1; second < entries.length; second++) {
-          const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? conceptTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
+          const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), content = vaultCentered ? Math.sqrt(Math.max(0, (1 - contentProfileSimilarity(contentProfiles.get(a2.id), contentProfiles.get(b.id))) / 2)) : semantic, residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? conceptTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.content * content ** 2 + weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
           distances[row][column] = distance;
           distances[column][row] = distance;
         }
@@ -72123,7 +72163,7 @@ var init_mobile_runtime = __esm({
         const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))], trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18;
         const signature = `${this.meta.length}:${this.vectors.length}:${vaultMode ? "chunks" : "files"}:${requested.join("\0")}`;
         if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
-          const vectors = this.fileVectors(requested), passages = vaultMode ? this.filePassageVectors(requested) : null, entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
+          const vectors = this.fileVectors(requested), profiles = vaultMode ? this.vaultContentProfiles(requested) : null, entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
           for (const entities of entitySets2.values()) for (const entity2 of entities) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
           const entityAffinity = (first, second) => {
             const a2 = entitySets2.get(first) || /* @__PURE__ */ new Set(), b = entitySets2.get(second) || /* @__PURE__ */ new Set();
@@ -72139,7 +72179,7 @@ var init_mobile_runtime = __esm({
             }
             return shared / Math.max(1e-3, Math.sqrt(aWeight * bWeight));
           };
-          const neighbors = entries2.map((entry, first) => entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: vaultMode ? topChunkSimilarity(passages.get(entry.id), passages.get(other.id)) : dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8)), directed = neighbors.map((list4) => {
+          const neighbors = entries2.map((entry, first) => entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: vaultMode ? contentProfileSimilarity(profiles.get(entry.id), profiles.get(other.id)) : dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8)), directed = neighbors.map((list4) => {
             const floor = Number(list4.at(-1)?.score || 0), ceiling = Number(list4[0]?.score || 1), spread = Math.max(0.02, ceiling - floor);
             return new Map(list4.map((item) => [item.index, { ...item, affinity: Math.max(1e-3, (item.score - floor) / spread) * 0.82 + item.entityScore * 0.18 }]));
           }), edges2 = [], seen2 = /* @__PURE__ */ new Set(), incident = /* @__PURE__ */ new Set();
