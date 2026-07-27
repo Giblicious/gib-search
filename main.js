@@ -70413,6 +70413,10 @@ __export(mobile_runtime_exports, {
   buildHighlightCandidates: () => buildHighlightCandidates,
   conceptLabelCandidates: () => conceptLabelCandidates
 });
+function isTemporalConceptLabel(source) {
+  const value = cleanText(source).toLowerCase(), words = value.match(/[\p{L}\p{N}]+/gu) || [];
+  return !value || /(?:^|\D)(?:19|20)\d{2}(?:\D|$)/.test(value) || /\b\d{1,4}[-/.]\d{1,2}(?:[-/.]\d{1,4})?\b/.test(value) || words.some((word) => TEMPORAL_LABEL_WORDS.has(word)) || words.length > 0 && words.every((word) => /^\d+(?:st|nd|rd|th)?$/.test(word));
+}
 function basename(file) {
   return String(file).split("/").pop().replace(/\.(?:md|txt|markdown)$/i, "");
 }
@@ -71054,12 +71058,13 @@ function indexedHighlightCandidates(field, source, maximum) {
   return results;
 }
 function conceptLabelCandidates(source, query = "", field = "body") {
+  if (field === "filename" || isTemporalConceptLabel(source)) return [];
   const anchors = queryAnchors(query), candidates = indexedHighlightCandidates(field, source, field === "filename" ? 8 : 36), unique2 = /* @__PURE__ */ new Map();
   for (const candidate of candidates) {
     if (!candidate.hasNoun || candidate.hasVerb) continue;
     const words = sentenceWords(candidate.phrase), content = words.filter((word) => !word.stop), lemmas = content.map((word) => word.lemma);
     if (!lemmas.length) continue;
-    const temporal = content.some((word) => /^(?:\d{1,2}(?:st|nd|rd|th)?[- ]?century|\d{3,4}s?)$/i.test(word.text));
+    const temporal = isTemporalConceptLabel(candidate.phrase) || content.some((word) => /^(?:\d{1,2}(?:st|nd|rd|th)?[- ]?century|\d{3,4}s?)$/i.test(word.text));
     const head = lemmas.at(-1);
     if (temporal || GENERIC_CONCEPTS.has(head) || GENERIC_DEMOGRAPHICS.has(head)) continue;
     const key = lemmas.join(" "), queryCoverage = lemmas.filter((word) => anchors.has(word)).length / lemmas.length, novelty = queryCoverage >= 1 ? 0.38 : queryCoverage > 0 ? 0.82 : 1, value = { key, phrase: candidate.phrase, quality: Number(candidate.quality || 0) + (field === "filename" ? 0.08 : 0), novelty };
@@ -71086,7 +71091,7 @@ function buildHighlightCandidates(file, chunk) {
     return true;
   });
 }
-var MODEL_ID, RELATION_MODEL_ID, DIMENSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, IRREGULAR_LEMMAS, MobileSearchRuntime;
+var MODEL_ID, RELATION_MODEL_ID, DIMENSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, IRREGULAR_LEMMAS, MobileSearchRuntime;
 var init_mobile_runtime = __esm({
   "src/mobile-runtime.js"() {
     init_transformers_web();
@@ -71101,6 +71106,7 @@ var init_mobile_runtime = __esm({
     STOP_WORDS = /* @__PURE__ */ new Set(["a", "about", "an", "and", "are", "as", "at", "be", "because", "been", "being", "between", "but", "by", "can", "could", "do", "does", "for", "from", "had", "has", "have", "how", "i", "in", "into", "is", "it", "its", "may", "might", "more", "my", "not", "of", "on", "or", "our", "out", "over", "she", "so", "than", "that", "the", "their", "them", "then", "they", "this", "those", "through", "to", "under", "up", "vs", "was", "we", "were", "what", "when", "where", "which", "while", "who", "with", "without", "would", "you", "your"]);
     GENERIC_CONCEPTS = /* @__PURE__ */ new Set(["answer", "concept", "example", "fact", "idea", "kind", "part", "point", "question", "section", "thing", "thought", "type", "way"]);
     GENERIC_DEMOGRAPHICS = /* @__PURE__ */ new Set(["adult", "female", "male", "man", "person", "woman"]);
+    TEMPORAL_LABEL_WORDS = /* @__PURE__ */ new Set(["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "today", "tomorrow", "yesterday"]);
     IRREGULAR_LEMMAS = /* @__PURE__ */ new Map([["felt", "feel"], ["feels", "feel"], ["feelings", "feel"], ["children", "child"], ["people", "person"], ["men", "man"], ["women", "woman"]]);
     MobileSearchRuntime = class {
       constructor(plugin6) {
@@ -71976,6 +71982,7 @@ var init_mobile_runtime = __esm({
           for (const passage of selected) {
             const item = this.meta[passage.index], vectors = this.highlightVectors[passage.index] || [];
             (item.highlightCandidates || []).forEach((candidate, candidateIndex) => {
+              if (candidate.field === "filename") return;
               const vector = vectors[candidateIndex];
               if (!vector?.length) return;
               const accepted = conceptLabelCandidates(candidate.phrase, query, candidate.field).find((value2) => value2.phrase.toLowerCase() === candidate.phrase.trim().toLowerCase());
@@ -72045,7 +72052,7 @@ var init_mobile_runtime = __esm({
           const centroid = semanticCentroids.get(community), otherCentroids = [...semanticCentroids].filter(([id2]) => id2 !== community).map(([, vector]) => vector), ranked = [...candidates.values()].map((candidate) => {
             const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), memberCoverage = members.reduce((sum, file) => sum + Math.max(0, Math.min(1, (dotHighlight(vectors.get(file).vector, candidate.vector) + 1) / 2)), 0) / Math.max(1, members.length), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.5)), grounded = Math.sqrt(candidate.files.size / Math.max(1, members.length)), quality = Math.min(1, candidate.quality / 0.18), score = candidate.novelty * (centrality * 0.42 + memberCoverage * 0.25 + distinction * 0.2 + grounded * 0.08 + quality * 0.05);
             return { ...candidate, score, centrality, memberCoverage, distinction };
-          }).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase)), best = ranked[0], runnerUp = ranked[1], margin = Number(best?.score || 0) - Number(runnerUp?.score || 0), confidence = best && best.score >= 0.56 && (margin >= 0.018 || best.files.size > 1) ? Math.max(0, Math.min(1, (best.score - 0.46) * 1.7 + margin * 2 + Math.min(0.14, best.files.size / members.length * 0.14))) : 0, fallbackLabel = best && String(best.phrase).split(/\s+/).length <= 4 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
+          }).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase)), best = ranked[0], runnerUp = ranked[1], margin = Number(best?.score || 0) - Number(runnerUp?.score || 0), supported = Number(best?.files?.size || 0) >= Math.min(2, members.length), confidence = best && supported && best.score >= 0.56 && (margin >= 0.018 || best.files.size > 1) ? Math.max(0, Math.min(1, (best.score - 0.46) * 1.7 + margin * 2 + Math.min(0.14, best.files.size / members.length * 0.14))) : 0, fallbackLabel = best && supported && best.score >= 0.42 && !isTemporalConceptLabel(best.phrase) && String(best.phrase).split(/\s+/).length <= 4 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
           labels.set(community, { label: confidence >= 0.44 ? fallbackLabel : "", fallbackLabel, confidence });
         }
         return new Map(entries.map((entry) => {
@@ -72128,7 +72135,7 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && !vaultCentered && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), lensWeights = { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, link: 0, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, link: 0, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, link: 0, relation: 0 } }[lens], topicalWeights = lens === "arguments" ? { content: 0, semantic: 0.1, residual: 0.14, entity: 0.04, angular: 0.04, community: 0.48, link: 0, relation: 0.2 } : { content: 0, semantic: 0.12, residual: 0.18, entity: 0.05, angular: 0.05, community: 0.6, link: 0, relation: 0 }, weights = vaultCentered ? topicMode ? { content: 0.38, semantic: 0.03, residual: 0.08, entity: 0.03, angular: 0, community: 0.48, link: 0, relation: 0 } : { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, link: 0, relation: 0 } : topicMode ? topicalWeights : lensWeights;
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), lensWeights = { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, link: 0, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, link: 0, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, link: 0, relation: 0 } }[lens], topicalWeights = lens === "arguments" ? { content: 0, semantic: 0.1, residual: 0.14, entity: 0.04, angular: 0.04, community: 0.48, link: 0, relation: 0.2 } : { content: 0, semantic: 0.12, residual: 0.18, entity: 0.05, angular: 0.05, community: 0.6, link: 0, relation: 0 }, weights = vaultCentered ? topicMode ? { content: 0.27, semantic: 0.03, residual: 0.06, entity: 0.04, angular: 0, community: 0.6, link: 0, relation: 0 } : { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, link: 0, relation: 0 } : topicMode ? topicalWeights : lensWeights;
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
@@ -72144,6 +72151,27 @@ var init_mobile_runtime = __esm({
         }
         const layout = classicalDistanceLayout(ids, distances, conditioned ? layoutTopics : topics);
         layout.delete("__center__");
+        if (vaultCentered && topicMode) {
+          const groups = /* @__PURE__ */ new Map();
+          for (const node of values) {
+            const point = layout.get(node.id);
+            if (!point) continue;
+            const members = groups.get(node.community) || [];
+            members.push({ node, point });
+            groups.set(node.community, members);
+          }
+          for (const members of groups.values()) {
+            if (members.length < 3) continue;
+            const strong = members.filter(({ node }) => Number(node.communityMembership || 0) >= 0.34);
+            if (strong.length < 2) continue;
+            const weight = strong.reduce((sum, value) => sum + Number(value.node.communityMembership || 0) ** 2, 0) || 1, centerX = strong.reduce((sum, value) => sum + value.point.x * Number(value.node.communityMembership || 0) ** 2, 0) / weight, centerY = strong.reduce((sum, value) => sum + value.point.y * Number(value.node.communityMembership || 0) ** 2, 0) / weight;
+            for (const { node, point } of members) {
+              const membership = Number(node.communityMembership || 0), pull = Math.max(0, Math.min(0.34, (membership - 0.28) / 0.72 * 0.34));
+              point.x += (centerX - point.x) * pull;
+              point.y += (centerY - point.y) * pull;
+            }
+          }
+        }
         if (conditioned) {
           const primaryEntries = entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1), positioned = /* @__PURE__ */ new Map();
           for (const entry of primaryEntries) {
@@ -72226,8 +72254,8 @@ var init_mobile_runtime = __esm({
           }
           const otherCentroids = [...centroids].filter(([other]) => other !== id2).map(([, vector]) => vector), ranked = [...candidates.values()].map((candidate) => {
             const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.4)), coverage = Math.min(1, candidate.files.size / Math.max(1, members.length)), quality = Math.min(1, Number(candidate.quality || 0) / 0.18), score = centrality * 0.5 + distinction * 0.27 + coverage * 0.13 + quality * 0.1;
-            return { phrase: candidate.phrase, score };
-          }).sort((a2, b) => b.score - a2.score || a2.phrase.localeCompare(b.phrase)), best = ranked[0], margin = Number(best?.score || 0) - Number(ranked[1]?.score || 0), confidence = best ? Math.max(0, Math.min(1, best.score * 0.82 + margin * 1.8)) : 0, fallbackLabel = best && String(best.phrase).split(/\s+/).length <= 4 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
+            return { phrase: candidate.phrase, score, files: candidate.files };
+          }).sort((a2, b) => b.score - a2.score || a2.phrase.localeCompare(b.phrase)), best = ranked[0], margin = Number(best?.score || 0) - Number(ranked[1]?.score || 0), supported = Number(best?.files?.size || 0) >= Math.min(2, members.length), confidence = best && supported ? Math.max(0, Math.min(1, best.score * 0.82 + margin * 1.8)) : 0, fallbackLabel = best && supported && best.score >= 0.42 && !isTemporalConceptLabel(best.phrase) && String(best.phrase).split(/\s+/).length <= 4 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
           labels.set(id2, { label: confidence >= threshold ? fallbackLabel : "", fallbackLabel, confidence });
         }
         return labels;
@@ -74145,19 +74173,17 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     return groups;
   }
   communityFallbackLabel(values) {
-    const entities = /* @__PURE__ */ new Map(), ignored = /^(?:note|notes|journal|entry|entries|study|thought|thoughts|idea|ideas|topic|topics)$/i;
+    const entities = /* @__PURE__ */ new Map(), ignored = /^(?:note|notes|journal|entry|entries|study|thought|thoughts|idea|ideas|topic|topics|today|tomorrow|yesterday)$/i, temporal = /(?:^|\D)(?:19|20)\d{2}(?:\D|$)|\b\d{1,4}[-/.]\d{1,2}(?:[-/.]\d{1,4})?\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
     for (const value of values) for (const entity3 of value.node.entities || []) {
       const text = String(entity3 || "").trim();
-      if (text.length < 3 || ignored.test(text)) continue;
+      if (text.length < 3 || ignored.test(text) || temporal.test(text)) continue;
       const key = text.toLocaleLowerCase();
-      const item = entities.get(key) || { text, count: 0 };
-      item.count++;
+      const item = entities.get(key) || { text, files: /* @__PURE__ */ new Set() };
+      item.files.add(value.node.id);
       entities.set(key, item);
     }
-    const entity2 = [...entities.values()].sort((first, second) => second.count - first.count || first.text.length - second.text.length || first.text.localeCompare(second.text))[0];
-    if (entity2) return entity2.text.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
-    const representative = [...values].sort((first, second) => Number(second.node.communityMembership || 0) - Number(first.node.communityMembership || 0) || Number(second.node.relevance || 0) - Number(first.node.relevance || 0))[0]?.node, title = String(representative?.label || "").replace(/^\d{4}-\d{2}-\d{2}\s*/, "").trim();
-    return title ? title.split(/\s+/).slice(0, 4).join(" ") : "Related Notes";
+    const entity2 = [...entities.values()].filter((item) => item.files.size >= Math.min(2, values.length)).sort((first, second) => second.files.size - first.files.size || first.text.length - second.text.length || first.text.localeCompare(second.text))[0];
+    return entity2 ? entity2.text.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "Mixed Topic";
   }
   communitySpine(points) {
     if (points.length < 2) return [];
@@ -74185,13 +74211,30 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     return edges;
   }
-  communityBoundaryField(points, padding) {
-    const step = 3, margin = padding * 1.35, left = Math.floor((Math.min(...points.map((point) => point.x)) - margin) / step) * step, top = Math.floor((Math.min(...points.map((point) => point.y)) - margin) / step) * step, right = Math.ceil((Math.max(...points.map((point) => point.x)) + margin) / step) * step, bottom = Math.ceil((Math.max(...points.map((point) => point.y)) + margin) / step) * step, columns = Math.max(3, Math.round((right - left) / step) + 1), rows = Math.max(3, Math.round((bottom - top) / step) + 1), values = new Float32Array(columns * rows), spine = this.communitySpine(points), nodeSigma = padding * 0.54, spineSigma = padding * 0.39;
+  communityCoreIslands(values, padding) {
+    const tuning = this.tuning || MAP_TUNING_DEFAULTS, memberships = values.map((value) => Number(value.node.communityMembership || 0)).sort((a2, b) => a2 - b), floor = Math.max(Number(tuning.communityMembership || 0.42), memberships[Math.floor(memberships.length * 0.35)] || 0), core = values.filter((value) => Number(value.node.communityMembership || 0) >= floor), remaining = new Set(core), islands = [], reach = padding * 2.45;
+    while (remaining.size) {
+      const first = remaining.values().next().value, island = [first], queue = [first];
+      remaining.delete(first);
+      while (queue.length) {
+        const current = queue.shift();
+        for (const candidate of [...remaining]) if (Math.hypot(candidate.x - current.x, candidate.y - current.y) <= reach) {
+          remaining.delete(candidate);
+          island.push(candidate);
+          queue.push(candidate);
+        }
+      }
+      if (island.length >= 2) islands.push(island);
+    }
+    return islands;
+  }
+  communityBoundaryField(points, padding, connect = true) {
+    const step = 3, margin = padding * 1.35, left = Math.floor((Math.min(...points.map((point) => point.x)) - margin) / step) * step, top = Math.floor((Math.min(...points.map((point) => point.y)) - margin) / step) * step, right = Math.ceil((Math.max(...points.map((point) => point.x)) + margin) / step) * step, bottom = Math.ceil((Math.max(...points.map((point) => point.y)) + margin) / step) * step, columns = Math.max(3, Math.round((right - left) / step) + 1), rows = Math.max(3, Math.round((bottom - top) / step) + 1), values = new Float32Array(columns * rows), spine = connect ? this.communitySpine(points) : [], nodeSigma = padding * (connect ? 0.54 : 0.65), spineSigma = padding * 0.39;
     const addGaussian = (x, y, sigma, amplitude) => {
       const reach = sigma * 2.05, firstColumn = Math.max(0, Math.floor((x - reach - left) / step)), lastColumn = Math.min(columns - 1, Math.ceil((x + reach - left) / step)), firstRow = Math.max(0, Math.floor((y - reach - top) / step)), lastRow = Math.min(rows - 1, Math.ceil((y + reach - top) / step)), divisor = 2 * sigma * sigma;
       for (let row = firstRow; row <= lastRow; row++) for (let column = firstColumn; column <= lastColumn; column++) {
         const dx = left + column * step - x, dy = top + row * step - y, index3 = row * columns + column, value = amplitude * Math.exp(-(dx * dx + dy * dy) / divisor);
-        if (value > values[index3]) values[index3] = value;
+        values[index3] = connect ? Math.max(values[index3], value) : Math.min(1.5, values[index3] + value);
       }
     };
     for (const point of points) addGaussian(point.x, point.y, nodeSigma, 1);
@@ -74220,19 +74263,22 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       communityContext.clearRect(0, 0, width, height);
       const groups = this.topicCommunityGroups(width, height), tuning = this.tuning || MAP_TUNING_DEFAULTS, padding = 17 * Math.max(0.5, Math.min(2, Number(tuning.boundaryPadding || 1))), labels = [];
       for (const group of groups) {
-        const field = this.communityBoundaryField(group.values, padding), color = this.options.semanticColors !== false ? `hsl(${group.hue} 58% ${group.lightness}%)` : colors2.muted;
-        communityContext.save();
-        communityContext.translate(field.left, field.top);
-        this.traceDensityLevel(communityContext, field, field.level);
-        communityContext.strokeStyle = color;
-        communityContext.globalAlpha = 0.34;
-        communityContext.lineWidth = 1.1;
-        communityContext.lineCap = "round";
-        communityContext.lineJoin = "round";
-        communityContext.stroke();
-        communityContext.restore();
-        const weight = group.values.reduce((sum, value) => sum + Math.max(0.01, Number(value.node.communityMembership || 0)), 0), x = group.values.reduce((sum, value) => sum + value.x * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight, y = group.values.reduce((sum, value) => sum + value.y * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight;
-        labels.push({ x, y, text: group.label || "Related Notes", color, confidence: group.confidence });
+        const color = this.options.semanticColors !== false ? `hsl(${group.hue} 58% ${group.lightness}%)` : colors2.muted, regions = this.hasQuery ? [group.values] : this.communityCoreIslands(group.values, padding);
+        for (const region of regions) {
+          const field = this.communityBoundaryField(region, padding, this.hasQuery);
+          communityContext.save();
+          communityContext.translate(field.left, field.top);
+          this.traceDensityLevel(communityContext, field, field.level);
+          communityContext.strokeStyle = color;
+          communityContext.globalAlpha = 0.34;
+          communityContext.lineWidth = 1.1;
+          communityContext.lineCap = "round";
+          communityContext.lineJoin = "round";
+          communityContext.stroke();
+          communityContext.restore();
+          const weight = region.reduce((sum, value) => sum + Math.max(0.01, Number(value.node.communityMembership || 0)), 0), x = region.reduce((sum, value) => sum + value.x * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight, y = region.reduce((sum, value) => sum + value.y * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight;
+          labels.push({ x, y, text: group.label || "Mixed Topic", color, confidence: group.confidence });
+        }
       }
       communityContext.globalAlpha = 1;
       this.communityLabelsForDraw = labels;
