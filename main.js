@@ -70869,7 +70869,7 @@ function sampleEvenly(items, maximum) {
   if (items.length <= maximum) return items;
   return Array.from({ length: maximum }, (_2, index3) => items[Math.round(index3 * (items.length - 1) / (maximum - 1))]);
 }
-function contentProfileSimilarity(first, second) {
+function contentProfileSimilarity(first, second, coverageWeight = 0.72) {
   if (!first?.length || !second?.length) return -1;
   const directional = (source, target) => {
     let total = 0, weights = 0;
@@ -70882,8 +70882,8 @@ function contentProfileSimilarity(first, second) {
   }, coverage = (directional(first, second) + directional(second, first)) / 2, strongest = [];
   for (const a2 of first) for (const b of second) strongest.push({ score: dot(a2.vector, b.vector), weight: Math.sqrt(a2.weight * b.weight) });
   strongest.sort((a2, b) => b.score * b.weight - a2.score * a2.weight);
-  const selected = strongest.slice(0, 3), peak = selected.reduce((sum, item) => sum + item.score * item.weight, 0) / Math.max(1e-3, selected.reduce((sum, item) => sum + item.weight, 0));
-  return Math.max(-1, Math.min(1, coverage * 0.72 + peak * 0.28));
+  const selected = strongest.slice(0, 3), peak = selected.reduce((sum, item) => sum + item.score * item.weight, 0) / Math.max(1e-3, selected.reduce((sum, item) => sum + item.weight, 0)), blend = Math.max(0, Math.min(1, Number(coverageWeight)));
+  return Math.max(-1, Math.min(1, coverage * blend + peak * (1 - blend)));
 }
 function stripFrontmatter(content) {
   if (!content.startsWith("---")) return content;
@@ -71869,7 +71869,7 @@ var init_mobile_runtime = __esm({
         return groups;
       }
       vaultContentProfiles(files = null, maximum = 8) {
-        const signature = `${this.meta.length}:${this.vectors.length}:${this.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}`;
+        const tuning = Object.assign({ commonnessSuppression: 0.75, passageDiversity: 0.28 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:${this.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}:${tuning.commonnessSuppression}:${tuning.passageDiversity}`;
         if (!this.contentProfileCache || this.contentProfileCache.signature !== signature) {
           const center = Float32Array.from(this.topicBasis().center), centerNorm = Math.sqrt(dot(center, center)) || 1;
           for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
@@ -71878,9 +71878,9 @@ var init_mobile_runtime = __esm({
             const scores = [...fileResiduals].filter(([file]) => file !== passage.file).map(([, vector]) => dot(passage.vector, vector)).sort((a2, b) => b - a2).slice(0, 8);
             passage.commonness = scores.reduce((sum, value) => sum + value, 0) / Math.max(1, scores.length);
           }
-          const ranked = passages.slice().sort((a2, b) => a2.commonness - b.commonness), divisor = Math.max(1, ranked.length - 1);
+          const ranked = passages.slice().sort((a2, b) => a2.commonness - b.commonness), divisor = Math.max(1, ranked.length - 1), suppression = Math.max(0, Math.min(1, Number(tuning.commonnessSuppression)));
           ranked.forEach((passage, index3) => {
-            passage.weight = 0.25 + (1 - index3 / divisor) * 0.75;
+            passage.weight = 1 - suppression * index3 / divisor;
           });
           const grouped = /* @__PURE__ */ new Map();
           for (const passage of passages) {
@@ -71888,12 +71888,12 @@ var init_mobile_runtime = __esm({
             values.push(passage);
             grouped.set(passage.file, values);
           }
-          const profiles = /* @__PURE__ */ new Map();
+          const profiles = /* @__PURE__ */ new Map(), diversityWeight = Math.max(0, Math.min(1, Number(tuning.passageDiversity)));
           for (const [file, values] of grouped) {
             const remaining = values.slice(), selected = [];
             while (remaining.length && selected.length < maximum) {
               remaining.sort((a2, b) => {
-                const diversity = (item) => selected.length ? 1 - Math.max(...selected.map((other) => dot(item.vector, other.vector))) : 1, first = a2.weight * 0.72 + diversity(a2) * 0.28, second = b.weight * 0.72 + diversity(b) * 0.28;
+                const diversity = (item) => selected.length ? 1 - Math.max(...selected.map((other) => dot(item.vector, other.vector))) : 1, first = a2.weight * (1 - diversityWeight) + diversity(a2) * diversityWeight, second = b.weight * (1 - diversityWeight) + diversity(b) * diversityWeight;
                 return second - first;
               });
               selected.push(remaining.shift());
@@ -72093,14 +72093,14 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && !vaultCentered && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = vaultCentered ? { content: 0.72, semantic: 0.06, residual: 0.18, entity: 0.04, angular: 0, community: 0, relation: 0 } : { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), weights = vaultCentered ? { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, relation: 0 } : { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
           distances[index3][0] = value;
         }
         for (let first = 0; first < entries.length; first++) for (let second = first + 1; second < entries.length; second++) {
-          const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), content = vaultCentered ? Math.sqrt(Math.max(0, (1 - contentProfileSimilarity(contentProfiles.get(a2.id), contentProfiles.get(b.id))) / 2)) : semantic, residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? conceptTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.content * content ** 2 + weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
+          const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), baseContent = vaultCentered ? Math.sqrt(Math.max(0, (1 - contentProfileSimilarity(contentProfiles.get(a2.id), contentProfiles.get(b.id), tuning.passageCoverage)) / 2)) : semantic, content = vaultCentered ? Math.pow(baseContent, Math.max(0.5, Math.min(2, Number(tuning.distanceContrast)))) : baseContent, residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? conceptTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.content * content ** 2 + weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
           distances[row][column] = distance;
           distances[column][row] = distance;
         }
@@ -72161,7 +72161,7 @@ var init_mobile_runtime = __esm({
       }
       async semanticStarfield(query, files = null, focusFiles = []) {
         const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))], trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18;
-        const signature = `${this.meta.length}:${this.vectors.length}:${vaultMode ? "chunks" : "files"}:${requested.join("\0")}`;
+        const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:${vaultMode ? "chunks" : "files"}:${tuning.passageCoverage}:${tuning.commonnessSuppression}:${tuning.passageDiversity}:${requested.join("\0")}`;
         if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
           const vectors = this.fileVectors(requested), profiles = vaultMode ? this.vaultContentProfiles(requested) : null, entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
           for (const entities of entitySets2.values()) for (const entity2 of entities) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
@@ -72179,7 +72179,7 @@ var init_mobile_runtime = __esm({
             }
             return shared / Math.max(1e-3, Math.sqrt(aWeight * bWeight));
           };
-          const neighbors = entries2.map((entry, first) => entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: vaultMode ? contentProfileSimilarity(profiles.get(entry.id), profiles.get(other.id)) : dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8)), directed = neighbors.map((list4) => {
+          const neighbors = entries2.map((entry, first) => entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: vaultMode ? contentProfileSimilarity(profiles.get(entry.id), profiles.get(other.id), tuning.passageCoverage) : dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8)), directed = neighbors.map((list4) => {
             const floor = Number(list4.at(-1)?.score || 0), ceiling = Number(list4[0]?.score || 1), spread = Math.max(0.02, ceiling - floor);
             return new Map(list4.map((item) => [item.index, { ...item, affinity: Math.max(1e-3, (item.score - floor) / spread) * 0.82 + item.entityScore * 0.18 }]));
           }), edges2 = [], seen2 = /* @__PURE__ */ new Set(), incident = /* @__PURE__ */ new Set();
@@ -72321,6 +72321,23 @@ var MODEL_PROFILES = {
 var MODEL_TWEAK_DEFAULTS = {
   bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 }
 };
+var MAP_TUNING_DEFAULTS = { contentWeight: 0.72, residualWeight: 0.18, semanticWeight: 0.06, entityWeight: 0.04, commonnessSuppression: 0.75, passageCoverage: 0.72, passageDiversity: 0.28, distanceContrast: 1, neighborAttraction: 0, collisionSpacing: 1, repulsion: 0, anchorStrength: 1, terrainSpread: 1, terrainContrast: 1 };
+var MAP_TUNING_CONTROLS = [
+  { section: "Meaning", key: "contentWeight", label: "Passage content", min: 0, max: 1, step: 0.01 },
+  { key: "residualWeight", label: "Vault-relative", min: 0, max: 1, step: 0.01 },
+  { key: "semanticWeight", label: "Whole-note", min: 0, max: 1, step: 0.01 },
+  { key: "entityWeight", label: "Named entities", min: 0, max: 0.5, step: 0.01 },
+  { key: "commonnessSuppression", label: "Common-pattern suppression", min: 0, max: 1, step: 0.01 },
+  { key: "passageCoverage", label: "Topic coverage", min: 0, max: 1, step: 0.01 },
+  { key: "passageDiversity", label: "Passage diversity", min: 0, max: 1, step: 0.01 },
+  { key: "distanceContrast", label: "Distance contrast", min: 0.5, max: 2, step: 0.05 },
+  { section: "Physics", key: "neighborAttraction", label: "Neighbor attraction", min: 0, max: 2, step: 0.05 },
+  { key: "collisionSpacing", label: "Collision spacing", min: 0.3, max: 2, step: 0.05 },
+  { key: "repulsion", label: "Background repulsion", min: 0, max: 2, step: 0.05 },
+  { key: "anchorStrength", label: "Layout anchor", min: 0.25, max: 2, step: 0.05 },
+  { section: "Terrain", key: "terrainSpread", label: "Terrain spread", min: 0.5, max: 2, step: 0.05 },
+  { key: "terrainContrast", label: "Height contrast", min: 0.5, max: 2, step: 0.05 }
+];
 var SEARCH_LENSES = {
   relevance: { label: "Relevance", description: "Rank by relevance and reveal the concepts within the results." },
   arguments: { label: "Arguments", description: "Organize results by support, tension, and related argument." },
@@ -72329,7 +72346,7 @@ var SEARCH_LENSES = {
 function validSearchLens(value) {
   return value === "concepts" ? "relevance" : SEARCH_LENSES[value] ? value : "relevance";
 }
-var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
+var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
 function activeIndexDir(plugin6) {
   return path.join(plugin6.pluginDir, "embeddings", MODEL_PROFILES.bge.indexFolder);
 }
@@ -73052,6 +73069,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.roadAnimationFrame = null;
     this.showLinks = options.showLinks !== false;
     this.manualLinkInfluence = options.manualLinkInfluence !== false;
+    this.tuning = Object.assign({}, MAP_TUNING_DEFAULTS, options.tuning || {});
     this.cameraX = 0;
     this.cameraY = 0;
     this.cameraZoom = 1;
@@ -73109,8 +73127,56 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       });
       this.setManualLinkInfluence(this.manualLinkInfluence, false);
     }
+    if (options.onTune) this.setupTuningPanel();
     this.setupViewportControls();
     this.canvas.addEventListener("wheel", (event) => this.wheel(event), { passive: false });
+  }
+  setupTuningPanel() {
+    this.tuneButton = this.headingEl.createEl("button", { cls: "gib-search-map-tune", attr: { type: "button", title: "Tune vault map", "aria-label": "Tune vault map", "aria-expanded": "false" } });
+    this.headingEl.insertBefore(this.tuneButton, this.statusEl);
+    setIcon(this.tuneButton, "sliders-horizontal");
+    this.tuningPanel = this.stage.createDiv({ cls: "gib-search-map-tuning" });
+    this.tuningOpen = false;
+    this.tuningPanel.hide();
+    this.tuningInputs = /* @__PURE__ */ new Map();
+    this.tuningPanel.createDiv({ cls: "gib-search-map-tuning-title", text: "Vault map tuning" });
+    for (const control of MAP_TUNING_CONTROLS) {
+      if (control.section) this.tuningPanel.createDiv({ cls: "gib-search-map-tuning-section", text: control.section });
+      const row = this.tuningPanel.createDiv({ cls: "gib-search-map-tuning-row" }), label = row.createEl("label", { text: control.label }), input = row.createEl("input", { attr: { type: "range", min: String(control.min), max: String(control.max), step: String(control.step), value: String(this.tuning[control.key]) } }), output = row.createEl("output");
+      label.htmlFor = `gib-map-${control.key}`;
+      input.id = `gib-map-${control.key}`;
+      output.textContent = Number(this.tuning[control.key]).toFixed(control.step < 0.05 ? 2 : 1);
+      input.addEventListener("input", () => {
+        this.tuning[control.key] = Number(input.value);
+        output.textContent = Number(input.value).toFixed(control.step < 0.05 ? 2 : 1);
+        this.lastTerrainAt = 0;
+        this.startSimulation(0.58);
+        this.options.onTune({ ...this.tuning }, control.key);
+      });
+      this.tuningInputs.set(control.key, { input, output, control });
+    }
+    const footer = this.tuningPanel.createDiv({ cls: "gib-search-map-tuning-footer" }), reset2 = footer.createEl("button", { text: "Reset", attr: { type: "button" } });
+    reset2.addEventListener("click", () => this.setTuning(MAP_TUNING_DEFAULTS, true, "reset"));
+    for (const event of ["pointerdown", "pointermove", "pointerup", "wheel", "click"]) this.tuningPanel.addEventListener(event, (value) => value.stopPropagation());
+    this.tuneButton.addEventListener("mousedown", (event) => event.preventDefault());
+    this.tuneButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.tuningOpen = !this.tuningOpen;
+      this.tuningPanel.toggle(this.tuningOpen);
+      this.tuneButton.toggleClass("is-active", this.tuningOpen);
+      this.tuneButton.setAttribute("aria-expanded", String(this.tuningOpen));
+    });
+  }
+  setTuning(values, notify = false, key = "reset") {
+    this.tuning = Object.assign({}, MAP_TUNING_DEFAULTS, values || {});
+    for (const [name, view] of this.tuningInputs || []) {
+      view.input.value = String(this.tuning[name]);
+      view.output.textContent = Number(this.tuning[name]).toFixed(view.control.step < 0.05 ? 2 : 1);
+    }
+    this.lastTerrainAt = 0;
+    this.startSimulation(0.72);
+    if (notify) this.options.onTune?.({ ...this.tuning }, key);
   }
   setGenerations(value) {
     this.generations = Math.max(1, Math.min(3, Number(value) || 1));
@@ -73276,11 +73342,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       node.visibility += (node.targetVisibility - node.visibility) * 0.09;
       node.accent += (node.targetAccent - node.accent) * 0.09;
     }
-    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), activeNodes = this.hasQuery && !this.pendingQuery ? foreground : this.nodes;
+    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), activeNodes = this.hasQuery && !this.pendingQuery ? foreground : this.nodes, vaultMode = !this.hasQuery && !this.pendingQuery, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
-      node.vx += (node.layoutX - node.x) * 0.018 * alpha2;
-      node.vy += (node.layoutY - node.y) * 0.018 * alpha2;
+      node.vx += (node.layoutX - node.x) * 0.018 * anchorStrength * alpha2;
+      node.vy += (node.layoutY - node.y) * 0.018 * anchorStrength * alpha2;
     }
     if (this.queryPresence > 0.01 && query !== this.dragging) {
       query.vx += (query.layoutX - query.x) * 0.012 * alpha2;
@@ -73292,7 +73358,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const distance = Math.max(0.018, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const collisionDistance = this.hasQuery ? 0.035 + (a2.fileScale + b.fileScale) * 0.022 : 0.016 + (a2.fileScale + b.fileScale) * 0.012, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.1 * alpha2 : 0, relaxation = this.hasQuery ? -Math.min(12e-4, 8e-6 / (distance * distance)) * alpha2 : 0, force = collision + relaxation;
+      const baseCollision = this.hasQuery ? 0.035 + (a2.fileScale + b.fileScale) * 0.022 : 0.016 + (a2.fileScale + b.fileScale) * 0.012, collisionDistance = baseCollision * (vaultMode ? tuning.collisionSpacing : 1), collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.1 * alpha2 : 0, relaxation = this.hasQuery ? -Math.min(12e-4, 8e-6 / (distance * distance)) * alpha2 : -Math.min(9e-4, 6e-6 / (distance * distance)) * Number(tuning.repulsion || 0) * alpha2, force = collision + relaxation;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -73300,6 +73366,24 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (b !== this.dragging) {
         b.vx -= dx * force;
         b.vy -= dy * force;
+      }
+    }
+    if (vaultMode && Number(tuning.neighborAttraction) > 0) for (const edge of this.activeEdges || []) {
+      if (edge.bridge || edge.entityBridge || Number(edge.overall || 0) < 0.12) continue;
+      const source = this.byId.get(edge.source), target = this.byId.get(edge.target);
+      if (!source || !target) continue;
+      let dx = target.x - source.x, dy = target.y - source.y;
+      const distance = Math.max(0.018, Math.hypot(dx, dy));
+      dx /= distance;
+      dy /= distance;
+      const desired = 0.035 + (1 - Number(edge.overall || 0)) * 0.15, force = Math.tanh((distance - desired) * 4) * 28e-4 * Number(tuning.neighborAttraction) * Number(edge.overall || 0) * alpha2;
+      if (source !== this.dragging) {
+        source.vx += dx * force;
+        source.vy += dy * force;
+      }
+      if (target !== this.dragging) {
+        target.vx -= dx * force;
+        target.vy -= dy * force;
       }
     }
     if (this.manualLinkInfluence && this.roadEdges.length) {
@@ -73377,10 +73461,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     return [width / 2 + (Number(node.x) - this.cameraX) * scale + this.panX, height / 2 + (Number(node.y) - this.cameraY) * scale + this.panY];
   }
   semanticDensityField(width, height) {
-    const step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), heightWeights = new Float32Array(values.length), heightTotals = new Float32Array(values.length), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
+    const tuning = this.tuning || MAP_TUNING_DEFAULTS, step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), heightWeights = new Float32Array(values.length), heightTotals = new Float32Array(values.length), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
       const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
-    })), vaultTerrain = !this.hasQuery && !this.pendingQuery, zoom = Math.max(0.35, this.cameraZoom * this.userZoom), vaultDensityScale = this.hasQuery ? 1 : Math.max(0.48, Math.min(1, Math.sqrt(48 / Math.max(1, visible.length)))), sigma = Math.max(this.hasQuery ? 9 : 11, 27 * zoom * vaultDensityScale), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
+    })), vaultTerrain = !this.hasQuery && !this.pendingQuery, zoom = Math.max(0.35, this.cameraZoom * this.userZoom), vaultDensityScale = this.hasQuery ? 1 : Math.max(0.48, Math.min(1, Math.sqrt(48 / Math.max(1, visible.length)))), sigma = Math.max(this.hasQuery ? 9 : 11, 27 * zoom * vaultDensityScale) * (vaultTerrain ? Number(tuning.terrainSpread || 1) : 1), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
@@ -73389,7 +73473,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       }
     };
     const addHeight = (x, y, radius, visibility, uniqueness) => {
-      const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius, height2 = 0.08 + Math.max(0, Math.min(1, uniqueness)) * 0.92;
+      const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius, height2 = 0.08 + Math.pow(Math.max(0, Math.min(1, uniqueness)), Number(tuning.terrainContrast || 1)) * 0.92;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
         const dx = column * step - x, dy = row * step - y, weight = visibility * gaussian((dx * dx + dy * dy) / divisor), index3 = row * columns + column;
         heightWeights[index3] += weight;
@@ -74121,7 +74205,18 @@ var SemanticSearchModal = class extends SuggestModal {
         this.applyMapState();
       });
     }
-    this.map = new LivingSemanticMapCanvas(panel, this.app, { title: "Search map", generations: this.mapGenerations, showLinks: this.plugin.settings.showWikilinks, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, magicGraph: this.plugin.settings.magicGraphEnabled, semanticColors: this.plugin.settings.graphSemanticColors, onGenerations: async (value) => {
+    this.map = new LivingSemanticMapCanvas(panel, this.app, { title: "Search map", generations: this.mapGenerations, showLinks: this.plugin.settings.showWikilinks, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, magicGraph: this.plugin.settings.magicGraphEnabled, semanticColors: this.plugin.settings.graphSemanticColors, tuning: this.plugin.settings.mapTuning, onTune: (values, key) => {
+      this.plugin.settings.mapTuning = values;
+      window.clearTimeout(this.mapTuneTimer);
+      this.mapTuneTimer = window.setTimeout(async () => {
+        if (["commonnessSuppression", "passageCoverage", "passageDiversity", "reset"].includes(key)) {
+          this.plugin.search.contentProfileCache = null;
+          this.plugin.search.starfieldCache = null;
+        }
+        await this.plugin.save();
+        this.updateMap();
+      }, 180);
+    }, onGenerations: async (value) => {
       this.mapGenerations = value;
       this.plugin.settings.searchMapGenerations = value;
       await this.plugin.save();
@@ -74723,6 +74818,7 @@ module.exports = class GibSearch extends Plugin {
   async onload() {
     const loaded = await this.loadData() || {};
     this.settings = Object.assign({}, DEFAULTS, loaded);
+    this.settings.mapTuning = Object.assign({}, MAP_TUNING_DEFAULTS, loaded.mapTuning || {});
     this.isMobile = Platform.isMobileApp;
     const legacyTweaks = Object.fromEntries(Object.keys(MODEL_TWEAK_DEFAULTS.bge).map((key) => [key, loaded[key] ?? MODEL_TWEAK_DEFAULTS.bge[key]]));
     this.settings.modelTweaks = {
