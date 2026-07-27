@@ -73377,10 +73377,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.targetQueryPresence = hasQuery ? 1 : 0;
     this.queryNode = { id: "__query__", label: center?.label || "Search", isQuery: true, x: previousQuery?.x || 0, y: previousQuery?.y || 0, layoutX: 0, layoutY: 0, vx: previousQuery?.vx || 0, vy: previousQuery?.vy || 0 };
     this.nodes = values.map((value, order) => {
-      const old = previous.get(value.id), angle = stableMapAngle(value.id), normalized = hasQuery ? Math.max(0, Math.min(1, (Number(value.semanticScore || 0) - low) / spread)) : 0.5, relevance = Number.isFinite(Number(value.relevance)) ? Number(value.relevance) : normalized, fileScale = Math.max(0, Math.min(1, Number(value.fileScale ?? 0.35))), targetVisibility = hasQuery ? 0.12 + relevance * 0.88 : 0.38 + fileScale * 0.42;
+      const old = previous.get(value.id), angle = stableMapAngle(value.id), normalized = hasQuery ? Math.max(0, Math.min(1, (Number(value.semanticScore || 0) - low) / spread)) : 0.5, relevance = Number.isFinite(Number(value.relevance)) ? Number(value.relevance) : normalized, fileScale = Math.max(0, Math.min(1, Number(value.fileScale ?? 0.35))), targetVisibility = hasQuery ? 0.12 + relevance * 0.88 : 0.38 + fileScale * 0.42, preserveBackground = Boolean(this.options.preserveBackground);
       const matched = Boolean(value.matched), generation = Math.max(1, Math.min(3, Number(value.generation) || 1)), generationVisibility = generation === 1 ? 0.78 + relevance * 0.22 : generation === 2 ? 0.68 : 0.52;
-      const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64);
-      return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : 0 : targetVisibility, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: old?.vx || 0, vy: old?.vy || 0 };
+      const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64), backgroundVisibility = 0.08 + fileScale * 0.12;
+      return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : preserveBackground ? backgroundVisibility : 0 : targetVisibility, blur: old?.blur ?? 0, targetBlur: hasQuery && !matched && preserveBackground ? 1 : 0, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: old?.vx || 0, vy: old?.vy || 0 };
     });
     const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
@@ -73407,23 +73407,27 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.startSimulation(previous.size ? 0.82 : 1);
     this.updateDetail();
   }
-  beginQuery(label) {
-    if (!this.queryNode || this.hasQuery) return;
+  beginQuery(label, restart = false) {
+    if (!this.queryNode || this.hasQuery && !restart) return;
+    const entering = !this.hasQuery;
     this.hasQuery = true;
     this.pendingQuery = true;
     this.center = { ...this.center || {}, label, hasQuery: true, resultCount: 0 };
     this.queryNode.label = label;
-    const centerX = this.nodes.reduce((sum, node) => sum + node.x, 0) / Math.max(1, this.nodes.length), centerY = this.nodes.reduce((sum, node) => sum + node.y, 0) / Math.max(1, this.nodes.length);
-    this.queryNode.x = centerX;
-    this.queryNode.y = centerY;
+    if (entering) {
+      const centerX = this.nodes.reduce((sum, node) => sum + node.x, 0) / Math.max(1, this.nodes.length), centerY = this.nodes.reduce((sum, node) => sum + node.y, 0) / Math.max(1, this.nodes.length);
+      this.queryNode.x = centerX;
+      this.queryNode.y = centerY;
+    }
     this.queryNode.vx = this.queryNode.vy = 0;
     this.targetQueryPresence = 1;
     for (const node of this.nodes) {
       node.matched = false;
-      node.targetVisibility = 0.38 + node.fileScale * 0.42;
+      node.targetVisibility = 0.3 + node.fileScale * 0.28;
+      node.targetBlur = this.options.preserveBackground ? 0.2 : 0;
       node.targetAccent = 0;
     }
-    this.startSimulation(0.7);
+    this.startSimulation(0.86);
   }
   endQuery() {
     if (!this.queryNode || !this.hasQuery) return;
@@ -73434,6 +73438,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     for (const node of this.nodes) {
       node.matched = false;
       node.targetVisibility = 0.38 + node.fileScale * 0.42;
+      node.targetBlur = 0;
       node.targetAccent = 0;
     }
     this.startSimulation(0.72);
@@ -73444,20 +73449,22 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     for (const node of this.nodes) {
       node.relevance += (node.targetRelevance - node.relevance) * 0.075;
       node.visibility += (node.targetVisibility - node.visibility) * 0.09;
+      node.blur += (node.targetBlur - node.blur) * 0.09;
       node.accent += (node.targetAccent - node.accent) * 0.09;
     }
-    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), activeNodes = this.hasQuery && !this.pendingQuery ? foreground : this.nodes, vaultMode = !this.hasQuery && !this.pendingQuery, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
+    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, collisionNodes = preserveBackground && this.hasQuery && !this.pendingQuery ? foreground : activeNodes, vaultMode = !this.hasQuery && !this.pendingQuery, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
-      node.vx += (node.layoutX - node.x) * 0.018 * anchorStrength * alpha2;
-      node.vy += (node.layoutY - node.y) * 0.018 * anchorStrength * alpha2;
+      const strength = preserveBackground && this.hasQuery && !node.matched ? 35e-4 : 0.018 * anchorStrength;
+      node.vx += (node.layoutX - node.x) * strength * alpha2;
+      node.vy += (node.layoutY - node.y) * strength * alpha2;
     }
     if (this.queryPresence > 0.01 && query !== this.dragging) {
       query.vx += (query.layoutX - query.x) * 0.012 * alpha2;
       query.vy += (query.layoutY - query.y) * 0.012 * alpha2;
     }
-    for (let first = 0; first < activeNodes.length; first++) for (let second = first + 1; second < activeNodes.length; second++) {
-      const a2 = activeNodes[first], b = activeNodes[second];
+    for (let first = 0; first < collisionNodes.length; first++) for (let second = first + 1; second < collisionNodes.length; second++) {
+      const a2 = collisionNodes[first], b = collisionNodes[second];
       let dx = b.x - a2.x, dy = b.y - a2.y;
       const distance = Math.max(0.018, Math.hypot(dx, dy));
       dx /= distance;
@@ -73470,6 +73477,24 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (b !== this.dragging) {
         b.vx -= dx * force;
         b.vy -= dy * force;
+      }
+    }
+    if (preserveBackground && this.hasQuery && this.queryPresence > 0.04) {
+      const repellers = this.pendingQuery ? [query] : [query, ...foreground];
+      for (const node of this.nodes) {
+        if (node.matched || node === this.dragging) continue;
+        let forceX = 0, forceY = 0;
+        for (const source of repellers) {
+          let dx = node.x - source.x, dy = node.y - source.y;
+          const distance = Math.max(0.035, Math.hypot(dx, dy));
+          dx /= distance;
+          dy /= distance;
+          const force = Math.min(0.018, 22e-5 / (distance * distance)) * alpha2;
+          forceX += dx * force;
+          forceY += dy * force;
+        }
+        node.vx += forceX;
+        node.vy += forceY;
       }
     }
     if (vaultMode && Number(tuning.neighborAttraction) > 0) for (const edge of this.activeEdges || []) {
@@ -73573,6 +73598,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         for (const node of this.nodes) {
           node.relevance = node.targetRelevance;
           node.visibility = node.targetVisibility;
+          node.blur = node.targetBlur;
           node.accent = node.targetAccent;
           node.x = node.layoutX;
           node.y = node.layoutY;
@@ -73580,7 +73606,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       }
       this.alpha *= 0.986;
       this.draw();
-      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || this.nodes.some((node) => Math.abs(node.visibility - node.targetVisibility) > 0.015);
+      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || this.nodes.some((node) => Math.abs(node.visibility - node.targetVisibility) > 0.015 || Math.abs(node.blur - node.targetBlur) > 0.03);
       if (this.alpha > 0.01 || this.dragging || transitioning) this.simulationFrame = requestAnimationFrame(tick);
     };
     this.simulationFrame = requestAnimationFrame(tick);
@@ -73867,14 +73893,20 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const labels = [], ordered = this.hasQuery && !this.pendingQuery ? [...this.nodes.filter((node) => !node.matched), ...this.nodes.filter((node) => node.matched)] : this.nodes;
     for (const node of ordered) {
       if (node.visibility < 0.012) continue;
-      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, relationship = focused && !queryFocused ? this.relationships.get(mapEdgeKey(node.id, focused)) : null, related = Number(relationship?.overall || 0), generationScale = node.generation === 1 ? 1 : node.generation === 2 ? 0.86 : 0.74, radius = Math.max(1.1, (2 + node.fileScale * 4.4 + (active ? 1.5 : 0)) * generationScale), focusAlpha = !focused ? 1 : active ? 1 : queryFocused ? 0.38 + node.relevance * 0.62 : 0.18 + related * 0.76, opacity = Math.max(0.01, node.visibility * focusAlpha), semanticColor = this.options.semanticColors !== false && Number.isFinite(node.topicHue) ? `hsl(${node.topicHue} 54% 64%)` : colors2.normal;
-      ctx.globalAlpha = opacity;
+      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, relationship = focused && !queryFocused ? this.relationships.get(mapEdgeKey(node.id, focused)) : null, related = Number(relationship?.overall || 0), generationScale = node.generation === 1 ? 1 : node.generation === 2 ? 0.86 : 0.74, radius = Math.max(1.1, (2 + node.fileScale * 4.4 + (active ? 1.5 : 0)) * generationScale), focusAlpha = !focused ? 1 : active ? 1 : queryFocused ? 0.38 + node.relevance * 0.62 : 0.18 + related * 0.76, opacity = Math.max(0.01, node.visibility * focusAlpha), blur = Math.max(0, Math.min(1, Number(node.blur || 0))), semanticColor = this.options.semanticColors !== false && Number.isFinite(node.topicHue) ? `hsl(${node.topicHue} 54% 64%)` : colors2.normal;
       ctx.fillStyle = node.matched || !this.hasQuery || this.pendingQuery ? semanticColor : colors2.faint;
+      if (blur > 0.04) {
+        ctx.globalAlpha = opacity * blur * 0.22;
+        ctx.beginPath();
+        ctx.arc(x, y, radius + 2.2 * blur, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = opacity * (1 - blur * 0.28);
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();
       if (labelNodes.has(node.id) && (node.matched || !this.hasQuery || this.pendingQuery)) labels.push({ node, x, y, radius, active, opacity });
-      if (node.matched || !this.hasQuery || this.pendingQuery) this.hit.push({ node, x, y, radius: radius + 9 });
+      if (node.matched || !this.hasQuery || this.pendingQuery || this.options.preserveBackground) this.hit.push({ node, x, y, radius: radius + 9 });
     }
     if (this.queryPresence > 0.02) {
       const [queryX, queryY] = this.coordinates(this.queryNode, rect.width, rect.height), active = queryFocused, marker = 4.5 + this.queryMarkerFocus * 1.2, tickInner = marker + 3.5, tickOuter = tickInner + 3 + this.queryMarkerFocus * 1.5;
@@ -74609,16 +74641,20 @@ var GraphView = class extends ItemView {
   constructor(leaf, plugin6) {
     super(leaf);
     this.plugin = plugin6;
-    this.nodes = [];
-    this.edges = [];
-    this.scores = null;
-    this.resize = () => this.draw();
+    this.query = "";
+    this.searchVersion = 0;
+    this.loadVersion = 0;
+    this.results = [];
+    this.baseNodes = [];
+    this.baseEdges = [];
+    this.baseRoads = [];
+    this.mapGroupingMode = validMapGrouping(plugin6.settings.mapGroupingMode);
   }
   getViewType() {
     return GRAPH_VIEW;
   }
   getDisplayText() {
-    return "Gib Search graph";
+    return "Gib Search map";
   }
   getIcon() {
     return "waypoints";
@@ -74626,133 +74662,224 @@ var GraphView = class extends ItemView {
   async onOpen() {
     this.contentEl.empty();
     this.contentEl.addClass("gib-graph-view");
-    const toolbar = this.contentEl.createDiv({ cls: "gib-graph-toolbar" });
-    const input = toolbar.createEl("input", { type: "search", placeholder: "Highlight by meaning\u2026" });
-    const reset2 = toolbar.createEl("button", { text: "Reset" });
-    const status = toolbar.createSpan({ cls: "gib-graph-status", text: "Loading\u2026" });
-    this.canvas = this.contentEl.createEl("canvas", { cls: "gib-graph-canvas" });
-    this.canvas.addEventListener("click", (event) => this.openAt(event));
-    let timer;
-    input.addEventListener("input", () => {
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        this.scores = input.value.trim() ? await this.plugin.search.scores(input.value.trim()) : null;
-        this.draw();
-      }, 250);
+    const mapHost = this.contentEl.createDiv({ cls: "gib-graph-map" });
+    const search = this.contentEl.createDiv({ cls: "gib-graph-search" }), searchIcon = search.createSpan({ cls: "gib-graph-search-icon" });
+    setIcon(searchIcon, "search");
+    this.input = search.createEl("input", { type: "search", placeholder: "Preparing vault map\u2026", attr: { "aria-label": "Search semantic map", disabled: "true" } });
+    this.clearButton = search.createEl("button", { attr: { type: "button", title: "Clear search", "aria-label": "Clear search" } });
+    setIcon(this.clearButton, "x");
+    this.resultsPanel = this.contentEl.createDiv({ cls: "gib-graph-results-panel" });
+    const resultHeader = this.resultsPanel.createDiv({ cls: "gib-graph-results-header" });
+    this.resultTitle = resultHeader.createSpan({ text: "Results" });
+    this.resultStatus = resultHeader.createSpan({ cls: "gib-graph-results-status" });
+    this.collapseButton = resultHeader.createEl("button", { attr: { type: "button", title: "Collapse results", "aria-label": "Collapse results" } });
+    setIcon(this.collapseButton, "panel-left-close");
+    this.resultList = this.resultsPanel.createDiv({ cls: "gib-graph-results-list" });
+    this.resultsPanel.hide();
+    this.contentEl.addClass("is-results-collapsed");
+    this.reopenButton = this.contentEl.createEl("button", { cls: "gib-graph-results-reopen", attr: { type: "button", title: "Show results", "aria-label": "Show results" } });
+    setIcon(this.reopenButton, "panel-left-open");
+    this.reopenButton.hide();
+    this.map = new LivingSemanticMapCanvas(mapHost, this.app, {
+      title: "Vault map",
+      preserveBackground: true,
+      mapGroupingMode: this.mapGroupingMode,
+      showLinks: this.plugin.settings.showWikilinks,
+      manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence,
+      semanticColors: this.plugin.settings.graphSemanticColors,
+      tuning: this.plugin.settings.mapTuning,
+      onMapMode: async (value) => {
+        this.mapGroupingMode = validMapGrouping(value);
+        this.plugin.settings.mapGroupingMode = this.mapGroupingMode;
+        await this.plugin.save();
+        this.query.length >= 3 ? this.runSearch(this.query, true) : this.loadVault();
+      },
+      onTune: (values, key) => {
+        this.plugin.settings.mapTuning = values;
+        window.clearTimeout(this.tuneTimer);
+        this.tuneTimer = window.setTimeout(async () => {
+          if (["commonnessSuppression", "passageCoverage", "passageDiversity", "communitySensitivity", "communityMinSize", "communityLabelSensitivity", "reset"].includes(key)) {
+            this.plugin.search.contentProfileCache = null;
+            this.plugin.search.starfieldCache = null;
+          }
+          await this.plugin.save();
+          this.query.length >= 3 ? this.runSearch(this.query, true) : this.loadVault();
+        }, 180);
+      },
+      onShowLinks: async (value) => {
+        this.plugin.settings.showWikilinks = value;
+        await this.plugin.save();
+      },
+      onManualLinkInfluence: async (value) => {
+        this.plugin.settings.graphManualLinkInfluence = value;
+        await this.plugin.save();
+      },
+      onHover: (file) => this.hoverResult(file),
+      onSelect: (file) => this.focusResult(file),
+      onOpen: (file) => this.openFile(file)
     });
-    reset2.addEventListener("click", () => {
-      input.value = "";
-      this.scores = null;
-      this.draw();
+    this.input.addEventListener("input", () => this.handleQuery(this.input.value));
+    this.clearButton.addEventListener("click", () => {
+      this.input.value = "";
+      this.handleQuery("");
+      this.input.focus();
     });
-    window.addEventListener("resize", this.resize);
+    this.collapseButton.addEventListener("click", () => this.setResultsCollapsed(true));
+    this.reopenButton.addEventListener("click", () => this.setResultsCollapsed(false));
+    await this.loadVault();
+    this.input.disabled = false;
+    this.input.placeholder = "Search the vault by meaning\u2026";
+    this.input.focus();
+  }
+  setResultsCollapsed(value) {
+    this.resultsCollapsed = Boolean(value);
+    this.resultsPanel.toggleClass("is-collapsed", this.resultsCollapsed);
+    this.contentEl.toggleClass("is-results-collapsed", this.resultsCollapsed);
+    this.resultsPanel.toggle(!this.resultsCollapsed);
+    this.reopenButton.toggle(this.resultsCollapsed && this.query.length >= 3);
+    window.setTimeout(() => this.map?.draw(), 0);
+  }
+  indexableFiles() {
+    return this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path));
+  }
+  fileScales(files) {
+    const sizes = files.map((file) => Math.log1p(Number(file.stat?.size || 0))), low = sizes.length ? Math.min(...sizes) : 0, high = sizes.length ? Math.max(...sizes) : 1, spread = Math.max(1e-3, high - low);
+    return new Map(files.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - low) / spread]));
+  }
+  async loadVault() {
+    const version2 = ++this.loadVersion;
+    this.map?.setTitle("Loading vault\u2026");
     try {
-      await this.loadGraph();
-      status.textContent = `${this.nodes.length} notes \xB7 ${this.edges.length} connections`;
-      this.draw();
+      const files = this.indexableFiles(), paths = files.map((file) => file.path), scales = this.fileScales(files), graph = await this.plugin.search.semanticStarfield("", paths);
+      if (version2 !== this.loadVersion || this.query.length >= 3) return;
+      let nodes = graph.nodes.map((node) => ({ ...node, matched: false, generation: 1, relevance: 0.5, fileScale: scales.get(node.id) ?? 0.35, facet: node.community, conceptAffinities: node.topicAffinities }));
+      const layout = await this.plugin.search.multiRelationalLayout("", nodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: "relevance", vaultCenter: true, mapMode: this.mapGroupingMode });
+      if (version2 !== this.loadVersion || this.query.length >= 3) return;
+      nodes = nodes.map((node) => ({ ...node, layoutX: layout.get(node.id)?.x, layoutY: layout.get(node.id)?.y }));
+      this.baseNodes = nodes;
+      this.baseEdges = graph.edges || [];
+      this.baseRoads = manualRoadEdges(this.app, paths);
+      this.map.setTitle(`${this.mapGroupingMode === "topics" ? "Topics" : "Similarity"} \xB7 vault`);
+      this.map.setGraph({ label: "Search", hasQuery: false, resultCount: 0 }, nodes, this.baseEdges, this.baseRoads);
     } catch (error) {
-      status.textContent = error.message;
+      if (version2 === this.loadVersion) this.map?.setTitle(error.message);
     }
   }
-  async loadGraph() {
-    const nodeMap = /* @__PURE__ */ new Map();
-    const edges = [];
-    const hard = /* @__PURE__ */ new Set();
-    const add = (id2) => {
-      if (!nodeMap.has(id2)) nodeMap.set(id2, { id: id2, label: id2.replace(/\.md$/i, "").split("/").pop() });
-    };
-    if (this.plugin.settings.showWikilinks) {
-      for (const [source, targets] of Object.entries(this.app.metadataCache.resolvedLinks || {})) for (const [target, count] of Object.entries(targets)) if (count) {
-        add(source);
-        add(target);
-        const key = [source, target].sort().join("\0");
-        hard.add(key);
-        edges.push({ source, target, hard: true, score: 1 });
+  handleQuery(value) {
+    const query = String(value || "").trim();
+    this.query = query;
+    window.clearTimeout(this.searchTimer);
+    if (query.length < 3) {
+      this.searchVersion++;
+      this.results = [];
+      this.resultsPanel.hide();
+      this.reopenButton.hide();
+      this.contentEl.addClass("is-results-collapsed");
+      if (this.baseNodes.length) {
+        this.map.setTitle(`${this.mapGroupingMode === "topics" ? "Topics" : "Similarity"} \xB7 vault`);
+        this.map.setGraph({ label: "Search", hasQuery: false, resultCount: 0 }, this.baseNodes, this.baseEdges, this.baseRoads);
+      } else this.loadVault();
+      return;
+    }
+    this.map.beginQuery(query, true);
+    this.map.setTitle(`Searching \u201C${query}\u201D\u2026`);
+    this.setResultsCollapsed(false);
+    this.resultList.empty();
+    this.resultList.createDiv({ cls: "gib-graph-results-empty", text: "Searching\u2026" });
+    this.resultStatus.textContent = "";
+    this.searchTimer = window.setTimeout(() => this.runSearch(query), 75);
+  }
+  async runSearch(query, immediate = false) {
+    if (String(query).trim().length < 3) return;
+    if (!immediate) this.map.beginQuery(query, true);
+    const version2 = ++this.searchVersion, tweaks = activeTweaks(this.plugin), limit = Math.max(30, tweaks.topK);
+    try {
+      const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), raw = await runSearch(query, Math.min(240, limit * 5), tweaks.minScore, { scoreWindow: tweaks.scoreWindow, folderPathBoost: this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 20 });
+      if (version2 !== this.searchVersion || query !== this.query) return;
+      const results = groupSearchResults(raw, query, limit), resultFiles = results.map((result) => result.file), graph = await this.plugin.search.semanticStarfield(query, resultFiles, resultFiles), facets = await this.plugin.search.conceptFacets(query, resultFiles);
+      if (version2 !== this.searchVersion || query !== this.query) return;
+      const graphById = new Map(graph.nodes.map((node) => [node.id, node])), scores = results.map((result) => Number(result.score || 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(1e-3, high - low), baseById = new Map(this.baseNodes.map((node) => [node.id, node]));
+      const queryNodes = results.map((result) => {
+        const node = graphById.get(result.file) || { id: result.file, label: result.file.replace(/\.md$/i, "").split("/").pop() }, facet = facets.get(result.file);
+        return { ...node, matched: true, generation: 1, relevance: 0.08 + (Number(result.score || 0) - low) / spread * 0.92, fileScale: baseById.get(result.file)?.fileScale ?? 0.35, facet: facet?.facet ?? node.community, conceptAffinities: facet?.affinities || node.topicAffinities };
+      });
+      const layout = await this.plugin.search.multiRelationalLayout(query, queryNodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: "relevance", mapMode: this.mapGroupingMode });
+      if (version2 !== this.searchVersion || query !== this.query) return;
+      const queryById = new Map(queryNodes.map((node) => [node.id, { ...node, layoutX: layout.get(node.id)?.x, layoutY: layout.get(node.id)?.y }])), merged = this.baseNodes.map((base) => queryById.get(base.id) || { ...base, matched: false, relevance: 0 });
+      this.results = results;
+      this.renderResults();
+      this.map.setTitle(`${results.length} results \xB7 ${this.mapGroupingMode === "topics" ? "Topics" : "Similarity"}`);
+      this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, merged, graph.edges || [], this.baseRoads);
+    } catch (error) {
+      if (version2 === this.searchVersion) {
+        this.resultList.empty();
+        this.resultList.createDiv({ cls: "gib-graph-results-empty", text: error.message });
+        this.map.setTitle(error.message);
       }
     }
-    const semantic = await this.plugin.search.graph(this.plugin.settings.graphK, this.plugin.settings.graphMaxEdges);
-    for (const edge of semantic.edges || []) {
-      const key = [edge.source, edge.target].sort().join("\0");
-      if (hard.has(key)) continue;
-      add(edge.source);
-      add(edge.target);
-      edges.push({ source: edge.source, target: edge.target, score: edge.score, hard: false });
-    }
-    this.nodes = [...nodeMap.values()];
-    this.edges = edges;
-    this.layout(semantic.pcaPositions || {});
   }
-  layout(pca) {
-    const count = Math.max(this.nodes.length, 1);
-    this.nodes.forEach((node, index3) => {
-      const pos = pca[node.id];
-      if (Array.isArray(pos)) {
-        node.x = (Number(pos[0]) + 1) / 2;
-        node.y = (Number(pos[1]) + 1) / 2;
-      } else {
-        const angle = index3 * Math.PI * (3 - Math.sqrt(5));
-        const radius = Math.sqrt(index3 / count) * 0.46;
-        node.x = 0.5 + Math.cos(angle) * radius;
-        node.y = 0.5 + Math.sin(angle) * radius;
+  renderResults() {
+    this.resultList.empty();
+    this.resultStatus.textContent = `${this.results.length}`;
+    if (!this.results.length) {
+      this.resultList.createDiv({ cls: "gib-graph-results-empty", text: "No results" });
+      return;
+    }
+    for (const result of this.results) {
+      const item = this.resultList.createDiv({ cls: "gib-graph-result", attr: { tabindex: "0" } });
+      item.dataset.gibFile = result.file;
+      item.addEventListener("pointerenter", () => this.map.setHover(result.file));
+      item.addEventListener("pointerleave", () => this.map.setHover(null));
+      item.addEventListener("click", () => this.openFile(result.file));
+      const pathParts = result.file.replace(/\.md$/i, "").split("/"), fileName = pathParts.pop() || result.file;
+      const meta = item.createDiv({ cls: "gib-semantic-result-meta" }), folder = meta.createDiv({ cls: "gib-semantic-result-folder" });
+      (pathParts.length ? pathParts : ["Vault"]).forEach((part, index3) => {
+        if (index3) folder.createSpan({ cls: "gib-semantic-result-folder-separator", text: "/" });
+        folder.createSpan({ text: part });
+      });
+      const header = item.createDiv({ cls: "gib-semantic-result-header" }), icon = header.createSpan({ cls: "gib-semantic-result-icon" });
+      setIcon(icon, "sticky-note");
+      const title = header.createSpan({ cls: "gib-semantic-result-file" });
+      renderHighlighted(title, fileName, this.query, result.filenameHighlights);
+      header.createSpan({ cls: "gib-semantic-result-score", text: `${Math.round(Number(result.score || 0) * 100)}%` });
+      const snippet = result.snippets?.[0];
+      if (snippet) {
+        const block = item.createDiv({ cls: "gib-semantic-snippet" });
+        if (snippet.heading) {
+          const heading = block.createDiv({ cls: "gib-semantic-result-heading" });
+          renderHighlighted(heading, snippet.heading, this.query, snippet.headingHighlights);
+        }
+        const preview = block.createDiv({ cls: "gib-semantic-result-preview" });
+        renderHighlighted(preview, snippet.text, this.query, snippet.semanticHighlights);
       }
-    });
-    this.byId = new Map(this.nodes.map((node) => [node.id, node]));
+    }
+    this.resultsPanel.toggle(!this.resultsCollapsed);
+    this.reopenButton.toggle(Boolean(this.resultsCollapsed));
   }
-  draw() {
-    if (!this.canvas) return;
-    const rect = this.canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = Math.max(1, rect.width * dpr);
-    this.canvas.height = Math.max(1, rect.height * dpr);
-    const ctx = this.canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, rect.width, rect.height);
-    const pad = 45, w = Math.max(1, rect.width - pad * 2), h2 = Math.max(1, rect.height - pad * 2);
-    const xy = (n3) => [pad + n3.x * w, pad + n3.y * h2];
-    ctx.lineWidth = 1;
-    for (const edge of this.edges) {
-      const a2 = this.byId.get(edge.source), b = this.byId.get(edge.target);
-      if (!a2 || !b) continue;
-      const [ax, ay] = xy(a2), [bx, by] = xy(b);
-      ctx.beginPath();
-      if (!edge.hard) ctx.setLineDash([3, 4]);
-      else ctx.setLineDash([]);
-      ctx.strokeStyle = edge.hard ? "rgba(140,150,170,.38)" : `rgba(123,97,255,${Math.max(0.08, edge.score * 0.45)})`;
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-    this.hit = [];
-    for (const node of this.nodes) {
-      const [x, y] = xy(node);
-      const score = this.scores ? Number(this.scores[node.id] || 0) : 1;
-      const alpha2 = this.scores ? Math.max(0.08, score) : 1;
-      const radius = 4 + Math.min(7, this.edges.filter((e2) => e2.source === node.id || e2.target === node.id).length / 3);
-      ctx.globalAlpha = alpha2;
-      ctx.fillStyle = score > 0.55 && this.scores ? "#ffb347" : "#7b61ff";
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fill();
-      if (!this.scores || score > 0.2) {
-        ctx.fillStyle = getComputedStyle(this.contentEl).color;
-        ctx.font = "11px sans-serif";
-        ctx.fillText(node.label, x + radius + 3, y + 4);
-      }
-      this.hit.push({ node, x, y, radius: radius + 8 });
-    }
-    ctx.globalAlpha = 1;
+  hoverResult(file) {
+    for (const item2 of this.resultList.querySelectorAll(".is-map-hovered")) item2.removeClass("is-map-hovered");
+    if (!file) return;
+    const item = [...this.resultList.querySelectorAll(".gib-graph-result")].find((value) => value.dataset.gibFile === file);
+    item?.addClass("is-map-hovered");
+    item?.scrollIntoView({ block: "nearest" });
   }
-  openAt(event) {
-    const r2 = this.canvas.getBoundingClientRect(), x = event.clientX - r2.left, y = event.clientY - r2.top;
-    const hit = this.hit?.find((h2) => Math.hypot(h2.x - x, h2.y - y) <= h2.radius);
-    if (hit) {
-      const file = this.app.vault.getAbstractFileByPath(hit.node.id);
-      if (file instanceof TFile) this.app.workspace.getLeaf(false).openFile(file);
+  focusResult(file) {
+    const item = [...this.resultList.querySelectorAll(".gib-graph-result")].find((value) => value.dataset.gibFile === file);
+    if (item) {
+      this.setResultsCollapsed(false);
+      item.scrollIntoView({ block: "nearest" });
     }
+  }
+  async openFile(filePath) {
+    const file = this.app.vault.getAbstractFileByPath(filePath);
+    if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
   }
   async onClose() {
-    window.removeEventListener("resize", this.resize);
+    this.loadVersion++;
+    this.searchVersion++;
+    window.clearTimeout(this.searchTimer);
+    window.clearTimeout(this.tuneTimer);
+    this.map?.destroy();
   }
 };
 var SearchSettings = class extends PluginSettingTab {
@@ -75057,7 +75184,7 @@ module.exports = class GibSearch extends Plugin {
     this.addRibbonIcon("search", "Gib Search", () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: "semantic-search", name: "Semantic search", callback: () => new SemanticSearchModal(this.app, this).open() });
     this.addCommand({ id: "note-neighborhood", name: "Open note neighborhood", callback: () => this.openNeighborhood(this.app.workspace.getActiveFile()?.path) });
-    this.addCommand({ id: "semantic-graph", name: "Open semantic graph", callback: () => this.openGraph() });
+    this.addCommand({ id: "semantic-graph", name: "Open Gib Search map", callback: () => this.openGraph() });
     this.addSettingTab(new SearchSettings(this.app, this));
     this.logDiagnostic(`Gib Search ${this.manifest.version} loaded on ${this.isMobile ? "mobile" : process.platform}`);
     this.indexer.start();
