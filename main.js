@@ -73451,8 +73451,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.nodes = values.map((value, order) => {
       const old = previous.get(value.id), angle = stableMapAngle(value.id), normalized = hasQuery ? Math.max(0, Math.min(1, (Number(value.semanticScore || 0) - low) / spread)) : 0.5, relevance = Number.isFinite(Number(value.relevance)) ? Number(value.relevance) : normalized, fileScale = Math.max(0, Math.min(1, Number(value.fileScale ?? 0.35))), targetVisibility = hasQuery ? 0.12 + relevance * 0.88 : 0.38 + fileScale * 0.42, preserveBackground = Boolean(this.options.preserveBackground);
       const matched = Boolean(value.matched), generation = Math.max(1, Math.min(3, Number(value.generation) || 1)), generationVisibility = generation === 1 ? 0.78 + relevance * 0.22 : generation === 2 ? 0.68 : 0.52;
-      const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64), backgroundVisibility = 0.08 + fileScale * 0.12;
-      return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : preserveBackground ? backgroundVisibility : 0 : targetVisibility, blur: old?.blur ?? 0, targetBlur: hasQuery && !matched && preserveBackground ? 1 : 0, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: old?.vx || 0, vy: old?.vy || 0 };
+      const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64), backgroundVisibility = 0.08 + fileScale * 0.12, promoted = Boolean(hasQuery && matched && old && !old.matched), captureX = promoted ? layoutX - Number(old.x || 0) : 0, captureY = promoted ? layoutY - Number(old.y || 0) : 0;
+      return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : preserveBackground ? backgroundVisibility : 0 : targetVisibility, blur: old?.blur ?? 0, targetBlur: hasQuery && !matched && preserveBackground ? 1 : 0, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, capture: promoted ? 1 : Number(old?.capture || 0), layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: promoted ? Number(old.vx || 0) * 0.12 + captureX * 0.018 : old?.vx || 0, vy: promoted ? Number(old.vy || 0) * 0.12 + captureY * 0.018 : old?.vy || 0 };
     });
     const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
@@ -73523,11 +73523,12 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       node.visibility += (node.targetVisibility - node.visibility) * 0.09;
       node.blur += (node.targetBlur - node.blur) * 0.09;
       node.accent += (node.targetAccent - node.accent) * 0.09;
+      node.capture = Number(node.capture || 0) * 0.93;
     }
     const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, collisionNodes = preserveBackground && this.hasQuery && !this.pendingQuery ? foreground : activeNodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
-      const background = preserveBackground && this.hasQuery && !node.matched, strength = background ? 35e-4 * alpha2 : 0.018 * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2);
+      const background = preserveBackground && this.hasQuery && !node.matched, captureBoost = node.matched ? Number(node.capture || 0) * 0.032 : 0, strength = background ? 35e-4 * alpha2 : 0.018 * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2) + captureBoost;
       node.vx += (node.layoutX - node.x) * strength;
       node.vy += (node.layoutY - node.y) * strength;
     }
@@ -74838,7 +74839,16 @@ var GraphView = class extends ItemView {
     const version2 = ++this.loadVersion;
     this.map?.setTitle("Loading vault\u2026");
     try {
-      const files = this.indexableFiles(), paths = files.map((file) => file.path), scales = vaultFileScales(this.app), graph = await this.plugin.search.semanticStarfield("", paths);
+      const files = this.indexableFiles(), paths = files.map((file) => file.path), scales = vaultFileScales(this.app);
+      if (!this.baseNodes.length && !this.map?.nodes?.length) {
+        const count = Math.max(1, files.length), seeds = files.map((file, index3) => {
+          const angle = stableMapAngle(file.path), radius = 0.035 + Math.sqrt((index3 + 0.5) / count) * 0.16;
+          return { id: file.path, label: file.basename, matched: false, generation: 1, relevance: 0.5, uniqueness: 0.5, fileScale: scales.get(file.path) ?? 0.35, layoutX: Math.cos(angle) * radius, layoutY: Math.sin(angle) * radius };
+        });
+        this.map.setTitle(`Finding places for ${files.length} notes\u2026`);
+        this.map.setGraph({ label: "Search", hasQuery: false, resultCount: 0 }, seeds, [], []);
+      }
+      const graph = await this.plugin.search.semanticStarfield("", paths);
       if (version2 !== this.loadVersion || this.query.length >= 3) return;
       let nodes = graph.nodes.map((node) => ({ ...node, matched: false, generation: 1, relevance: 0.5, fileScale: scales.get(node.id) ?? 0.35, facet: node.community, conceptAffinities: node.topicAffinities }));
       const layout = await this.plugin.search.multiRelationalLayout("", nodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: "relevance", vaultCenter: true, mapMode: this.mapGroupingMode });
