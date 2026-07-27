@@ -123,6 +123,7 @@ if (builtMain.includes('buildTerrain()') || builtMain.includes('terrainImage(col
 if (fs.readFileSync(path.join(root, 'styles.css'), 'utf8').includes('background:radial-gradient')) throw new Error('Semantic map must not use decorative background shading');
 if (!modalSource.includes('this.resultContainerEl') || !modalSource.includes("querySelector('.prompt-results')") || modalSource.includes("querySelector('.suggestion-container')")) throw new Error('Search map is not mounted to the current Obsidian SuggestModal result container');
 if (!fs.readFileSync(path.join(root, 'styles.css'), 'utf8').includes('.is-map-visible .prompt-results')) throw new Error('Desktop semantic map layout is not applied to Obsidian prompt results');
+if (!fs.readFileSync(path.join(root, 'styles.css'), 'utf8').includes('.gib-search-modal:not(.is-map-visible) .prompt-results{min-height:0;flex:1 1 auto;overflow-y:auto')) throw new Error('List-only search results are not independently scrollable');
 if (!builtMain.includes('topographicMapIntroduced')) throw new Error('Desktop semantic map introduction migration is missing');
 if (!builtMain.includes('immediate ? 0 : 75')) throw new Error('Live semantic search debounce is missing');
 if (!builtMain.includes('if (this.indexRun)')) throw new Error('Serialized index scheduling is missing');
