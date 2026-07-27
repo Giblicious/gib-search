@@ -70619,7 +70619,7 @@ function semanticProjection(centerId, centerVector, entries) {
   const scale = 0.86 / extent;
   return new Map(raw.slice(1).map((point) => [point.id, { x: point.x * scale, y: point.y * scale }]));
 }
-function louvainCommunities(ids, edges) {
+function louvainCommunities(ids, edges, resolution = 1) {
   const index3 = new Map(ids.map((id2, position) => [id2, position])), adjacency = ids.map(() => /* @__PURE__ */ new Map()), degree = new Float64Array(ids.length);
   for (const edge of edges) {
     const first = index3.get(edge.source), second = index3.get(edge.target), weight = Math.max(1e-4, Number(edge.affinity || 0));
@@ -70630,6 +70630,7 @@ function louvainCommunities(ids, edges) {
     degree[second] += weight;
   }
   const communities = Int32Array.from(ids, (_2, position) => position), totals = Float64Array.from(degree), totalWeight = degree.reduce((sum, value) => sum + value, 0) || 1;
+  const scale = Math.max(0.35, Math.min(2.5, Number(resolution) || 1));
   for (let pass = 0; pass < 24; pass++) {
     let moved = 0;
     const order = [...ids.keys()].sort((first, second) => degree[second] - degree[first] || ids[first].localeCompare(ids[second]));
@@ -70637,9 +70638,9 @@ function louvainCommunities(ids, edges) {
       const current = communities[node], links = /* @__PURE__ */ new Map();
       for (const [neighbor, weight] of adjacency[node]) links.set(communities[neighbor], (links.get(communities[neighbor]) || 0) + weight);
       totals[current] -= degree[node];
-      let best = current, bestGain = (links.get(current) || 0) - degree[node] * totals[current] / totalWeight;
+      let best = current, bestGain = (links.get(current) || 0) - scale * degree[node] * totals[current] / totalWeight;
       for (const [community, weight] of links) {
-        const gain = weight - degree[node] * totals[community] / totalWeight;
+        const gain = weight - scale * degree[node] * totals[community] / totalWeight;
         if (gain > bestGain + 1e-10 || Math.abs(gain - bestGain) <= 1e-10 && community < best) {
           best = community;
           bestGain = gain;
@@ -72159,9 +72160,44 @@ var init_mobile_runtime = __esm({
         for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(entries[first].vector, entries[second].vector), residualScore: dot(residuals[first].vector, residuals[second].vector) });
         return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...positions.get(entry.id) || {} })), edges };
       }
+      topicCommunityLabels(entries, communities, sensitivity = 0.58, minimumSize = 3) {
+        const groups = /* @__PURE__ */ new Map();
+        for (const entry of entries) {
+          const id2 = communities.get(entry.id) ?? 0, members = groups.get(id2) || [];
+          members.push(entry);
+          groups.set(id2, members);
+        }
+        const centroids = /* @__PURE__ */ new Map();
+        for (const [id2, members] of groups) {
+          const vector = new Float32Array(DIMENSION);
+          for (const member of members) for (let dimension = 0; dimension < DIMENSION; dimension++) vector[dimension] += member.vector[dimension];
+          const norm = Math.sqrt(dot(vector, vector)) || 1;
+          for (let dimension = 0; dimension < DIMENSION; dimension++) vector[dimension] /= norm;
+          centroids.set(id2, vector);
+        }
+        const labels = /* @__PURE__ */ new Map(), threshold = Math.max(0.35, Math.min(0.85, Number(sensitivity) || 0.58));
+        for (const [id2, members] of groups) {
+          if (members.length < Math.max(2, Number(minimumSize) || 3)) {
+            labels.set(id2, { label: "", confidence: 0 });
+            continue;
+          }
+          const centroid = centroids.get(id2), memberIds = members.map((member) => member.id), candidates = /* @__PURE__ */ new Map();
+          for (const [file, values] of this.indexedConceptCandidates(centroid, memberIds)) for (const [key, candidate] of values) {
+            const value = candidates.get(key) || { ...candidate, files: /* @__PURE__ */ new Set() };
+            value.files.add(file);
+            candidates.set(key, value);
+          }
+          const otherCentroids = [...centroids].filter(([other]) => other !== id2).map(([, vector]) => vector), ranked = [...candidates.values()].map((candidate) => {
+            const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.4)), coverage = Math.min(1, candidate.files.size / Math.max(1, members.length)), quality = Math.min(1, Number(candidate.quality || 0) / 0.18), score = centrality * 0.5 + distinction * 0.27 + coverage * 0.13 + quality * 0.1;
+            return { phrase: candidate.phrase, score };
+          }).sort((a2, b) => b.score - a2.score || a2.phrase.localeCompare(b.phrase)), best = ranked[0], margin = Number(best?.score || 0) - Number(ranked[1]?.score || 0), confidence = best ? Math.max(0, Math.min(1, best.score * 0.82 + margin * 1.8)) : 0;
+          labels.set(id2, { label: confidence >= threshold && String(best?.phrase || "").split(/\s+/).length <= 4 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "", confidence });
+        }
+        return labels;
+      }
       async semanticStarfield(query, files = null, focusFiles = []) {
         const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))], trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18;
-        const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:${vaultMode ? "chunks" : "files"}:${tuning.passageCoverage}:${tuning.commonnessSuppression}:${tuning.passageDiversity}:${requested.join("\0")}`;
+        const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28, communitySensitivity: 1, communityMinSize: 3, communityLabelSensitivity: 0.58 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:${vaultMode ? "chunks" : "files"}:${tuning.passageCoverage}:${tuning.commonnessSuppression}:${tuning.passageDiversity}:${tuning.communitySensitivity}:${tuning.communityMinSize}:${tuning.communityLabelSensitivity}:${requested.join("\0")}`;
         if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
           const vectors = this.fileVectors(requested), profiles = vaultMode ? this.vaultContentProfiles(requested) : null, entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
           for (const entities of entitySets2.values()) for (const entity2 of entities) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
@@ -72212,7 +72248,7 @@ var init_mobile_runtime = __esm({
               edges2.push({ source: entries2[first].id, target: entries2[relation.second].id, score: dot(entries2[first].vector, entries2[relation.second].vector), entityScore: relation.score, affinity: 0.08 + relation.score * 0.28, entityBridge: true });
             }
           }
-          const detected = louvainCommunities(entries2.map((entry) => entry.id), edges2), communities2 = vaultMode ? mergeConnectedCommunities(entries2.map((entry) => entry.id), edges2, detected, Math.max(10, Math.min(18, Math.round(Math.sqrt(entries2.length))))) : consolidateCommunities(entries2, detected), positions2 = clusteredSemanticPositions(entries2, communities2), communityIds = [...new Set(communities2.values())], topicAffinities2 = /* @__PURE__ */ new Map();
+          const sensitivity = Math.max(0.5, Math.min(2, Number(tuning.communitySensitivity) || 1)), detected = louvainCommunities(entries2.map((entry) => entry.id), edges2, sensitivity), baseMaximum = Math.max(10, Math.min(18, Math.round(Math.sqrt(entries2.length)))), communities2 = vaultMode ? mergeConnectedCommunities(entries2.map((entry) => entry.id), edges2, detected, Math.max(4, Math.round(baseMaximum * sensitivity))) : consolidateCommunities(entries2, detected), positions2 = clusteredSemanticPositions(entries2, communities2), communityIds = [...new Set(communities2.values())], topicAffinities2 = /* @__PURE__ */ new Map();
           const topicScores = new Map(entries2.map((entry) => [entry.id, Object.fromEntries(communityIds.map((id2) => [id2, id2 === communities2.get(entry.id) ? 0.22 : 0.015]))]));
           for (const edge of edges2) {
             const strength = Math.max(1e-3, Number(edge.affinity || 0)), sourceScores = topicScores.get(edge.source), targetScores = topicScores.get(edge.target), sourceCommunity = communities2.get(edge.source), targetCommunity = communities2.get(edge.target);
@@ -72223,12 +72259,18 @@ var init_mobile_runtime = __esm({
             const shaped = Object.fromEntries(Object.entries(topicScores.get(entry.id) || {}).map(([id2, score]) => [id2, Math.pow(score, 1.35)])), total = Object.values(shaped).reduce((sum, score) => sum + score, 0) || 1;
             topicAffinities2.set(entry.id, Object.fromEntries(Object.entries(shaped).map(([id2, score]) => [id2, score / total])));
           }
-          this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, topicAffinities: topicAffinities2, entitySets: entitySets2, uniqueness: uniqueness2 };
+          const communitySizes2 = /* @__PURE__ */ new Map();
+          for (const community of communities2.values()) communitySizes2.set(community, (communitySizes2.get(community) || 0) + 1);
+          const communityLabels2 = this.topicCommunityLabels(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize);
+          this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, topicAffinities: topicAffinities2, communitySizes: communitySizes2, communityLabels: communityLabels2, entitySets: entitySets2, uniqueness: uniqueness2 };
         }
-        const { entries, edges, positions, communities, topicAffinities, entitySets, uniqueness } = this.starfieldCache, basis = this.topicBasis();
+        const { entries, edges, positions, communities, topicAffinities, communitySizes, communityLabels, entitySets, uniqueness } = this.starfieldCache, basis = this.topicBasis(), communityFields = (entry) => {
+          const community = communities.get(entry.id) ?? 0, affinities = topicAffinities.get(entry.id) || {};
+          return { community, topicAffinities: affinities, communityMembership: Number(affinities[community] || 0), communitySize: Number(communitySizes.get(community) || 1), communityLabel: communityLabels.get(community)?.label || "", communityLabelConfidence: Number(communityLabels.get(community)?.confidence || 0) };
+        };
         if (!trimmed) {
           const topics2 = topicCoordinates(entries, basis.center, basis.axes);
-          return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, uniqueness: uniqueness.get(entry.id) ?? 0.5, community: communities.get(entry.id) ?? 0, topicAffinities: topicAffinities.get(entry.id), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics2.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
+          return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, uniqueness: uniqueness.get(entry.id) ?? 0.5, ...communityFields(entry), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics2.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
         }
         const queryVector = await this.queryVector(this.correctQuery(trimmed)), residuals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, queryVector)])), topics = topicCoordinates(entries, queryVector, basis.axes);
         const outputEdges = [...edges], seen = new Set(edges.map((edge) => [edge.source, edge.target].sort().join("\0"))), focus = new Set(focusFiles || []), focused = entries.filter((entry) => focus.has(entry.id));
@@ -72242,7 +72284,7 @@ var init_mobile_runtime = __esm({
           }
         }
         return {
-          nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), community: communities.get(entry.id) ?? 0, topicAffinities: topicAffinities.get(entry.id), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics.get(entry.id) || {} })),
+          nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...communityFields(entry), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics.get(entry.id) || {} })),
           edges: outputEdges.map((edge) => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
         };
       }
@@ -72331,7 +72373,7 @@ var MODEL_PROFILES = {
 var MODEL_TWEAK_DEFAULTS = {
   bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 }
 };
-var MAP_TUNING_DEFAULTS = { contentWeight: 0.72, residualWeight: 0.18, semanticWeight: 0.06, entityWeight: 0.04, commonnessSuppression: 0.75, passageCoverage: 0.72, passageDiversity: 0.28, distanceContrast: 1, neighborAttraction: 0, collisionSpacing: 1, repulsion: 0, anchorStrength: 1, terrainSpread: 1, terrainContrast: 1 };
+var MAP_TUNING_DEFAULTS = { contentWeight: 0.72, residualWeight: 0.18, semanticWeight: 0.06, entityWeight: 0.04, commonnessSuppression: 0.75, passageCoverage: 0.72, passageDiversity: 0.28, distanceContrast: 1, communitySensitivity: 1, communityMembership: 0.42, communityMinSize: 3, communityLabelSensitivity: 0.58, boundaryPadding: 1, boundaryRepulsionEnabled: false, boundaryRepulsion: 0.65, neighborAttraction: 0, collisionSpacing: 1, repulsion: 0, anchorStrength: 1, terrainSpread: 1, terrainContrast: 1 };
 var MAP_TUNING_CONTROLS = [
   { section: "Meaning", key: "contentWeight", label: "Passage content", min: 0, max: 1, step: 0.01 },
   { key: "residualWeight", label: "Vault-relative", min: 0, max: 1, step: 0.01 },
@@ -72341,6 +72383,13 @@ var MAP_TUNING_CONTROLS = [
   { key: "passageCoverage", label: "Topic coverage", min: 0, max: 1, step: 0.01 },
   { key: "passageDiversity", label: "Passage diversity", min: 0, max: 1, step: 0.01 },
   { key: "distanceContrast", label: "Distance contrast", min: 0.5, max: 2, step: 0.05 },
+  { section: "Communities", key: "communitySensitivity", label: "Community sensitivity", min: 0.5, max: 2, step: 0.05 },
+  { key: "communityMembership", label: "Membership threshold", min: 0.2, max: 0.8, step: 0.02 },
+  { key: "communityMinSize", label: "Minimum community size", min: 2, max: 10, step: 1 },
+  { key: "communityLabelSensitivity", label: "Label confidence", min: 0.35, max: 0.85, step: 0.02 },
+  { key: "boundaryPadding", label: "Boundary padding", min: 0.5, max: 2, step: 0.05 },
+  { key: "boundaryRepulsionEnabled", label: "Repel outsiders", type: "toggle" },
+  { key: "boundaryRepulsion", label: "Outsider repulsion", min: 0, max: 2, step: 0.05 },
   { section: "Physics", key: "neighborAttraction", label: "Neighbor attraction", min: 0, max: 2, step: 0.05 },
   { key: "collisionSpacing", label: "Collision spacing", min: 0.3, max: 2, step: 0.05 },
   { key: "repulsion", label: "Background repulsion", min: 0, max: 2, step: 0.05 },
@@ -73181,14 +73230,24 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.tuningPanel.createDiv({ cls: "gib-search-map-tuning-title", text: "Vault map tuning" });
     for (const control of MAP_TUNING_CONTROLS) {
       if (control.section) this.tuningPanel.createDiv({ cls: "gib-search-map-tuning-section", text: control.section });
-      const row = this.tuningPanel.createDiv({ cls: "gib-search-map-tuning-row" }), label = row.createEl("label", { text: control.label }), input = row.createEl("input", { attr: { type: "range", min: String(control.min), max: String(control.max), step: String(control.step), value: String(this.tuning[control.key]) } }), output = row.createEl("output");
+      const row = this.tuningPanel.createDiv({ cls: `gib-search-map-tuning-row${control.type === "toggle" ? " is-toggle" : ""}` }), label = row.createEl("label", { text: control.label }), input = row.createEl("input", { attr: { type: control.type === "toggle" ? "checkbox" : "range" } }), output = row.createEl("output");
       label.htmlFor = `gib-map-${control.key}`;
       input.id = `gib-map-${control.key}`;
-      output.textContent = Number(this.tuning[control.key]).toFixed(control.step < 0.05 ? 2 : 1);
-      input.addEventListener("input", () => {
-        this.tuning[control.key] = Number(input.value);
-        output.textContent = Number(input.value).toFixed(control.step < 0.05 ? 2 : 1);
+      if (control.type === "toggle") {
+        input.checked = Boolean(this.tuning[control.key]);
+        output.textContent = input.checked ? "On" : "Off";
+      } else {
+        input.min = String(control.min);
+        input.max = String(control.max);
+        input.step = String(control.step);
+        input.value = String(this.tuning[control.key]);
+        output.textContent = Number(this.tuning[control.key]).toFixed(control.step < 0.05 ? 2 : control.step >= 1 ? 0 : 1);
+      }
+      input.addEventListener(control.type === "toggle" ? "change" : "input", () => {
+        this.tuning[control.key] = control.type === "toggle" ? input.checked : Number(input.value);
+        output.textContent = control.type === "toggle" ? input.checked ? "On" : "Off" : Number(input.value).toFixed(control.step < 0.05 ? 2 : control.step >= 1 ? 0 : 1);
         this.lastTerrainAt = 0;
+        this.lastCommunityAt = 0;
         this.startSimulation(0.58);
         this.options.onTune({ ...this.tuning }, control.key);
       });
@@ -73210,10 +73269,16 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   setTuning(values, notify = false, key = "reset") {
     this.tuning = Object.assign({}, MAP_TUNING_DEFAULTS, values || {});
     for (const [name, view] of this.tuningInputs || []) {
-      view.input.value = String(this.tuning[name]);
-      view.output.textContent = Number(this.tuning[name]).toFixed(view.control.step < 0.05 ? 2 : 1);
+      if (view.control.type === "toggle") {
+        view.input.checked = Boolean(this.tuning[name]);
+        view.output.textContent = view.input.checked ? "On" : "Off";
+      } else {
+        view.input.value = String(this.tuning[name]);
+        view.output.textContent = Number(this.tuning[name]).toFixed(view.control.step < 0.05 ? 2 : view.control.step >= 1 ? 0 : 1);
+      }
     }
     this.lastTerrainAt = 0;
+    this.lastCommunityAt = 0;
     this.startSimulation(0.72);
     if (notify) this.options.onTune?.({ ...this.tuning }, key);
   }
@@ -73423,6 +73488,31 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (target !== this.dragging) {
         target.vx -= dx * force;
         target.vy -= dy * force;
+      }
+    }
+    if (this.mapGroupingMode === "topics" && tuning.boundaryRepulsionEnabled && Number(tuning.boundaryRepulsion) > 0) {
+      const threshold = Number(tuning.communityMembership || 0.42), minimum = Math.max(2, Number(tuning.communityMinSize || 3)), groups = /* @__PURE__ */ new Map(), sigma = 0.11 * Math.max(0.5, Math.min(2, Number(tuning.boundaryPadding || 1))), divisor = 2 * sigma * sigma;
+      for (const node of activeNodes) if (Number(node.communityMembership || 0) >= threshold) {
+        const values = groups.get(node.community) || [];
+        values.push(node);
+        groups.set(node.community, values);
+      }
+      for (const [community, members] of groups) {
+        if (members.length < minimum) continue;
+        for (const node of activeNodes) {
+          if (node.community === community || node === this.dragging) continue;
+          let density = 0, gradientX = 0, gradientY = 0;
+          for (const member of members) {
+            const dx = node.x - member.x, dy = node.y - member.y, weight = Math.exp(-(dx * dx + dy * dy) / divisor);
+            density += weight;
+            gradientX += dx * weight;
+            gradientY += dy * weight;
+          }
+          if (density < 0.34) continue;
+          const length2 = Math.max(8e-3, Math.hypot(gradientX, gradientY)), force = Math.min(0.012, (density - 0.34) * 28e-4) * Number(tuning.boundaryRepulsion) * alpha2;
+          node.vx += gradientX / length2 * force;
+          node.vy += gradientY / length2 * force;
+        }
       }
     }
     if (this.manualLinkInfluence && this.roadEdges.length) {
@@ -73635,6 +73725,57 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     if (this.terrainCanvas) ctx.drawImage(this.terrainCanvas, 0, 0, width, height);
   }
+  topicCommunityGroups(width, height) {
+    if (this.mapGroupingMode !== "topics") return [];
+    const tuning = this.tuning || MAP_TUNING_DEFAULTS, threshold = Number(tuning.communityMembership || 0.42), minimum = Math.max(2, Number(tuning.communityMinSize || 3)), visible = this.nodes.filter((node) => node.visibility > 0.08 && (!this.hasQuery || this.pendingQuery || node.matched) && Number(node.communityMembership || 0) >= threshold), groups = /* @__PURE__ */ new Map();
+    for (const node of visible) {
+      const values = groups.get(node.community) || [];
+      const [x, y] = this.coordinates(node, width, height);
+      values.push({ node, x, y });
+      groups.set(node.community, values);
+    }
+    return [...groups].filter(([, values]) => values.length >= minimum).map(([id2, values]) => ({ id: id2, values, label: values.find((value) => value.node.communityLabel)?.node.communityLabel || "", confidence: Math.max(...values.map((value) => Number(value.node.communityLabelConfidence || 0))) }));
+  }
+  paintTopicCommunities(ctx, width, height, colors2) {
+    const groups = this.topicCommunityGroups(width, height), tuning = this.tuning || MAP_TUNING_DEFAULTS, step = 7, columns = Math.ceil(width / step) + 1, rows = Math.ceil(height / step) + 1, radius = 22 * Math.max(0.5, Math.min(2, Number(tuning.boundaryPadding || 1)));
+    this.communityLabelsForDraw = [];
+    for (const group of groups) {
+      const values = new Float32Array(columns * rows), reach = radius * 2.6, divisor = 2 * radius * radius;
+      for (const point of group.values) {
+        const left = Math.max(0, Math.floor((point.x - reach) / step)), right = Math.min(columns - 1, Math.ceil((point.x + reach) / step)), top = Math.max(0, Math.floor((point.y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((point.y + reach) / step));
+        for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
+          const dx = column * step - point.x, dy = row * step - point.y;
+          values[row * columns + column] += Math.exp(-(dx * dx + dy * dy) / divisor);
+        }
+      }
+      const hue = group.values.find((value) => Number.isFinite(value.node.topicHue))?.node.topicHue, color = this.options.semanticColors !== false && Number.isFinite(hue) ? `hsl(${hue} 48% 62%)` : colors2.muted;
+      this.traceDensityLevel(ctx, { values, columns, rows, step }, 0.34);
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.3;
+      ctx.lineWidth = 1.05;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.stroke();
+      const weight = group.values.reduce((sum, value) => sum + Number(value.node.communityMembership || 0), 0) || group.values.length, x = group.values.reduce((sum, value) => sum + value.x * Number(value.node.communityMembership || 0), 0) / weight, y = group.values.reduce((sum, value) => sum + value.y * Number(value.node.communityMembership || 0), 0) / weight;
+      if (group.label) this.communityLabelsForDraw.push({ x, y, text: group.label, color, confidence: group.confidence });
+    }
+    ctx.globalAlpha = 1;
+  }
+  drawCommunityLabels(ctx, colors2) {
+    for (const label of this.communityLabelsForDraw || []) {
+      ctx.font = "600 9px -apple-system, BlinkMacSystemFont, sans-serif";
+      const text = String(label.text).toUpperCase(), width = ctx.measureText(text).width;
+      ctx.globalAlpha = 0.88;
+      ctx.fillStyle = colors2.background;
+      ctx.fillRect(label.x - width / 2 - 5, label.y - 8, width + 10, 15);
+      ctx.globalAlpha = 0.72;
+      ctx.fillStyle = label.color;
+      ctx.textAlign = "center";
+      ctx.fillText(text, label.x, label.y + 3);
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "left";
+  }
   roadEndpoint(id2, width, height) {
     if (id2 === this.center?.id) {
       const [x2, y2] = this.coordinates(this.queryNode, width, height);
@@ -73720,6 +73861,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const colors2 = this.colors(), focused = this.hovered || this.selected, queryFocused = focused === "__query__", labelNodes = /* @__PURE__ */ new Set();
     this.hit = [];
     this.paintDensityTerrain(ctx, rect.width, rect.height, colors2);
+    this.paintTopicCommunities(ctx, rect.width, rect.height, colors2);
     this.paintSweepLinks(ctx, rect.width, rect.height, colors2);
     if (focused && !queryFocused) labelNodes.add(focused);
     const labels = [], ordered = this.hasQuery && !this.pendingQuery ? [...this.nodes.filter((node) => !node.matched), ...this.nodes.filter((node) => node.matched)] : this.nodes;
@@ -73761,6 +73903,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (this.center?.id) labels.push({ node: this.queryNode, x: queryX, y: queryY, radius: tickOuter, active, opacity: this.queryPresence, query: true });
       this.hit.push({ node: this.queryNode, x: queryX, y: queryY, radius: 16 });
     }
+    this.drawCommunityLabels(ctx, colors2);
     this.drawLabels(ctx, labels, colors2, rect.width, rect.height);
     ctx.globalAlpha = 1;
   }
@@ -74254,7 +74397,7 @@ var SemanticSearchModal = class extends SuggestModal {
       this.plugin.settings.mapTuning = values;
       window.clearTimeout(this.mapTuneTimer);
       this.mapTuneTimer = window.setTimeout(async () => {
-        if (["commonnessSuppression", "passageCoverage", "passageDiversity", "reset"].includes(key)) {
+        if (["commonnessSuppression", "passageCoverage", "passageDiversity", "communitySensitivity", "communityMinSize", "communityLabelSensitivity", "reset"].includes(key)) {
           this.plugin.search.contentProfileCache = null;
           this.plugin.search.starfieldCache = null;
         }
