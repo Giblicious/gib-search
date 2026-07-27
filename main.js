@@ -72859,6 +72859,27 @@ function manualRoadEdges(app, files) {
   }
   return [...roads.values()];
 }
+function vaultFileScales(app) {
+  const files = app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path)), sizes = files.map((file) => Math.log1p(Number(file.stat?.size || 0))), low = sizes.length ? Math.min(...sizes) : 0, high = sizes.length ? Math.max(...sizes) : 1, spread = Math.max(1e-3, high - low);
+  return new Map(files.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - low) / spread]));
+}
+async function buildQueryMapModel(plugin6, query, results, options = {}) {
+  const lens = validSearchLens(options.lens), generations = Math.max(1, Math.min(3, Number(options.generations) || 1)), relationships = options.relationships instanceof Map ? options.relationships : /* @__PURE__ */ new Map(), relationshipEdges = options.relationshipEdges || [], roots = results.map((result) => result.file), expansion = plugin6.search.semanticGenerations(roots, generations, 5), generationByFile = new Map(expansion.nodes.map((node) => [node.id, node])), activeFiles = expansion.nodes.map((node) => node.id), graph = await plugin6.search.semanticStarfield(query, activeFiles, activeFiles), byFile = new Map(results.map((result) => [result.file, result])), scales = options.fileScales || vaultFileScales(plugin6.app), rankingScores = results.map((result) => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = expansion.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
+  const nodes = graph.nodes.map((node) => {
+    const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
+    return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance, fileScale: scales.get(node.id) ?? 0.35, facet: result?.facet ?? node.community, conceptAffinities: result?.conceptAffinities || node.topicAffinities, contextScore: result?.contextScore };
+  });
+  const layout = await plugin6.search.multiRelationalLayout(query, nodes, lens === "arguments" ? relationships : /* @__PURE__ */ new Map(), { magic: plugin6.settings.magicGraphEnabled, lens, mapMode: validMapGrouping(options.mapMode) });
+  for (const node of nodes) {
+    const target = layout.get(node.id);
+    if (target) {
+      node.layoutX = target.x;
+      node.layoutY = target.y;
+    }
+  }
+  const edges = lens === "arguments" ? [...combinedEdges.map((edge) => ({ ...edge, relation: relationships.get(mapEdgeKey(edge.source, edge.target)) })), ...relationshipEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target))).map((edge) => ({ ...edge, relation: relationships.get(mapEdgeKey(edge.source, edge.target)) }))] : combinedEdges;
+  return { nodes, edges, roads: manualRoadEdges(plugin6.app, nodes.map((node) => node.id)) };
+}
 var SemanticMapCanvas = class {
   constructor(host, app, options = {}) {
     this.host = host;
@@ -73452,16 +73473,17 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       node.blur += (node.targetBlur - node.blur) * 0.09;
       node.accent += (node.targetAccent - node.accent) * 0.09;
     }
-    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, collisionNodes = preserveBackground && this.hasQuery && !this.pendingQuery ? foreground : activeNodes, vaultMode = !this.hasQuery && !this.pendingQuery, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
+    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, collisionNodes = preserveBackground && this.hasQuery && !this.pendingQuery ? foreground : activeNodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
-      const strength = preserveBackground && this.hasQuery && !node.matched ? 35e-4 : 0.018 * anchorStrength;
-      node.vx += (node.layoutX - node.x) * strength * alpha2;
-      node.vy += (node.layoutY - node.y) * strength * alpha2;
+      const background = preserveBackground && this.hasQuery && !node.matched, strength = background ? 35e-4 * alpha2 : 0.018 * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2);
+      node.vx += (node.layoutX - node.x) * strength;
+      node.vy += (node.layoutY - node.y) * strength;
     }
     if (this.queryPresence > 0.01 && query !== this.dragging) {
-      query.vx += (query.layoutX - query.x) * 0.012 * alpha2;
-      query.vy += (query.layoutY - query.y) * 0.012 * alpha2;
+      const strength = 0.012 * (querySettling ? Math.max(alpha2, 0.28) : alpha2);
+      query.vx += (query.layoutX - query.x) * strength;
+      query.vy += (query.layoutY - query.y) * strength;
     }
     for (let first = 0; first < collisionNodes.length; first++) for (let second = first + 1; second < collisionNodes.length; second++) {
       const a2 = collisionNodes[first], b = collisionNodes[second];
@@ -73516,15 +73538,15 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       }
     }
     if (this.mapGroupingMode === "topics" && tuning.boundaryRepulsionEnabled && Number(tuning.boundaryRepulsion) > 0) {
-      const threshold = Number(tuning.communityMembership || 0.42), minimum = Math.max(2, Number(tuning.communityMinSize || 3)), groups = /* @__PURE__ */ new Map(), sigma = 0.11 * Math.max(0.5, Math.min(2, Number(tuning.boundaryPadding || 1))), divisor = 2 * sigma * sigma;
-      for (const node of activeNodes) if (Number(node.communityMembership || 0) >= threshold) {
+      const topicNodes = querySettling ? foreground : activeNodes, threshold = Number(tuning.communityMembership || 0.42), minimum = Math.max(2, Number(tuning.communityMinSize || 3)), groups = /* @__PURE__ */ new Map(), sigma = 0.11 * Math.max(0.5, Math.min(2, Number(tuning.boundaryPadding || 1))), divisor = 2 * sigma * sigma;
+      for (const node of topicNodes) if (Number(node.communityMembership || 0) >= threshold) {
         const values = groups.get(node.community) || [];
         values.push(node);
         groups.set(node.community, values);
       }
       for (const [community, members] of groups) {
         if (members.length < minimum) continue;
-        for (const node of activeNodes) {
+        for (const node of topicNodes) {
           if (node.community === community || node === this.dragging) continue;
           let density = 0, gradientX = 0, gradientY = 0;
           for (const member of members) {
@@ -73605,9 +73627,20 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         }
       }
       this.alpha *= 0.986;
+      const queryActive = this.hasQuery && !this.pendingQuery, foreground = queryActive ? this.nodes.filter((node) => node.matched) : [], positionalError = queryActive ? Math.max(Math.hypot(this.queryNode.x - this.queryNode.layoutX, this.queryNode.y - this.queryNode.layoutY), ...foreground.map((node) => Math.hypot(node.x - node.layoutX, node.y - node.layoutY))) : 0;
+      if (this.alpha <= 0.01 && positionalError < 3e-3) {
+        this.queryNode.x = this.queryNode.layoutX;
+        this.queryNode.y = this.queryNode.layoutY;
+        for (const node of foreground) {
+          node.x = node.layoutX;
+          node.y = node.layoutY;
+          node.vx = node.vy = 0;
+        }
+        this.lastTerrainAt = 0;
+      }
       this.draw();
-      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || this.nodes.some((node) => Math.abs(node.visibility - node.targetVisibility) > 0.015 || Math.abs(node.blur - node.targetBlur) > 0.03);
-      if (this.alpha > 0.01 || this.dragging || transitioning) this.simulationFrame = requestAnimationFrame(tick);
+      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || this.nodes.some((node) => Math.abs(node.visibility - node.targetVisibility) > 0.015 || Math.abs(node.blur - node.targetBlur) > 0.03), settling = queryActive && positionalError >= 3e-3;
+      if (this.alpha > 0.01 || this.dragging || transitioning || settling) this.simulationFrame = requestAnimationFrame(tick);
     };
     this.simulationFrame = requestAnimationFrame(tick);
   }
@@ -74475,24 +74508,24 @@ var SemanticSearchModal = class extends SuggestModal {
     if (!this.map || !this.plugin.settings.searchMapEnabled) return;
     const version2 = ++this.mapVersion, query = this.lastQuery, results = this.lastResults.slice(0, 80);
     this.map.setTitle(`${SEARCH_LENSES[this.lens].label} map`);
-    const indexable = this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path)), paths = indexable.map((file) => file.path), sizes = indexable.map((file) => Math.log1p(Number(file.stat?.size || 0))), sizeLow = sizes.length ? Math.min(...sizes) : 0, sizeHigh = sizes.length ? Math.max(...sizes) : 1, sizeSpread = Math.max(1e-3, sizeHigh - sizeLow), fileScale = new Map(indexable.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - sizeLow) / sizeSpread]));
-    const roots = results.map((result) => result.file), generations = query ? this.plugin.search.semanticGenerations(roots, this.mapGenerations, 5) : { nodes: [], edges: [] }, generationByFile = new Map(generations.nodes.map((node) => [node.id, node])), activeFiles = generations.nodes.map((node) => node.id), graph = await this.plugin.search.semanticStarfield(query, query ? activeFiles : paths, activeFiles);
-    if (version2 !== this.mapVersion) return;
-    const byFile = new Map(results.map((result) => [result.file, result])), rankingScores = results.map((result) => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = generations.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
-    const graphNodes = graph.nodes.map((node) => {
-      const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
-      return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : semanticRelevance, fileScale: fileScale.get(node.id) ?? 0.35, facet: result?.facet ?? node.community, conceptAffinities: result?.conceptAffinities || node.topicAffinities, contextScore: result?.contextScore };
-    }), layoutOptions = { magic: this.plugin.settings.magicGraphEnabled, lens: this.lens, vaultCenter: !query, mapMode: this.mapGroupingMode }, initialLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, this.lens === "arguments" ? this.lensRelationships : /* @__PURE__ */ new Map(), layoutOptions);
-    if (version2 !== this.mapVersion) return;
-    for (const node of graphNodes) {
-      const target = initialLayout.get(node.id);
-      if (target) {
-        node.layoutX = target.x;
-        node.layoutY = target.y;
+    if (!query) {
+      const indexable = this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path)), paths = indexable.map((file) => file.path), graph = await this.plugin.search.semanticStarfield("", paths);
+      if (version2 !== this.mapVersion) return;
+      const scales = vaultFileScales(this.app), nodes = graph.nodes.map((node) => ({ ...node, matched: false, generation: 1, relevance: 0.5, fileScale: scales.get(node.id) ?? 0.35, facet: node.community, conceptAffinities: node.topicAffinities })), layout = await this.plugin.search.multiRelationalLayout("", nodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: "relevance", vaultCenter: true, mapMode: this.mapGroupingMode });
+      if (version2 !== this.mapVersion) return;
+      for (const node of nodes) {
+        const target = layout.get(node.id);
+        if (target) {
+          node.layoutX = target.x;
+          node.layoutY = target.y;
+        }
       }
+      this.map.setGraph({ label: "Search", hasQuery: false, resultCount: 0 }, nodes, graph.edges || [], manualRoadEdges(this.app, paths));
+      return;
     }
-    const displayEdges = this.lens === "arguments" ? [...combinedEdges.map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) })), ...this.lensRelationshipEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target))).map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) }))] : combinedEdges, roads = manualRoadEdges(this.app, graphNodes.map((node) => node.id));
-    this.map.setGraph({ label: query || "Search", hasQuery: Boolean(query), resultCount: results.length }, graphNodes, displayEdges, roads);
+    const model5 = await buildQueryMapModel(this.plugin, query, results, { lens: this.lens, generations: this.mapGenerations, relationships: this.lensRelationships, relationshipEdges: this.lensRelationshipEdges, mapMode: this.mapGroupingMode });
+    if (version2 !== this.mapVersion) return;
+    this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, model5.nodes, model5.edges, model5.roads);
   }
   hoverResult(file) {
     for (const item2 of this.modalEl.querySelectorAll(".suggestion-item.is-map-hovered")) item2.removeClass("is-map-hovered");
@@ -74649,6 +74682,7 @@ var GraphView = class extends ItemView {
     this.baseEdges = [];
     this.baseRoads = [];
     this.mapGroupingMode = validMapGrouping(plugin6.settings.mapGroupingMode);
+    this.mapGenerations = Math.max(1, Math.min(3, Number(plugin6.settings.searchMapGenerations) || 1));
   }
   getViewType() {
     return GRAPH_VIEW;
@@ -74683,6 +74717,7 @@ var GraphView = class extends ItemView {
     this.map = new LivingSemanticMapCanvas(mapHost, this.app, {
       title: "Vault map",
       preserveBackground: true,
+      generations: this.mapGenerations,
       mapGroupingMode: this.mapGroupingMode,
       showLinks: this.plugin.settings.showWikilinks,
       manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence,
@@ -74705,6 +74740,12 @@ var GraphView = class extends ItemView {
           await this.plugin.save();
           this.query.length >= 3 ? this.runSearch(this.query, true) : this.loadVault();
         }, 180);
+      },
+      onGenerations: async (value) => {
+        this.mapGenerations = value;
+        this.plugin.settings.searchMapGenerations = value;
+        await this.plugin.save();
+        if (this.query.length >= 3) this.runSearch(this.query, true);
       },
       onShowLinks: async (value) => {
         this.plugin.settings.showWikilinks = value;
@@ -74742,15 +74783,11 @@ var GraphView = class extends ItemView {
   indexableFiles() {
     return this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path));
   }
-  fileScales(files) {
-    const sizes = files.map((file) => Math.log1p(Number(file.stat?.size || 0))), low = sizes.length ? Math.min(...sizes) : 0, high = sizes.length ? Math.max(...sizes) : 1, spread = Math.max(1e-3, high - low);
-    return new Map(files.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - low) / spread]));
-  }
   async loadVault() {
     const version2 = ++this.loadVersion;
     this.map?.setTitle("Loading vault\u2026");
     try {
-      const files = this.indexableFiles(), paths = files.map((file) => file.path), scales = this.fileScales(files), graph = await this.plugin.search.semanticStarfield("", paths);
+      const files = this.indexableFiles(), paths = files.map((file) => file.path), scales = vaultFileScales(this.app), graph = await this.plugin.search.semanticStarfield("", paths);
       if (version2 !== this.loadVersion || this.query.length >= 3) return;
       let nodes = graph.nodes.map((node) => ({ ...node, matched: false, generation: 1, relevance: 0.5, fileScale: scales.get(node.id) ?? 0.35, facet: node.community, conceptAffinities: node.topicAffinities }));
       const layout = await this.plugin.search.multiRelationalLayout("", nodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: "relevance", vaultCenter: true, mapMode: this.mapGroupingMode });
@@ -74796,20 +74833,19 @@ var GraphView = class extends ItemView {
     try {
       const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), raw = await runSearch(query, Math.min(240, limit * 5), tweaks.minScore, { scoreWindow: tweaks.scoreWindow, folderPathBoost: this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 20 });
       if (version2 !== this.searchVersion || query !== this.query) return;
-      const results = groupSearchResults(raw, query, limit), resultFiles = results.map((result) => result.file), graph = await this.plugin.search.semanticStarfield(query, resultFiles, resultFiles), facets = await this.plugin.search.conceptFacets(query, resultFiles);
+      const results = groupSearchResults(raw, query, limit), facets = await this.plugin.search.conceptFacets(query, results.map((result) => result.file));
+      for (const result of results) {
+        const facet = facets.get(result.file);
+        result.facet = facet?.facet;
+        result.conceptAffinities = facet?.affinities;
+      }
+      const model5 = await buildQueryMapModel(this.plugin, query, results, { lens: "relevance", generations: this.mapGenerations, mapMode: this.mapGroupingMode, fileScales: new Map(this.baseNodes.map((node) => [node.id, node.fileScale])) });
       if (version2 !== this.searchVersion || query !== this.query) return;
-      const graphById = new Map(graph.nodes.map((node) => [node.id, node])), scores = results.map((result) => Number(result.score || 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(1e-3, high - low), baseById = new Map(this.baseNodes.map((node) => [node.id, node]));
-      const queryNodes = results.map((result) => {
-        const node = graphById.get(result.file) || { id: result.file, label: result.file.replace(/\.md$/i, "").split("/").pop() }, facet = facets.get(result.file);
-        return { ...node, matched: true, generation: 1, relevance: 0.08 + (Number(result.score || 0) - low) / spread * 0.92, fileScale: baseById.get(result.file)?.fileScale ?? 0.35, facet: facet?.facet ?? node.community, conceptAffinities: facet?.affinities || node.topicAffinities };
-      });
-      const layout = await this.plugin.search.multiRelationalLayout(query, queryNodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: "relevance", mapMode: this.mapGroupingMode });
-      if (version2 !== this.searchVersion || query !== this.query) return;
-      const queryById = new Map(queryNodes.map((node) => [node.id, { ...node, layoutX: layout.get(node.id)?.x, layoutY: layout.get(node.id)?.y }])), merged = this.baseNodes.map((base) => queryById.get(base.id) || { ...base, matched: false, relevance: 0 });
+      const queryById = new Map(model5.nodes.map((node) => [node.id, node])), merged = this.baseNodes.map((base) => queryById.get(base.id) || { ...base, matched: false, relevance: 0 });
       this.results = results;
       this.renderResults();
       this.map.setTitle(`${results.length} results \xB7 ${this.mapGroupingMode === "topics" ? "Topics" : "Similarity"}`);
-      this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, merged, graph.edges || [], this.baseRoads);
+      this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, merged, model5.edges, model5.roads);
     } catch (error) {
       if (version2 === this.searchVersion) {
         this.resultList.empty();
