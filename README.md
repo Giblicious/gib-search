@@ -10,7 +10,9 @@ The note-neighborhood pane offers the same lenses with the active note as its se
 
 When Arguments finds a confident alignment or tension, its result card shows the exact query-relevant passage pair used for that judgment and names the counterpart note. These are source excerpts, not generated explanations.
 
-The optional magic graph combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. These signals form one multi-relational distance model that is reduced into a query-conditioned 2D layout. Hue represents semantic direction, while lightweight physics animates and gently relaxes the calculated geometry.
+The living map combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. These signals form one multi-relational distance model that is reduced into a query-conditioned 2D layout. Hue represents semantic direction, while lightweight physics animates and gently relaxes the calculated geometry.
+
+The dedicated map view begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query enters the map while results load. Matching notes form a query-centered layout; nonmatches remain as subdued spatial context. A collapsible floating panel shows the matching source excerpts.
 
 ## Install with BRAT
 
@@ -41,7 +43,7 @@ Gib Search uses **BGE Small English v1.5**, a compact local embedding model chos
 ## Commands
 
 - **Semantic search**
-- **Open semantic graph**
+- **Open Gib Search map**
 
 ## Development
 
