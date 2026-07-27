@@ -71962,9 +71962,9 @@ var init_mobile_runtime = __esm({
       async multiRelationalLayout(query, nodes, relationships = /* @__PURE__ */ new Map(), options = {}) {
         const values = [...new Map((nodes || []).filter((node) => node?.id).map((node) => [node.id, node])).values()], nodeById = new Map(values.map((node) => [node.id, node])), files = values.map((node) => node.id), vectors = this.fileVectors(files), entries = values.filter((node) => vectors.has(node.id)).map((node) => ({ id: node.id, vector: vectors.get(node.id).vector }));
         if (!entries.length) return /* @__PURE__ */ new Map();
-        const basis = this.topicBasis(), trimmed = String(query || "").trim(), centerFile = String(options.centerFile || ""), fileCenter = centerFile ? this.fileVectors([centerFile]).get(centerFile)?.vector : null, conditioned = Boolean(trimmed || fileCenter);
+        const basis = this.topicBasis(), trimmed = String(query || "").trim(), centerFile = String(options.centerFile || ""), fileCenter = centerFile ? this.fileVectors([centerFile]).get(centerFile)?.vector : null, vaultCentered = Boolean(options.vaultCenter) && !trimmed && !fileCenter, conditioned = Boolean(trimmed || fileCenter || vaultCentered);
         let center = fileCenter ? Float32Array.from(fileCenter) : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
-        if (!conditioned) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
+        if (!fileCenter && !trimmed) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
         const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
         for (const entities of entitySets.values()) for (const entity2 of entities) frequency.set(entity2, (frequency.get(entity2) || 0) + 1);
         const entitySimilarity = (first, second) => {
@@ -71983,7 +71983,7 @@ var init_mobile_runtime = __esm({
         };
         const semanticScores = entries.map((entry) => dot(center, entry.vector)), low = Math.min(...semanticScores), high = Math.max(...semanticScores), spread = Math.max(1e-3, high - low), relevance = new Map(entries.map((entry, index3) => {
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
-          return [entry.id, conditioned && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
+          return [entry.id, conditioned && !vaultCentered && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
         const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = { relevance: { semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
@@ -73240,7 +73240,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
       const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
-    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), sigma = Math.max(9, 27 * zoom), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
+    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), vaultDensityScale = this.hasQuery ? 1 : Math.max(0.38, Math.min(1, Math.sqrt(42 / Math.max(1, visible.length)))), sigma = Math.max(this.hasQuery ? 9 : 7, 27 * zoom * vaultDensityScale), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
@@ -74011,13 +74011,17 @@ var SemanticSearchModal = class extends SuggestModal {
     const graphNodes = graph.nodes.map((node) => {
       const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
       return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : semanticRelevance, fileScale: fileScale.get(node.id) ?? 0.35, facet: result?.facet, conceptAffinities: result?.conceptAffinities, contextScore: result?.contextScore };
-    }), layoutOptions = { magic: this.plugin.settings.magicGraphEnabled, lens: this.lens }, initialLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, this.lens === "arguments" ? this.lensRelationships : /* @__PURE__ */ new Map(), layoutOptions);
+    }), layoutOptions = { magic: this.plugin.settings.magicGraphEnabled, lens: this.lens, vaultCenter: !query }, initialLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, this.lens === "arguments" ? this.lensRelationships : /* @__PURE__ */ new Map(), layoutOptions);
     if (version2 !== this.mapVersion) return;
     for (const node of graphNodes) {
       const target = initialLayout.get(node.id);
       if (target) {
         node.layoutX = target.x;
         node.layoutY = target.y;
+        if (!query) {
+          node.topicAngle = Math.atan2(target.y, target.x);
+          node.topicHue = (node.topicAngle * 180 / Math.PI + 360) % 360;
+        }
       }
     }
     const displayEdges = this.lens === "arguments" ? [...combinedEdges.map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) })), ...this.lensRelationshipEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target))).map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) }))] : combinedEdges, roads = this.plugin.settings.showWikilinks ? manualRoadEdges(this.app, graphNodes.map((node) => node.id)) : [];
