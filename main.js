@@ -70535,31 +70535,17 @@ function topicCoordinates(entries, center, axes) {
     return [point.id, { topicAngle: angle, topicStrength: strength, topicHue: (angle * 180 / Math.PI + 360) % 360 }];
   }));
 }
-function vaultCommunityAngles(entries, nodeById, topics) {
-  const wrap2 = (angle) => Math.atan2(Math.sin(angle), Math.cos(angle)), groups = /* @__PURE__ */ new Map();
+function vaultCommunityLayout(entries, nodeById, topics, rawLayout, relevance) {
+  const groups = /* @__PURE__ */ new Map();
   for (const entry of entries) {
     const node = nodeById.get(entry.id), community = node?.facet ?? node?.community ?? 0, topic = topics.get(entry.id), group = groups.get(community) || { id: community, members: [], x: 0, y: 0 };
-    const weight = 0.25 + Number(topic?.topicStrength || 0);
+    const weight = 0.25 + Number(topic?.topicStrength || 0), angle = Number(topic?.topicAngle || stableAngle(entry.id));
     group.members.push(entry);
-    group.x += Math.cos(Number(topic?.topicAngle || stableAngle(entry.id))) * weight;
-    group.y += Math.sin(Number(topic?.topicAngle || stableAngle(entry.id))) * weight;
+    group.x += Math.cos(angle) * weight;
+    group.y += Math.sin(angle) * weight;
     groups.set(community, group);
   }
-  const neighborhoods = [];
-  for (const group of groups.values()) {
-    const rawAngle = Math.atan2(group.y, group.x), members = group.members.slice().sort((first, second) => wrap2(Number(topics.get(first.id)?.topicAngle || 0) - rawAngle) - wrap2(Number(topics.get(second.id)?.topicAngle || 0) - rawAngle) || first.id.localeCompare(second.id)), parts = Math.max(1, Math.ceil(members.length / 28));
-    for (let part = 0; part < parts; part++) {
-      const subset = members.slice(Math.floor(part * members.length / parts), Math.floor((part + 1) * members.length / parts));
-      let x = 0, y = 0;
-      for (const entry of subset) {
-        const topic = topics.get(entry.id), weight = 0.25 + Number(topic?.topicStrength || 0), angle = Number(topic?.topicAngle || stableAngle(entry.id));
-        x += Math.cos(angle) * weight;
-        y += Math.sin(angle) * weight;
-      }
-      neighborhoods.push({ id: `${group.id}:${part}`, members: subset, rawAngle: Math.atan2(y, x) });
-    }
-  }
-  const ordered = neighborhoods.sort((first, second) => first.rawAngle - second.rawAngle || String(first.id).localeCompare(String(second.id)));
+  const ordered = [...groups.values()].map((group) => ({ ...group, rawAngle: Math.atan2(group.y, group.x) })).sort((first, second) => first.rawAngle - second.rawAngle || String(first.id).localeCompare(String(second.id)));
   if (!ordered.length) return /* @__PURE__ */ new Map();
   let largestGap = -1, firstIndex = 0;
   for (let index3 = 0; index3 < ordered.length; index3++) {
@@ -70569,16 +70555,20 @@ function vaultCommunityAngles(entries, nodeById, topics) {
       firstIndex = (index3 + 1) % ordered.length;
     }
   }
-  const rotated = Array.from({ length: ordered.length }, (_2, index3) => ordered[(firstIndex + index3) % ordered.length]), sector = Math.PI * 2 / rotated.length, start2 = rotated[0].rawAngle;
-  const angles = /* @__PURE__ */ new Map();
+  const rotated = Array.from({ length: ordered.length }, (_2, index3) => ordered[(firstIndex + index3) % ordered.length]), sector = Math.PI * 2 / rotated.length, start2 = rotated[0].rawAngle, positioned = /* @__PURE__ */ new Map();
   rotated.forEach((group, groupIndex) => {
-    const center = start2 + groupIndex * sector, limit = Math.min(0.72, sector * 0.34), members = group.members.slice().sort((first, second) => wrap2(Number(topics.get(first.id)?.topicAngle || 0) - group.rawAngle) - wrap2(Number(topics.get(second.id)?.topicAngle || 0) - group.rawAngle) || first.id.localeCompare(second.id));
-    members.forEach((entry, index3) => {
-      const topicOffset = wrap2(Number(topics.get(entry.id)?.topicAngle || stableAngle(entry.id)) - group.rawAngle), rankOffset = members.length > 1 ? (index3 / (members.length - 1) - 0.5) * limit * 1.15 : 0, angle = center + Math.max(-limit, Math.min(limit, topicOffset * 0.2 + rankOffset * 0.8));
-      angles.set(entry.id, angle);
-    });
+    const centerAngle = start2 + groupIndex * sector, meanAtypicality = group.members.reduce((sum, entry) => sum + 1 - Number(relevance.get(entry.id) || 0), 0) / group.members.length, centerRadius = 0.43 + meanAtypicality * 0.25, centerX = Math.cos(centerAngle) * centerRadius, centerY = Math.sin(centerAngle) * centerRadius, raw = group.members.map((entry) => ({ entry, point: rawLayout.get(entry.id) || { x: Math.cos(stableAngle(entry.id)), y: Math.sin(stableAngle(entry.id)) } })), meanX = raw.reduce((sum, value) => sum + value.point.x, 0) / raw.length, meanY = raw.reduce((sum, value) => sum + value.point.y, 0) / raw.length, extent2 = Math.max(1e-3, ...raw.map((value) => Math.hypot(value.point.x - meanX, value.point.y - meanY))), islandRadius = Math.min(0.105, 0.045 + Math.sqrt(group.members.length) * 0.01);
+    for (const value of raw) {
+      const localX = (value.point.x - meanX) / extent2 * islandRadius, localY = (value.point.y - meanY) / extent2 * islandRadius, radialShift = (1 - Number(relevance.get(value.entry.id) || 0) - meanAtypicality) * 0.08;
+      positioned.set(value.entry.id, { x: centerX + localX + Math.cos(centerAngle) * radialShift, y: centerY + localY + Math.sin(centerAngle) * radialShift });
+    }
   });
-  return angles;
+  const extent = Math.max(1e-3, ...[...positioned.values()].map((point) => Math.hypot(point.x, point.y)));
+  if (extent > 0.84) for (const point of positioned.values()) {
+    point.x *= 0.84 / extent;
+    point.y *= 0.84 / extent;
+  }
+  return positioned;
 }
 function classicalDistanceLayout(ids, distances, topics = /* @__PURE__ */ new Map()) {
   const count = ids.length;
@@ -72112,10 +72102,10 @@ var init_mobile_runtime = __esm({
         const layout = classicalDistanceLayout(ids, distances, conditioned ? conceptTopics : topics);
         layout.delete("__center__");
         if (conditioned) {
-          const vaultAngles = vaultCentered ? vaultCommunityAngles(entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1), nodeById, conceptTopics) : null, positioned = /* @__PURE__ */ new Map();
-          for (const entry of entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1)) {
-            const topic = conceptTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = Number(topic?.topicStrength || 0) > 0.015 ? Number(topic.topicAngle) : 0, angle = vaultAngles?.get(entry.id) ?? (lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle), radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
-            positioned.set(entry.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+          const primaryEntries = entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1), vaultLayout = vaultCentered ? vaultCommunityLayout(primaryEntries, nodeById, conceptTopics, layout, relevance) : null, positioned = /* @__PURE__ */ new Map();
+          for (const entry of primaryEntries) {
+            const topic = conceptTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = Number(topic?.topicStrength || 0) > 0.015 ? Number(topic.topicAngle) : 0, angle = lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle, radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
+            positioned.set(entry.id, vaultLayout?.get(entry.id) || { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
           }
           const later = entries.filter((entry) => Number(nodeById.get(entry.id)?.generation || 1) > 1).sort((a2, b) => Number(nodeById.get(a2.id)?.generation || 1) - Number(nodeById.get(b.id)?.generation || 1));
           for (const entry of later) {
@@ -73353,7 +73343,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
       const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
-    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), vaultDensityScale = this.hasQuery ? 1 : Math.max(0.62, Math.min(1, Math.sqrt(72 / Math.max(1, visible.length)))), sigma = Math.max(this.hasQuery ? 9 : 12, 27 * zoom * vaultDensityScale), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
+    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), vaultDensityScale = this.hasQuery ? 1 : Math.max(0.48, Math.min(1, Math.sqrt(48 / Math.max(1, visible.length)))), sigma = Math.max(this.hasQuery ? 9 : 11, 27 * zoom * vaultDensityScale), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
@@ -73387,30 +73377,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       addMass(centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
       anchors.push(center);
     }
-    if (!this.hasQuery && visible.length > 18) this.normalizeVaultDensity(values, columns, rows);
     this.suppressEmptySummits(values, columns, rows, step, anchors, sigma);
     return { values, columns, rows, step };
-  }
-  normalizeVaultDensity(values, columns, rows) {
-    const source = Float32Array.from(values), horizontal = new Float32Array(values.length), broad = new Float32Array(values.length), radius = 7;
-    for (let row = 0; row < rows; row++) {
-      let sum = 0;
-      for (let column = -radius; column <= radius; column++) sum += source[row * columns + Math.max(0, Math.min(columns - 1, column))];
-      for (let column = 0; column < columns; column++) {
-        horizontal[row * columns + column] = sum / (radius * 2 + 1);
-        sum += source[row * columns + Math.min(columns - 1, column + radius + 1)] - source[row * columns + Math.max(0, column - radius)];
-      }
-    }
-    for (let column = 0; column < columns; column++) {
-      let sum = 0;
-      for (let row = -radius; row <= radius; row++) sum += horizontal[Math.max(0, Math.min(rows - 1, row)) * columns + column];
-      for (let row = 0; row < rows; row++) {
-        broad[row * columns + column] = sum / (radius * 2 + 1);
-        sum += horizontal[Math.min(rows - 1, row + radius + 1) * columns + column] - horizontal[Math.max(0, row - radius) * columns + column];
-      }
-    }
-    const contrasted = source.map((value, index3) => Math.max(0, value - broad[index3] * 0.72)), positive = [...contrasted].filter((value) => value > 0.02).sort((a2, b) => a2 - b), reference = positive[Math.floor(positive.length * 0.9)] || 1, scale = Math.max(0.65, Math.min(3.2, 1.9 / reference));
-    for (let index3 = 0; index3 < values.length; index3++) values[index3] = contrasted[index3] * scale;
   }
   suppressEmptySummits(values, columns, rows, step, anchors, sigma) {
     if (anchors.length < 2) return;
@@ -74153,10 +74121,6 @@ var SemanticSearchModal = class extends SuggestModal {
       if (target) {
         node.layoutX = target.x;
         node.layoutY = target.y;
-        if (!query) {
-          node.topicAngle = Math.atan2(target.y, target.x);
-          node.topicHue = (node.topicAngle * 180 / Math.PI + 360) % 360;
-        }
       }
     }
     const displayEdges = this.lens === "arguments" ? [...combinedEdges.map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) })), ...this.lensRelationshipEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target))).map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) }))] : combinedEdges, roads = this.plugin.settings.showWikilinks ? manualRoadEdges(this.app, graphNodes.map((node) => node.id)) : [];
