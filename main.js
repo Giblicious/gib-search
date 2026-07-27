@@ -73252,7 +73252,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const distance = Math.max(0.018, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const collisionDistance = 0.035 + (a2.fileScale + b.fileScale) * 0.022, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.1 * alpha2 : 0, relaxation = -Math.min(12e-4, 8e-6 / (distance * distance)) * alpha2, force = collision + relaxation;
+      const collisionDistance = this.hasQuery ? 0.035 + (a2.fileScale + b.fileScale) * 0.022 : 0.016 + (a2.fileScale + b.fileScale) * 0.012, collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.1 * alpha2 : 0, relaxation = this.hasQuery ? -Math.min(12e-4, 8e-6 / (distance * distance)) * alpha2 : 0, force = collision + relaxation;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
