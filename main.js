@@ -72155,6 +72155,40 @@ var init_mobile_runtime = __esm({
             const node = nodeById.get(entry.id), parent = positioned.get(node?.parent) || layout.get(node?.parent) || { x: 0, y: 0 }, topicAngle = Number(layoutTopics.get(entry.id)?.topicAngle ?? stableAngle(entry.id)), parentAngle = Math.atan2(parent.y, parent.x), blendX = Math.cos(topicAngle) * 0.68 + Math.cos(parentAngle) * 0.32, blendY = Math.sin(topicAngle) * 0.68 + Math.sin(parentAngle) * 0.32, jitter = (stableAngle(entry.id) / (Math.PI * 2) - 0.5) * 0.32, angle = Math.atan2(blendY, blendX) + jitter, step = 0.13 + (1 - Math.max(0, Math.min(1, Number(node?.relationScore || 0.5)))) * 0.1;
             positioned.set(entry.id, { x: parent.x + Math.cos(angle) * step, y: parent.y + Math.sin(angle) * step });
           }
+          if (linkMode && positioned.size > 1) {
+            const originals = new Map([...positioned].map(([id2, point]) => [id2, { ...point }])), linked = [], seen = /* @__PURE__ */ new Set();
+            for (const source of positioned.keys()) for (const [target, count] of Object.entries(resolvedLinks[source] || {})) {
+              if (!positioned.has(target) || source === target) continue;
+              const key = [source, target].sort().join("\0");
+              if (seen.has(key)) continue;
+              seen.add(key);
+              linked.push({ source, target, count: Number(count || 1) + Number(resolvedLinks[target]?.[source] || 0) });
+            }
+            if (linked.length) for (let pass = 0; pass < 72; pass++) {
+              const movement = new Map([...positioned.keys()].map((id2) => [id2, { x: 0, y: 0 }]));
+              for (const edge of linked) {
+                const source = positioned.get(edge.source), target = positioned.get(edge.target), dx = target.x - source.x, dy = target.y - source.y, distance = Math.max(1e-3, Math.hypot(dx, dy)), desired = Math.max(0.075, 0.14 / Math.sqrt(Math.max(1, edge.count))), force = Math.tanh((distance - desired) * 4.5) * 0.052, shiftX = dx / distance * force, shiftY = dy / distance * force;
+                movement.get(edge.source).x += shiftX;
+                movement.get(edge.source).y += shiftY;
+                movement.get(edge.target).x -= shiftX;
+                movement.get(edge.target).y -= shiftY;
+              }
+              for (const [id2, point] of positioned) {
+                const delta = movement.get(id2), original = originals.get(id2);
+                point.x += delta.x;
+                point.y += delta.y;
+                if (!vaultCentered) {
+                  const targetRadius = Math.hypot(original.x, original.y), radius = Math.max(1e-3, Math.hypot(point.x, point.y)), correction = (targetRadius - radius) * 0.14;
+                  point.x += point.x / radius * correction;
+                  point.y += point.y / radius * correction;
+                } else {
+                  point.x += (original.x - point.x) * 0.018;
+                  point.y += (original.y - point.y) * 0.018;
+                }
+              }
+              if (pass % 18 === 17) await yieldToUi();
+            }
+          }
           if (vaultCentered && positioned.size) {
             const points2 = [...positioned.values()], meanX2 = points2.reduce((sum, point) => sum + point.x, 0) / points2.length, meanY2 = points2.reduce((sum, point) => sum + point.y, 0) / points2.length, extent2 = Math.max(1e-3, ...points2.map((point) => Math.hypot(point.x - meanX2, point.y - meanY2))), scale = 0.82 / extent2;
             for (const point of points2) {
@@ -73423,8 +73457,86 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     this.queryNode.layoutX = 0;
     this.queryNode.layoutY = 0;
+    this.resolveLayoutOverlaps(this.nodes, Boolean(this.hasQuery));
     this.lastTerrainAt = 0;
     this.startSimulation(0.82);
+  }
+  collisionDistance(a2, b, queryMode = this.hasQuery) {
+    if (a2?.isQuery || b?.isQuery) return 0.052 + Math.max(0, Math.min(1, Number((a2?.isQuery ? b : a2)?.fileScale ?? 0.35))) * 0.014;
+    return (queryMode ? 0.035 + (Number(a2.fileScale || 0) + Number(b.fileScale || 0)) * 0.022 : 0.016 + (Number(a2.fileScale || 0) + Number(b.fileScale || 0)) * 0.012) * (queryMode ? 1 : Number(this.tuning?.collisionSpacing || 1));
+  }
+  resolveLayoutOverlaps(nodes, includeCenter) {
+    const values = nodes || [];
+    for (let pass = 0; pass < 24; pass++) {
+      let moved = false;
+      for (let first = 0; first < values.length; first++) for (let second = first + 1; second < values.length; second++) {
+        const a2 = values[first], b = values[second], minimum = this.collisionDistance(a2, b, includeCenter) * 1.22;
+        let dx = Number(b.layoutX) - Number(a2.layoutX), dy = Number(b.layoutY) - Number(a2.layoutY), distance = Math.hypot(dx, dy);
+        if (distance >= minimum) continue;
+        if (distance < 1e-4) {
+          const angle = stableMapAngle(`${a2.id}\0${b.id}`);
+          dx = Math.cos(angle);
+          dy = Math.sin(angle);
+          distance = 0;
+        } else {
+          dx /= distance;
+          dy /= distance;
+        }
+        const overlap = minimum - distance, aPriority = a2.matched && !b.matched ? 0 : !a2.matched && b.matched ? 1 : 0.5, bPriority = 1 - aPriority;
+        a2.layoutX -= dx * overlap * aPriority;
+        a2.layoutY -= dy * overlap * aPriority;
+        b.layoutX += dx * overlap * bPriority;
+        b.layoutY += dy * overlap * bPriority;
+        moved = true;
+      }
+      if (includeCenter) for (const node of values) {
+        const minimum = this.collisionDistance(node, { isQuery: true }, true) * 1.22;
+        let dx = Number(node.layoutX), dy = Number(node.layoutY), distance = Math.hypot(dx, dy);
+        if (distance >= minimum) continue;
+        if (distance < 1e-4) {
+          const angle = stableMapAngle(`center\0${node.id}`);
+          dx = Math.cos(angle);
+          dy = Math.sin(angle);
+        } else {
+          dx /= distance;
+          dy /= distance;
+        }
+        node.layoutX = dx * minimum;
+        node.layoutY = dy * minimum;
+        moved = true;
+      }
+      if (!moved) break;
+    }
+  }
+  applyCollisionForces(bodies, alpha2) {
+    const cellSize = 0.09, key = (x, y) => `${x},${y}`;
+    for (let pass = 0; pass < 2; pass++) {
+      const cells = /* @__PURE__ */ new Map();
+      for (const body of bodies) {
+        const cellX = Math.floor(Number(body.x) / cellSize), cellY = Math.floor(Number(body.y) / cellSize);
+        for (let offsetX = -1; offsetX <= 1; offsetX++) for (let offsetY = -1; offsetY <= 1; offsetY++) for (const other of cells.get(key(cellX + offsetX, cellY + offsetY)) || []) {
+          const minimum = this.collisionDistance(other, body), rawX = Number(body.x) - Number(other.x), rawY = Number(body.y) - Number(other.y);
+          let distance = Math.hypot(rawX, rawY);
+          if (distance >= minimum) continue;
+          const angle = distance < 1e-4 ? stableMapAngle(`${other.id}\0${body.id}`) : 0, dx = distance < 1e-4 ? Math.cos(angle) : rawX / distance, dy = distance < 1e-4 ? Math.sin(angle) : rawY / distance, correction = (minimum - distance) * 1.01, otherPriority = other.isQuery || other.matched && !body.matched ? 0 : !other.matched && body.matched ? 1 : 0.5, bodyPriority = 1 - otherPriority;
+          if (other !== this.dragging && !other.isQuery) {
+            other.x -= dx * correction * otherPriority;
+            other.y -= dy * correction * otherPriority;
+            other.vx -= dx * correction * 0.08 * otherPriority;
+            other.vy -= dy * correction * 0.08 * otherPriority;
+          }
+          if (body !== this.dragging && !body.isQuery) {
+            body.x += dx * correction * bodyPriority;
+            body.y += dy * correction * bodyPriority;
+            body.vx += dx * correction * 0.08 * bodyPriority;
+            body.vy += dy * correction * 0.08 * bodyPriority;
+          }
+        }
+        const values = cells.get(key(cellX, cellY)) || [];
+        values.push(body);
+        cells.set(key(cellX, cellY), values);
+      }
+    }
   }
   setupViewportControls() {
     this.headingEl.addClass("has-viewport");
@@ -73485,6 +73597,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64), backgroundVisibility = 0.08 + fileScale * 0.12, promoted = Boolean(hasQuery && matched && old && !old.matched), captureX = promoted ? layoutX - Number(old.x || 0) : 0, captureY = promoted ? layoutY - Number(old.y || 0) : 0;
       return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : preserveBackground ? backgroundVisibility : 0 : targetVisibility, blur: old?.blur ?? 0, targetBlur: hasQuery && !matched && preserveBackground ? 1 : 0, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, capture: promoted ? 1 : Number(old?.capture || 0), layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: promoted ? Number(old.vx || 0) * 0.12 + captureX * 0.018 : old?.vx || 0, vy: promoted ? Number(old.vy || 0) * 0.12 + captureY * 0.018 : old?.vy || 0 };
     });
+    this.resolveLayoutOverlaps(this.nodes, hasQuery);
     const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
       const weight = Number(edge.affinity ?? edge.score ?? overallLow), overall = (weight - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0))), sourceCommunity = communityById.get(edge.source), targetCommunity = communityById.get(edge.target), crossCommunity = sourceCommunity !== void 0 && targetCommunity !== void 0 && sourceCommunity !== targetCommunity, baseStrength = edge.bridge ? 0.1 : overall * (0.62 + Math.max(0, residual) * 0.48), strength = crossCommunity ? baseStrength * 0.08 : baseStrength;
@@ -73557,7 +73670,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       node.accent += (node.targetAccent - node.accent) * 0.09;
       node.capture = Number(node.capture || 0) * 0.93;
     }
-    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, collisionNodes = preserveBackground && this.hasQuery && !this.pendingQuery ? foreground : activeNodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
+    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
       const background = preserveBackground && this.hasQuery && !node.matched, captureBoost = node.matched ? Number(node.capture || 0) * 0.032 : 0, strength = background ? 35e-4 * alpha2 : 0.018 * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2) + captureBoost;
@@ -73569,13 +73682,15 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       query.vx += (query.layoutX - query.x) * strength;
       query.vy += (query.layoutY - query.y) * strength;
     }
-    for (let first = 0; first < collisionNodes.length; first++) for (let second = first + 1; second < collisionNodes.length; second++) {
-      const a2 = collisionNodes[first], b = collisionNodes[second];
+    this.applyCollisionForces(this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes, alpha2);
+    const relaxationNodes = this.hasQuery ? foreground : Number(tuning.repulsion || 0) > 0 ? activeNodes : [];
+    for (let first = 0; first < relaxationNodes.length; first++) for (let second = first + 1; second < relaxationNodes.length; second++) {
+      const a2 = relaxationNodes[first], b = relaxationNodes[second];
       let dx = b.x - a2.x, dy = b.y - a2.y;
       const distance = Math.max(0.018, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const baseCollision = this.hasQuery ? 0.035 + (a2.fileScale + b.fileScale) * 0.022 : 0.016 + (a2.fileScale + b.fileScale) * 0.012, collisionDistance = baseCollision * (vaultMode ? tuning.collisionSpacing : 1), collision = distance < collisionDistance ? -(collisionDistance - distance) * 0.1 * alpha2 : 0, relaxation = this.hasQuery ? -Math.min(12e-4, 8e-6 / (distance * distance)) * alpha2 : -Math.min(9e-4, 6e-6 / (distance * distance)) * Number(tuning.repulsion || 0) * alpha2, force = collision + relaxation;
+      const force = this.hasQuery ? -Math.min(12e-4, 8e-6 / (distance * distance)) * alpha2 : -Math.min(9e-4, 6e-6 / (distance * distance)) * Number(tuning.repulsion || 0) * alpha2;
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -73663,8 +73778,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         }
       }
     }
-    if (this.manualLinkInfluence && this.roadEdges.length) {
-      const isActive = (body) => body === query ? this.queryPresence > 0.04 : !this.hasQuery || this.pendingQuery || body.matched;
+    if ((this.manualLinkInfluence || this.mapGroupingMode === "links") && this.roadEdges.length) {
+      const isActive = (body) => body === query ? this.queryPresence > 0.04 : !this.hasQuery || this.pendingQuery || body.matched, linkMode = this.mapGroupingMode === "links";
       for (const edge of this.roadEdges) {
         const source = edge.source === this.center?.id ? query : this.byId.get(edge.source), target = edge.target === this.center?.id ? query : this.byId.get(edge.target);
         if (!source || !target || !isActive(source) || !isActive(target)) continue;
@@ -73672,7 +73787,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         const distance = Math.max(0.018, Math.hypot(dx, dy));
         dx /= distance;
         dy /= distance;
-        const hubScale = 1 / Math.sqrt(Math.max(1, Number(this.roadDegrees?.get(edge.source) || 1), Number(this.roadDegrees?.get(edge.target) || 1))), desired = 0.2, force = Math.tanh((distance - desired) * 3.2) * 36e-4 * hubScale * alpha2;
+        const hubScale = 1 / Math.sqrt(Math.max(1, Number(this.roadDegrees?.get(edge.source) || 1), Number(this.roadDegrees?.get(edge.target) || 1))), desired = linkMode ? 0.13 : 0.2, force = Math.tanh((distance - desired) * (linkMode ? 4.5 : 3.2)) * (linkMode ? 9e-3 : 36e-4) * hubScale * alpha2;
         if (source !== this.dragging) {
           source.vx += dx * force;
           source.vy += dy * force;
@@ -73748,7 +73863,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   coordinates(node, width, height) {
     let x = Number(node.x), y = Number(node.y);
     if (this.options.preserveBackground && this.hasQuery && !this.pendingQuery && !node.matched && !node.isQuery) {
-      const angle = (performance.now() - this.ambientStartedAt) * 6e-6, dx = x - this.queryNode.x, dy = y - this.queryNode.y, cosine = Math.cos(angle), sine = Math.sin(angle);
+      const angle = Math.sin((performance.now() - this.ambientStartedAt) * 18e-5) * 8e-3, dx = x - this.queryNode.x, dy = y - this.queryNode.y, cosine = Math.cos(angle), sine = Math.sin(angle);
       x = this.queryNode.x + dx * cosine - dy * sine;
       y = this.queryNode.y + dx * sine + dy * cosine;
     }
