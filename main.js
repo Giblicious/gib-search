@@ -70535,6 +70535,51 @@ function topicCoordinates(entries, center, axes) {
     return [point.id, { topicAngle: angle, topicStrength: strength, topicHue: (angle * 180 / Math.PI + 360) % 360 }];
   }));
 }
+function vaultCommunityAngles(entries, nodeById, topics) {
+  const wrap2 = (angle) => Math.atan2(Math.sin(angle), Math.cos(angle)), groups = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const node = nodeById.get(entry.id), community = node?.facet ?? node?.community ?? 0, topic = topics.get(entry.id), group = groups.get(community) || { id: community, members: [], x: 0, y: 0 };
+    const weight = 0.25 + Number(topic?.topicStrength || 0);
+    group.members.push(entry);
+    group.x += Math.cos(Number(topic?.topicAngle || stableAngle(entry.id))) * weight;
+    group.y += Math.sin(Number(topic?.topicAngle || stableAngle(entry.id))) * weight;
+    groups.set(community, group);
+  }
+  const neighborhoods = [];
+  for (const group of groups.values()) {
+    const rawAngle = Math.atan2(group.y, group.x), members = group.members.slice().sort((first, second) => wrap2(Number(topics.get(first.id)?.topicAngle || 0) - rawAngle) - wrap2(Number(topics.get(second.id)?.topicAngle || 0) - rawAngle) || first.id.localeCompare(second.id)), parts = Math.max(1, Math.ceil(members.length / 28));
+    for (let part = 0; part < parts; part++) {
+      const subset = members.slice(Math.floor(part * members.length / parts), Math.floor((part + 1) * members.length / parts));
+      let x = 0, y = 0;
+      for (const entry of subset) {
+        const topic = topics.get(entry.id), weight = 0.25 + Number(topic?.topicStrength || 0), angle = Number(topic?.topicAngle || stableAngle(entry.id));
+        x += Math.cos(angle) * weight;
+        y += Math.sin(angle) * weight;
+      }
+      neighborhoods.push({ id: `${group.id}:${part}`, members: subset, rawAngle: Math.atan2(y, x) });
+    }
+  }
+  const ordered = neighborhoods.sort((first, second) => first.rawAngle - second.rawAngle || String(first.id).localeCompare(String(second.id)));
+  if (!ordered.length) return /* @__PURE__ */ new Map();
+  let largestGap = -1, firstIndex = 0;
+  for (let index3 = 0; index3 < ordered.length; index3++) {
+    const current = ordered[index3].rawAngle, next = index3 === ordered.length - 1 ? ordered[0].rawAngle + Math.PI * 2 : ordered[index3 + 1].rawAngle, gap = next - current;
+    if (gap > largestGap) {
+      largestGap = gap;
+      firstIndex = (index3 + 1) % ordered.length;
+    }
+  }
+  const rotated = Array.from({ length: ordered.length }, (_2, index3) => ordered[(firstIndex + index3) % ordered.length]), sector = Math.PI * 2 / rotated.length, start2 = rotated[0].rawAngle;
+  const angles = /* @__PURE__ */ new Map();
+  rotated.forEach((group, groupIndex) => {
+    const center = start2 + groupIndex * sector, limit = Math.min(0.72, sector * 0.34), members = group.members.slice().sort((first, second) => wrap2(Number(topics.get(first.id)?.topicAngle || 0) - group.rawAngle) - wrap2(Number(topics.get(second.id)?.topicAngle || 0) - group.rawAngle) || first.id.localeCompare(second.id));
+    members.forEach((entry, index3) => {
+      const topicOffset = wrap2(Number(topics.get(entry.id)?.topicAngle || stableAngle(entry.id)) - group.rawAngle), rankOffset = members.length > 1 ? (index3 / (members.length - 1) - 0.5) * limit * 1.15 : 0, angle = center + Math.max(-limit, Math.min(limit, topicOffset * 0.2 + rankOffset * 0.8));
+      angles.set(entry.id, angle);
+    });
+  });
+  return angles;
+}
 function classicalDistanceLayout(ids, distances, topics = /* @__PURE__ */ new Map()) {
   const count = ids.length;
   if (!count) return /* @__PURE__ */ new Map();
@@ -71999,9 +72044,9 @@ var init_mobile_runtime = __esm({
         const layout = classicalDistanceLayout(ids, distances, conditioned ? conceptTopics : topics);
         layout.delete("__center__");
         if (conditioned) {
-          const positioned = /* @__PURE__ */ new Map();
+          const vaultAngles = vaultCentered ? vaultCommunityAngles(entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1), nodeById, conceptTopics) : null, positioned = /* @__PURE__ */ new Map();
           for (const entry of entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1)) {
-            const topic = conceptTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = Number(topic?.topicStrength || 0) > 0.015 ? Number(topic.topicAngle) : 0, angle = lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle, radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
+            const topic = conceptTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = Number(topic?.topicStrength || 0) > 0.015 ? Number(topic.topicAngle) : 0, angle = vaultAngles?.get(entry.id) ?? (lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle), radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
             positioned.set(entry.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
           }
           const later = entries.filter((entry) => Number(nodeById.get(entry.id)?.generation || 1) > 1).sort((a2, b) => Number(nodeById.get(a2.id)?.generation || 1) - Number(nodeById.get(b.id)?.generation || 1));
@@ -73240,7 +73285,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
       const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
-    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), vaultDensityScale = this.hasQuery ? 1 : Math.max(0.38, Math.min(1, Math.sqrt(42 / Math.max(1, visible.length)))), sigma = Math.max(this.hasQuery ? 9 : 7, 27 * zoom * vaultDensityScale), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
+    })), zoom = Math.max(0.35, this.cameraZoom * this.userZoom), vaultDensityScale = this.hasQuery ? 1 : Math.max(0.62, Math.min(1, Math.sqrt(72 / Math.max(1, visible.length)))), sigma = Math.max(this.hasQuery ? 9 : 12, 27 * zoom * vaultDensityScale), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
       const reach = radius * 3, left = Math.max(0, Math.floor((x - reach) / step)), right = Math.min(columns - 1, Math.ceil((x + reach) / step)), top = Math.max(0, Math.floor((y - reach) / step)), bottom = Math.min(rows - 1, Math.ceil((y + reach) / step)), divisor = 2 * radius * radius;
       for (let row = top; row <= bottom; row++) for (let column = left; column <= right; column++) {
@@ -73274,8 +73319,30 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       addMass(centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
       anchors.push(center);
     }
+    if (!this.hasQuery && visible.length > 18) this.normalizeVaultDensity(values, columns, rows);
     this.suppressEmptySummits(values, columns, rows, step, anchors, sigma);
     return { values, columns, rows, step };
+  }
+  normalizeVaultDensity(values, columns, rows) {
+    const source = Float32Array.from(values), horizontal = new Float32Array(values.length), broad = new Float32Array(values.length), radius = 7;
+    for (let row = 0; row < rows; row++) {
+      let sum = 0;
+      for (let column = -radius; column <= radius; column++) sum += source[row * columns + Math.max(0, Math.min(columns - 1, column))];
+      for (let column = 0; column < columns; column++) {
+        horizontal[row * columns + column] = sum / (radius * 2 + 1);
+        sum += source[row * columns + Math.min(columns - 1, column + radius + 1)] - source[row * columns + Math.max(0, column - radius)];
+      }
+    }
+    for (let column = 0; column < columns; column++) {
+      let sum = 0;
+      for (let row = -radius; row <= radius; row++) sum += horizontal[Math.max(0, Math.min(rows - 1, row)) * columns + column];
+      for (let row = 0; row < rows; row++) {
+        broad[row * columns + column] = sum / (radius * 2 + 1);
+        sum += horizontal[Math.min(rows - 1, row + radius + 1) * columns + column] - horizontal[Math.max(0, row - radius) * columns + column];
+      }
+    }
+    const contrasted = source.map((value, index3) => Math.max(0, value - broad[index3] * 0.72)), positive = [...contrasted].filter((value) => value > 0.02).sort((a2, b) => a2 - b), reference = positive[Math.floor(positive.length * 0.9)] || 1, scale = Math.max(0.65, Math.min(3.2, 1.9 / reference));
+    for (let index3 = 0; index3 < values.length; index3++) values[index3] = contrasted[index3] * scale;
   }
   suppressEmptySummits(values, columns, rows, step, anchors, sigma) {
     if (anchors.length < 2) return;
