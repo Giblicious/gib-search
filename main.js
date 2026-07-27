@@ -70773,6 +70773,56 @@ function consolidateCommunities(entries, communities) {
   ordered.forEach((members, community) => members.forEach((id2) => result.set(id2, community)));
   return result;
 }
+function mergeConnectedCommunities(ids, edges, communities, maximum) {
+  const roots = new Map([...new Set(ids.map((id2) => communities.get(id2) ?? 0))].map((id2) => [id2, id2])), capacity = Math.max(8, Math.ceil(ids.length / maximum * 2.1)), find9 = (value) => {
+    let root = value;
+    while (roots.get(root) !== root) root = roots.get(root);
+    while (roots.get(value) !== value) {
+      const next = roots.get(value);
+      roots.set(value, root);
+      value = next;
+    }
+    return root;
+  };
+  while (new Set([...roots.keys()].map(find9)).size > maximum) {
+    const sizes = /* @__PURE__ */ new Map();
+    for (const id2 of ids) {
+      const root = find9(communities.get(id2) ?? 0);
+      sizes.set(root, (sizes.get(root) || 0) + 1);
+    }
+    const pairs3 = /* @__PURE__ */ new Map();
+    for (const edge of edges) {
+      const first2 = find9(communities.get(edge.source) ?? 0), second2 = find9(communities.get(edge.target) ?? 0);
+      if (first2 === second2) continue;
+      const key = [first2, second2].sort((a2, b) => String(a2).localeCompare(String(b))).join("\0"), value = pairs3.get(key) || { first: first2, second: second2, sum: 0, count: 0, maximum: 0 };
+      value.sum += Number(edge.affinity || 0);
+      value.count++;
+      value.maximum = Math.max(value.maximum, Number(edge.affinity || 0));
+      pairs3.set(key, value);
+    }
+    const rank = (values) => values.map((pair) => {
+      const firstSize = sizes.get(pair.first) || 1, secondSize = sizes.get(pair.second) || 1, imbalance = Math.max(firstSize, secondSize) / Math.max(1, Math.min(firstSize, secondSize)), score = (pair.maximum * 0.7 + pair.sum / pair.count * 0.3) / (1 + imbalance * 0.08);
+      return { ...pair, score };
+    }).sort((a2, b) => b.score - a2.score || String(a2.first).localeCompare(String(b.first))), bounded = [...pairs3.values()].filter((pair) => (sizes.get(pair.first) || 1) + (sizes.get(pair.second) || 1) <= capacity), ranked = rank(bounded.length ? bounded : [...pairs3.values()]);
+    let chosen = ranked[0];
+    if (!chosen) {
+      const smallest = [...sizes].sort((a2, b) => a2[1] - b[1] || String(a2[0]).localeCompare(String(b[0])));
+      if (smallest.length < 2) break;
+      chosen = { first: smallest[0][0], second: smallest[1][0] };
+    }
+    const first = find9(chosen.first), second = find9(chosen.second);
+    roots.set(second, first);
+  }
+  const groups = /* @__PURE__ */ new Map();
+  for (const id2 of ids) {
+    const root = find9(communities.get(id2) ?? 0), members = groups.get(root) || [];
+    members.push(id2);
+    groups.set(root, members);
+  }
+  const ordered = [...groups.values()].sort((first, second) => first.slice().sort()[0].localeCompare(second.slice().sort()[0])), result = /* @__PURE__ */ new Map();
+  ordered.forEach((members, community) => members.forEach((id2) => result.set(id2, community)));
+  return result;
+}
 function clusteredSemanticPositions(entries, communities) {
   if (!entries.length) return /* @__PURE__ */ new Map();
   const first = entries[0], second = entries.reduce((best, entry) => dot(first.vector, entry.vector) < dot(first.vector, best.vector) ? entry : best, first), third = entries.reduce((best, entry) => Math.max(dot(first.vector, entry.vector), dot(second.vector, entry.vector)) < Math.max(dot(first.vector, best.vector), dot(second.vector, best.vector)) ? entry : best, first);
@@ -70863,6 +70913,13 @@ function yieldToUi() {
 function sampleEvenly(items, maximum) {
   if (items.length <= maximum) return items;
   return Array.from({ length: maximum }, (_2, index3) => items[Math.round(index3 * (items.length - 1) / (maximum - 1))]);
+}
+function topChunkSimilarity(first, second) {
+  const scores = [];
+  for (const a2 of first || []) for (const b of second || []) scores.push(dot(a2, b));
+  scores.sort((a2, b) => b - a2);
+  const weights = [0.55, 0.3, 0.15], count = Math.min(weights.length, scores.length), total = weights.slice(0, count).reduce((sum, value) => sum + value, 0);
+  return count ? scores.slice(0, count).reduce((sum, value, index3) => sum + value * weights[index3], 0) / total : -1;
 }
 function stripFrontmatter(content) {
   if (!content.startsWith("---")) return content;
@@ -71843,6 +71900,17 @@ var init_mobile_runtime = __esm({
         }
         return groups;
       }
+      filePassageVectors(files = null, maximum = 8) {
+        const requested = files ? new Set(files) : null, groups = /* @__PURE__ */ new Map();
+        this.meta.forEach((item, index3) => {
+          if (requested && !requested.has(item.file) || !this.vectors[index3]) return;
+          const values = groups.get(item.file) || [];
+          values.push(this.vectors[index3]);
+          groups.set(item.file, values);
+        });
+        for (const [file, values] of groups) groups.set(file, sampleEvenly(values, maximum));
+        return groups;
+      }
       fileEntities(files = null) {
         const requested = files ? new Set(files) : null, groups = /* @__PURE__ */ new Map();
         for (const item of this.meta) {
@@ -72090,10 +72158,10 @@ var init_mobile_runtime = __esm({
         return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...positions.get(entry.id) || {} })), edges };
       }
       async semanticStarfield(query, files = null, focusFiles = []) {
-        const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))];
-        const signature = `${this.meta.length}:${this.vectors.length}:${requested.join("\0")}`;
+        const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))], trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18;
+        const signature = `${this.meta.length}:${this.vectors.length}:${vaultMode ? "chunks" : "files"}:${requested.join("\0")}`;
         if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
-          const vectors = this.fileVectors(requested), entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
+          const vectors = this.fileVectors(requested), passages = vaultMode ? this.filePassageVectors(requested) : null, entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
           for (const entities of entitySets2.values()) for (const entity2 of entities) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
           const entityAffinity = (first, second) => {
             const a2 = entitySets2.get(first) || /* @__PURE__ */ new Set(), b = entitySets2.get(second) || /* @__PURE__ */ new Set();
@@ -72109,8 +72177,8 @@ var init_mobile_runtime = __esm({
             }
             return shared / Math.max(1e-3, Math.sqrt(aWeight * bWeight));
           };
-          const neighbors = entries2.map((entry, first) => entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8)), directed = neighbors.map((list4) => {
-            const floor = Number(list4.at(-1)?.score || 0), spread = Math.max(0.02, 1 - floor);
+          const neighbors = entries2.map((entry, first) => entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: vaultMode ? topChunkSimilarity(passages.get(entry.id), passages.get(other.id)) : dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8)), directed = neighbors.map((list4) => {
+            const floor = Number(list4.at(-1)?.score || 0), ceiling = Number(list4[0]?.score || 1), spread = Math.max(0.02, ceiling - floor);
             return new Map(list4.map((item) => [item.index, { ...item, affinity: Math.max(1e-3, (item.score - floor) / spread) * 0.82 + item.entityScore * 0.18 }]));
           }), edges2 = [], seen2 = /* @__PURE__ */ new Set(), incident = /* @__PURE__ */ new Set();
           for (let first = 0; first < entries2.length; first++) for (const [second, relation] of directed[first]) {
@@ -72141,10 +72209,10 @@ var init_mobile_runtime = __esm({
               edges2.push({ source: entries2[first].id, target: entries2[relation.second].id, score: dot(entries2[first].vector, entries2[relation.second].vector), entityScore: relation.score, affinity: 0.08 + relation.score * 0.28, entityBridge: true });
             }
           }
-          const communities2 = consolidateCommunities(entries2, louvainCommunities(entries2.map((entry) => entry.id), edges2)), positions2 = clusteredSemanticPositions(entries2, communities2);
+          const detected = louvainCommunities(entries2.map((entry) => entry.id), edges2), communities2 = vaultMode ? mergeConnectedCommunities(entries2.map((entry) => entry.id), edges2, detected, Math.max(10, Math.min(18, Math.round(Math.sqrt(entries2.length))))) : consolidateCommunities(entries2, detected), positions2 = clusteredSemanticPositions(entries2, communities2);
           this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, entitySets: entitySets2 };
         }
-        const { entries, edges, positions, communities, entitySets } = this.starfieldCache, trimmed = String(query || "").trim(), basis = this.topicBasis();
+        const { entries, edges, positions, communities, entitySets } = this.starfieldCache, basis = this.topicBasis();
         if (!trimmed) {
           const topics2 = topicCoordinates(entries, basis.center, basis.axes);
           return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, community: communities.get(entry.id) ?? 0, entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics2.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
