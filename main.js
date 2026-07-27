@@ -73516,9 +73516,38 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       }
     }
   }
+  prepareLinkComponents() {
+    const parent = new Map(this.nodes.map((node) => [node.id, node.id])), find9 = (id2) => {
+      let root = id2;
+      while (parent.get(root) !== root) root = parent.get(root);
+      while (parent.get(id2) !== id2) {
+        const next = parent.get(id2);
+        parent.set(id2, root);
+        id2 = next;
+      }
+      return root;
+    }, join = (first, second) => {
+      const a2 = find9(first), b = find9(second);
+      if (a2 !== b) parent.set(b, a2);
+    };
+    for (const edge of this.roadEdges) if (parent.has(edge.source) && parent.has(edge.target)) join(edge.source, edge.target);
+    const groups = /* @__PURE__ */ new Map();
+    for (const node of this.nodes) {
+      const root = find9(node.id), group = groups.get(root) || [];
+      group.push(node);
+      groups.set(root, group);
+    }
+    this.linkComponentById = /* @__PURE__ */ new Map();
+    this.linkComponentAnchors = /* @__PURE__ */ new Map();
+    for (const [root, members] of groups) {
+      const anchor = { x: members.reduce((sum, node) => sum + node.layoutX, 0) / members.length, y: members.reduce((sum, node) => sum + node.layoutY, 0) / members.length };
+      this.linkComponentAnchors.set(root, anchor);
+      for (const node of members) this.linkComponentById.set(node.id, root);
+    }
+  }
   applyLinkGraphForces(nodes, alpha2) {
     if (nodes.length < 2) return;
-    const active = new Set(nodes.map((node) => node.id)), degrees = /* @__PURE__ */ new Map(), links = [];
+    const temperature = Math.max(0.22, alpha2), active = new Set(nodes.map((node) => node.id)), degrees = /* @__PURE__ */ new Map(), links = [];
     for (const edge of this.roadEdges) {
       if (!active.has(edge.source) || !active.has(edge.target)) continue;
       degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1);
@@ -73538,7 +73567,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         dx /= distance;
         dy /= distance;
       }
-      const desired = 0.17 + (source.fileScale + target.fileScale) * 0.025, degreeScale = 1 / Math.sqrt(Math.max(1, degrees.get(edge.source) || 1, degrees.get(edge.target) || 1)), force = Math.tanh((distance - desired) * 4.2) * 0.014 * degreeScale * alpha2;
+      const desired = 0.2 + (source.fileScale + target.fileScale) * 0.03, degreeScale = 1 / Math.sqrt(Math.max(1, Math.min(degrees.get(edge.source) || 1, degrees.get(edge.target) || 1))), force = Math.max(-0.012, Math.min(0.012, (distance - desired) * 0.035)) * degreeScale * temperature;
       if (source !== this.dragging) {
         source.vx += dx * force;
         source.vy += dy * force;
@@ -73548,39 +73577,48 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         target.vy -= dy * force;
       }
     }
-    const cellSize = 0.36, cells = /* @__PURE__ */ new Map(), key = (x, y) => `${x},${y}`;
-    for (const node of nodes) {
-      const cellX = Math.floor(node.x / cellSize), cellY = Math.floor(node.y / cellSize);
-      for (let offsetX = -1; offsetX <= 1; offsetX++) for (let offsetY = -1; offsetY <= 1; offsetY++) for (const other of cells.get(key(cellX + offsetX, cellY + offsetY)) || []) {
-        let dx = node.x - other.x, dy = node.y - other.y, distance = Math.hypot(dx, dy);
-        if (distance >= cellSize) continue;
-        if (distance < 1e-4) {
-          const angle = stableMapAngle(`${other.id}\0${node.id}`);
-          dx = Math.cos(angle);
-          dy = Math.sin(angle);
-          distance = 1e-4;
-        } else {
-          dx /= distance;
-          dy /= distance;
-        }
-        const force = (1 - distance / cellSize) ** 2 * 45e-4 * alpha2;
-        if (other !== this.dragging) {
-          other.vx -= dx * force;
-          other.vy -= dy * force;
-        }
-        if (node !== this.dragging) {
-          node.vx += dx * force;
-          node.vy += dy * force;
-        }
+    for (let first = 0; first < nodes.length; first++) for (let second = first + 1; second < nodes.length; second++) {
+      const a2 = nodes[first], b = nodes[second];
+      let dx = b.x - a2.x, dy = b.y - a2.y, distanceSquared = dx * dx + dy * dy, distance = Math.sqrt(distanceSquared);
+      if (distance < 1e-4) {
+        const angle = stableMapAngle(`${a2.id}\0${b.id}`);
+        dx = Math.cos(angle);
+        dy = Math.sin(angle);
+        distance = 1e-4;
+        distanceSquared = 1e-4;
+      } else {
+        dx /= distance;
+        dy /= distance;
       }
-      const values = cells.get(key(cellX, cellY)) || [];
-      values.push(node);
-      cells.set(key(cellX, cellY), values);
+      const force = Math.min(32e-4, 32e-6 / (distanceSquared + 35e-4)) * temperature;
+      if (a2 !== this.dragging) {
+        a2.vx -= dx * force;
+        a2.vy -= dy * force;
+      }
+      if (b !== this.dragging) {
+        b.vx += dx * force;
+        b.vy += dy * force;
+      }
+    }
+    const components = /* @__PURE__ */ new Map();
+    for (const node of nodes) {
+      const root = this.linkComponentById?.get(node.id) ?? node.id, group = components.get(root) || [];
+      group.push(node);
+      components.set(root, group);
+    }
+    for (const [root, members] of components) {
+      const anchor = this.linkComponentAnchors?.get(root);
+      if (!anchor) continue;
+      const centerX2 = members.reduce((sum, node) => sum + node.x, 0) / members.length, centerY2 = members.reduce((sum, node) => sum + node.y, 0) / members.length, forceX = (anchor.x - centerX2) * 12e-4 * temperature, forceY = (anchor.y - centerY2) * 12e-4 * temperature;
+      for (const node of members) if (node !== this.dragging) {
+        node.vx += forceX;
+        node.vy += forceY;
+      }
     }
     const centerX = nodes.reduce((sum, node) => sum + node.x, 0) / nodes.length, centerY = nodes.reduce((sum, node) => sum + node.y, 0) / nodes.length;
     for (const node of nodes) if (node !== this.dragging) {
-      node.vx -= centerX * 22e-4 * alpha2;
-      node.vy -= centerY * 22e-4 * alpha2;
+      node.vx -= centerX * 15e-4 * temperature;
+      node.vy -= centerY * 15e-4 * temperature;
     }
   }
   setupViewportControls() {
@@ -73661,6 +73699,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.roadEdges = nextRoads;
     this.roadDegrees = roadDegrees;
     this.roadIntroducedAt = introduced;
+    this.prepareLinkComponents();
     this.selected = this.byId.has(this.selected) ? this.selected : null;
     this.hovered = this.byId.has(this.hovered) || this.hovered === "__query__" ? this.hovered : null;
     const activeCount = this.nodes.filter((node) => node.matched).length;
@@ -73715,10 +73754,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       node.accent += (node.targetAccent - node.accent) * 0.09;
       node.capture = Number(node.capture || 0) * 0.93;
     }
-    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, linkMode = this.mapGroupingMode === "links", linkNodes = querySettling ? foreground : activeNodes, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
+    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, linkMode = this.mapGroupingMode === "links", linkNodes = querySettling ? foreground : activeNodes, linkNodeIds = linkMode ? new Set(linkNodes.map((node) => node.id)) : null, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
-      const background = preserveBackground && this.hasQuery && !node.matched, captureBoost = node.matched ? Number(node.capture || 0) * 0.032 : 0, strength = background ? 35e-4 * alpha2 : linkMode ? 12e-4 * alpha2 : 0.018 * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2) + captureBoost;
+      const background = preserveBackground && this.hasQuery && !node.matched, captureBoost = node.matched ? Number(node.capture || 0) * 0.032 : 0, strength = background ? 35e-4 * alpha2 : linkNodeIds?.has(node.id) ? 0 : 0.018 * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2) + captureBoost;
       node.vx += (node.layoutX - node.x) * strength;
       node.vy += (node.layoutY - node.y) * strength;
     }
@@ -73844,13 +73883,15 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         }
       }
     }
-    const corralBodies = this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes;
-    for (const body of corralBodies) {
-      if (body === this.dragging) continue;
-      const distance = Math.hypot(body.x, body.y);
-      if (distance <= 0.92) continue;
-      body.vx -= body.x / distance * (distance - 0.92) * 0.045 * alpha2;
-      body.vy -= body.y / distance * (distance - 0.92) * 0.045 * alpha2;
+    if (!linkMode) {
+      const corralBodies = this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes;
+      for (const body of corralBodies) {
+        if (body === this.dragging) continue;
+        const distance = Math.hypot(body.x, body.y);
+        if (distance <= 0.92) continue;
+        body.vx -= body.x / distance * (distance - 0.92) * 0.045 * alpha2;
+        body.vy -= body.y / distance * (distance - 0.92) * 0.045 * alpha2;
+      }
     }
     const bodies = this.queryPresence > 0.04 ? [query, ...this.nodes] : this.nodes;
     for (const body of bodies) {
@@ -73863,17 +73904,23 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       body.x += body.vx;
       body.y += body.vy;
     }
-    const cameraBodies = this.hasQuery ? this.pendingQuery ? this.nodes : [query, ...foreground] : this.nodes, targetX = this.hasQuery && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.x, 0) / cameraBodies.length : 0, targetY = this.hasQuery && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.y, 0) / cameraBodies.length : 0, extent = this.hasQuery && cameraBodies.length ? Math.max(0.16, ...cameraBodies.map((body) => Math.hypot(body.x - targetX, body.y - targetY))) : 0.8, targetZoom = this.hasQuery && !this.pendingQuery ? Math.max(1.12, Math.min(2.15, 0.7 / extent)) : 1;
+    const cameraBodies = this.hasQuery ? this.pendingQuery ? this.nodes : [query, ...foreground] : this.nodes, followGraph = linkMode || this.hasQuery, targetX = followGraph && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.x, 0) / cameraBodies.length : 0, targetY = followGraph && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.y, 0) / cameraBodies.length : 0, extent = followGraph && cameraBodies.length ? Math.max(0.16, ...cameraBodies.map((body) => Math.hypot(body.x - targetX, body.y - targetY))) : 0.8, targetZoom = linkMode ? Math.max(0.48, Math.min(1.45, 0.72 / extent)) : this.hasQuery && !this.pendingQuery ? Math.max(1.12, Math.min(2.15, 0.7 / extent)) : 1;
     this.cameraX += (targetX - this.cameraX) * 0.055;
     this.cameraY += (targetY - this.cameraY) * 0.055;
     this.cameraZoom += (targetZoom - this.cameraZoom) * 0.05;
   }
   startSimulation(alpha2 = 0.7) {
+    const startingLinkLayout = this.mapGroupingMode === "links" && alpha2 >= 0.38;
+    if (startingLinkLayout) {
+      this.linkStableFrames = 0;
+      this.linkSimulationTicks = 0;
+    }
     this.alpha = Math.max(this.alpha, alpha2);
     if (this.simulationFrame) return;
     const tick = () => {
       this.simulationFrame = null;
-      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) this.physicsStep(this.alpha);
+      const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (!reducedMotion) this.physicsStep(this.alpha);
       else {
         this.queryPresence = this.targetQueryPresence;
         this.cameraZoom = this.hasQuery ? 1.35 : 1;
@@ -73888,8 +73935,9 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
           node.y = node.layoutY;
         }
       }
-      this.alpha *= 0.986;
-      const queryActive = this.hasQuery && !this.pendingQuery, linkMode = this.mapGroupingMode === "links", foreground = queryActive ? this.nodes.filter((node) => node.matched) : [], positionalError = queryActive && !linkMode ? Math.max(Math.hypot(this.queryNode.x - this.queryNode.layoutX, this.queryNode.y - this.queryNode.layoutY), ...foreground.map((node) => Math.hypot(node.x - node.layoutX, node.y - node.layoutY))) : 0;
+      const queryActive = this.hasQuery && !this.pendingQuery, linkMode = this.mapGroupingMode === "links" && !reducedMotion, foreground = queryActive ? this.nodes.filter((node) => node.matched) : [], linkNodes = queryActive ? foreground : this.nodes;
+      this.alpha *= linkMode ? 0.995 : 0.986;
+      const positionalError = queryActive && !linkMode ? Math.max(Math.hypot(this.queryNode.x - this.queryNode.layoutX, this.queryNode.y - this.queryNode.layoutY), ...foreground.map((node) => Math.hypot(node.x - node.layoutX, node.y - node.layoutY))) : 0;
       if (!linkMode && this.alpha <= 0.01 && positionalError < 3e-3) {
         this.queryNode.x = this.queryNode.layoutX;
         this.queryNode.y = this.queryNode.layoutY;
@@ -73900,9 +73948,18 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         }
         this.lastTerrainAt = 0;
       }
+      if (linkMode) {
+        const kinetic = linkNodes.reduce((sum, node) => sum + node.vx * node.vx + node.vy * node.vy, 0) / Math.max(1, linkNodes.length);
+        this.linkSimulationTicks = Number(this.linkSimulationTicks || 0) + 1;
+        this.linkStableFrames = kinetic < 8e-8 ? Number(this.linkStableFrames || 0) + 1 : 0;
+      }
       this.draw();
-      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || this.nodes.some((node) => Math.abs(node.visibility - node.targetVisibility) > 0.015 || Math.abs(node.blur - node.targetBlur) > 0.03), settling = queryActive && !linkMode && positionalError >= 3e-3;
-      if (this.alpha > 0.01 || this.dragging || transitioning || settling) this.simulationFrame = requestAnimationFrame(tick);
+      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || this.nodes.some((node) => Math.abs(node.visibility - node.targetVisibility) > 0.015 || Math.abs(node.blur - node.targetBlur) > 0.03), settling = queryActive && !linkMode && positionalError >= 3e-3, linkSettling = linkMode && Number(this.linkStableFrames || 0) < 24 && Number(this.linkSimulationTicks || 0) < 540;
+      if (linkMode && !linkSettling && !this.dragging && !transitioning) {
+        this.alpha = 0;
+        for (const node of linkNodes) node.vx = node.vy = 0;
+      }
+      if (!linkMode && this.alpha > 0.01 || linkSettling || this.dragging || transitioning || settling) this.simulationFrame = requestAnimationFrame(tick);
     };
     this.simulationFrame = requestAnimationFrame(tick);
   }
