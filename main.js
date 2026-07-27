@@ -72108,7 +72108,7 @@ var init_mobile_runtime = __esm({
         let center = fileCenter ? Float32Array.from(fileCenter) : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
         if (!fileCenter && !trimmed) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
         const contentProfiles = vaultCentered ? this.vaultContentProfiles(files) : null;
-        const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), topicMode = options.mapMode === "topics", linkMode = options.mapMode === "links", layoutTopics = topicMode && !vaultCentered ? querySubtopicCoordinates(conceptEntries, conceptTopics, nodeById) : conceptTopics, resolvedLinks = this.plugin.app.metadataCache?.resolvedLinks || {}, entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
+        const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), topicMode = options.mapMode === "topics", layoutTopics = topicMode && !vaultCentered ? querySubtopicCoordinates(conceptEntries, conceptTopics, nodeById) : conceptTopics, entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
         for (const entities of entitySets.values()) for (const entity2 of entities) frequency.set(entity2, (frequency.get(entity2) || 0) + 1);
         const entitySimilarity = (first, second) => {
           const a2 = entitySets.get(first) || /* @__PURE__ */ new Set(), b = entitySets.get(second) || /* @__PURE__ */ new Set();
@@ -72128,7 +72128,7 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && !vaultCentered && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), lensWeights = { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, link: 0, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, link: 0, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, link: 0, relation: 0 } }[lens], topicalWeights = lens === "arguments" ? { content: 0, semantic: 0.1, residual: 0.14, entity: 0.04, angular: 0.04, community: 0.48, link: 0, relation: 0.2 } : { content: 0, semantic: 0.12, residual: 0.18, entity: 0.05, angular: 0.05, community: 0.6, link: 0, relation: 0 }, linkWeights = vaultCentered ? { content: 0.09, semantic: 0.05, residual: 0.04, entity: 0.02, angular: 0, community: 0, link: 0.8, relation: 0 } : { content: 0, semantic: 0.08, residual: 0.1, entity: 0.03, angular: 0.03, community: 0.06, link: 0.7, relation: 0 }, weights = linkMode ? linkWeights : vaultCentered ? topicMode ? { content: 0.38, semantic: 0.03, residual: 0.08, entity: 0.03, angular: 0, community: 0.48, link: 0, relation: 0 } : { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, link: 0, relation: 0 } : topicMode ? topicalWeights : lensWeights;
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), lensWeights = { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, link: 0, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, link: 0, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, link: 0, relation: 0 } }[lens], topicalWeights = lens === "arguments" ? { content: 0, semantic: 0.1, residual: 0.14, entity: 0.04, angular: 0.04, community: 0.48, link: 0, relation: 0.2 } : { content: 0, semantic: 0.12, residual: 0.18, entity: 0.05, angular: 0.05, community: 0.6, link: 0, relation: 0 }, weights = vaultCentered ? topicMode ? { content: 0.38, semantic: 0.03, residual: 0.08, entity: 0.03, angular: 0, community: 0.48, link: 0, relation: 0 } : { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, link: 0, relation: 0 } : topicMode ? topicalWeights : lensWeights;
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
@@ -72136,7 +72136,7 @@ var init_mobile_runtime = __esm({
         }
         for (let first = 0; first < entries.length; first++) {
           for (let second = first + 1; second < entries.length; second++) {
-            const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), baseContent = vaultCentered ? Math.sqrt(Math.max(0, (1 - contentProfileSimilarity(contentProfiles.get(a2.id), contentProfiles.get(b.id), tuning.passageCoverage)) / 2)) : semantic, content = vaultCentered ? Math.pow(baseContent, Math.max(0.5, Math.min(2, Number(tuning.distanceContrast)))) : baseContent, residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? layoutTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), linkCount = Number(resolvedLinks[a2.id]?.[b.id] || 0) + Number(resolvedLinks[b.id]?.[a2.id] || 0), linkDistance = linkCount ? Math.max(0.035, 0.12 / Math.sqrt(linkCount)) : 0.9, relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.content * content ** 2 + weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.link * linkDistance ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
+            const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), baseContent = vaultCentered ? Math.sqrt(Math.max(0, (1 - contentProfileSimilarity(contentProfiles.get(a2.id), contentProfiles.get(b.id), tuning.passageCoverage)) / 2)) : semantic, content = vaultCentered ? Math.pow(baseContent, Math.max(0.5, Math.min(2, Number(tuning.distanceContrast)))) : baseContent, residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? layoutTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.content * content ** 2 + weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
             distances[row][column] = distance;
             distances[column][row] = distance;
           }
@@ -72148,7 +72148,7 @@ var init_mobile_runtime = __esm({
           const primaryEntries = entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1), positioned = /* @__PURE__ */ new Map();
           for (const entry of primaryEntries) {
             const topic = layoutTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = topicMode || Number(topic?.topicStrength || 0) > 0.015 ? Number(topic?.topicAngle || 0) : 0, angle = lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle, radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
-            positioned.set(entry.id, (vaultCentered || linkMode) && point ? { x: point.x, y: point.y } : { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+            positioned.set(entry.id, vaultCentered && point ? { x: point.x, y: point.y } : { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
           }
           const later = entries.filter((entry) => Number(nodeById.get(entry.id)?.generation || 1) > 1).sort((a2, b) => Number(nodeById.get(a2.id)?.generation || 1) - Number(nodeById.get(b.id)?.generation || 1));
           for (const entry of later) {
@@ -73327,8 +73327,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       button.setAttribute("aria-pressed", String(active));
     });
     if (this.linkInfluenceButton) {
-      const integrated = this.mapGroupingMode === "links";
+      const integrated = this.mapGroupingMode === "links", active = this.manualLinkInfluence && !integrated;
       this.linkInfluenceButton.disabled = integrated;
+      this.linkInfluenceButton.toggleClass("is-active", active);
+      this.linkInfluenceButton.setAttribute("aria-pressed", String(active));
       this.linkInfluenceButton.setAttribute("title", integrated ? "Links mode already uses manual links for placement" : this.manualLinkInfluence ? "Manual links gently influence placement" : "Manual links do not influence placement");
     }
   }
@@ -73514,6 +73516,73 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       }
     }
   }
+  applyLinkGraphForces(nodes, alpha2) {
+    if (nodes.length < 2) return;
+    const active = new Set(nodes.map((node) => node.id)), degrees = /* @__PURE__ */ new Map(), links = [];
+    for (const edge of this.roadEdges) {
+      if (!active.has(edge.source) || !active.has(edge.target)) continue;
+      degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1);
+      degrees.set(edge.target, (degrees.get(edge.target) || 0) + 1);
+      links.push(edge);
+    }
+    for (const edge of links) {
+      const source = this.byId.get(edge.source), target = this.byId.get(edge.target);
+      if (!source || !target) continue;
+      let dx = target.x - source.x, dy = target.y - source.y, distance = Math.hypot(dx, dy);
+      if (distance < 1e-4) {
+        const angle = stableMapAngle(edge.key || mapEdgeKey(edge.source, edge.target));
+        dx = Math.cos(angle);
+        dy = Math.sin(angle);
+        distance = 1e-4;
+      } else {
+        dx /= distance;
+        dy /= distance;
+      }
+      const desired = 0.17 + (source.fileScale + target.fileScale) * 0.025, degreeScale = 1 / Math.sqrt(Math.max(1, degrees.get(edge.source) || 1, degrees.get(edge.target) || 1)), force = Math.tanh((distance - desired) * 4.2) * 0.014 * degreeScale * alpha2;
+      if (source !== this.dragging) {
+        source.vx += dx * force;
+        source.vy += dy * force;
+      }
+      if (target !== this.dragging) {
+        target.vx -= dx * force;
+        target.vy -= dy * force;
+      }
+    }
+    const cellSize = 0.36, cells = /* @__PURE__ */ new Map(), key = (x, y) => `${x},${y}`;
+    for (const node of nodes) {
+      const cellX = Math.floor(node.x / cellSize), cellY = Math.floor(node.y / cellSize);
+      for (let offsetX = -1; offsetX <= 1; offsetX++) for (let offsetY = -1; offsetY <= 1; offsetY++) for (const other of cells.get(key(cellX + offsetX, cellY + offsetY)) || []) {
+        let dx = node.x - other.x, dy = node.y - other.y, distance = Math.hypot(dx, dy);
+        if (distance >= cellSize) continue;
+        if (distance < 1e-4) {
+          const angle = stableMapAngle(`${other.id}\0${node.id}`);
+          dx = Math.cos(angle);
+          dy = Math.sin(angle);
+          distance = 1e-4;
+        } else {
+          dx /= distance;
+          dy /= distance;
+        }
+        const force = (1 - distance / cellSize) ** 2 * 45e-4 * alpha2;
+        if (other !== this.dragging) {
+          other.vx -= dx * force;
+          other.vy -= dy * force;
+        }
+        if (node !== this.dragging) {
+          node.vx += dx * force;
+          node.vy += dy * force;
+        }
+      }
+      const values = cells.get(key(cellX, cellY)) || [];
+      values.push(node);
+      cells.set(key(cellX, cellY), values);
+    }
+    const centerX = nodes.reduce((sum, node) => sum + node.x, 0) / nodes.length, centerY = nodes.reduce((sum, node) => sum + node.y, 0) / nodes.length;
+    for (const node of nodes) if (node !== this.dragging) {
+      node.vx -= centerX * 22e-4 * alpha2;
+      node.vy -= centerY * 22e-4 * alpha2;
+    }
+  }
   setupViewportControls() {
     this.headingEl.addClass("has-viewport");
     this.viewportControls = this.headingEl.createDiv({ cls: "gib-search-map-viewport-controls", attr: { "aria-label": "Map view controls" } });
@@ -73646,10 +73715,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       node.accent += (node.targetAccent - node.accent) * 0.09;
       node.capture = Number(node.capture || 0) * 0.93;
     }
-    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
+    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, linkMode = this.mapGroupingMode === "links", linkNodes = querySettling ? foreground : activeNodes, tuning = this.tuning || MAP_TUNING_DEFAULTS, anchorStrength = vaultMode ? tuning.anchorStrength : 1;
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
-      const background = preserveBackground && this.hasQuery && !node.matched, captureBoost = node.matched ? Number(node.capture || 0) * 0.032 : 0, strength = background ? 35e-4 * alpha2 : 0.018 * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2) + captureBoost;
+      const background = preserveBackground && this.hasQuery && !node.matched, captureBoost = node.matched ? Number(node.capture || 0) * 0.032 : 0, strength = background ? 35e-4 * alpha2 : linkMode ? 12e-4 * alpha2 : 0.018 * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2) + captureBoost;
       node.vx += (node.layoutX - node.x) * strength;
       node.vy += (node.layoutY - node.y) * strength;
     }
@@ -73659,7 +73728,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       query.vy += (query.layoutY - query.y) * strength;
     }
     this.applyCollisionForces(this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes, alpha2);
-    const relaxationNodes = this.hasQuery ? foreground : Number(tuning.repulsion || 0) > 0 ? activeNodes : [];
+    if (linkMode) this.applyLinkGraphForces(linkNodes, alpha2);
+    const relaxationNodes = linkMode ? [] : this.hasQuery ? foreground : Number(tuning.repulsion || 0) > 0 ? activeNodes : [];
     for (let first = 0; first < relaxationNodes.length; first++) for (let second = first + 1; second < relaxationNodes.length; second++) {
       const a2 = relaxationNodes[first], b = relaxationNodes[second];
       let dx = b.x - a2.x, dy = b.y - a2.y;
@@ -73694,7 +73764,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         node.vy += forceY;
       }
     }
-    if (vaultMode && Number(tuning.neighborAttraction) > 0) for (const edge of this.activeEdges || []) {
+    if (vaultMode && !linkMode && Number(tuning.neighborAttraction) > 0) for (const edge of this.activeEdges || []) {
       if (edge.bridge || edge.entityBridge || Number(edge.overall || 0) < 0.12) continue;
       const source = this.byId.get(edge.source), target = this.byId.get(edge.target);
       if (!source || !target) continue;
@@ -73819,8 +73889,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         }
       }
       this.alpha *= 0.986;
-      const queryActive = this.hasQuery && !this.pendingQuery, foreground = queryActive ? this.nodes.filter((node) => node.matched) : [], positionalError = queryActive ? Math.max(Math.hypot(this.queryNode.x - this.queryNode.layoutX, this.queryNode.y - this.queryNode.layoutY), ...foreground.map((node) => Math.hypot(node.x - node.layoutX, node.y - node.layoutY))) : 0;
-      if (this.alpha <= 0.01 && positionalError < 3e-3) {
+      const queryActive = this.hasQuery && !this.pendingQuery, linkMode = this.mapGroupingMode === "links", foreground = queryActive ? this.nodes.filter((node) => node.matched) : [], positionalError = queryActive && !linkMode ? Math.max(Math.hypot(this.queryNode.x - this.queryNode.layoutX, this.queryNode.y - this.queryNode.layoutY), ...foreground.map((node) => Math.hypot(node.x - node.layoutX, node.y - node.layoutY))) : 0;
+      if (!linkMode && this.alpha <= 0.01 && positionalError < 3e-3) {
         this.queryNode.x = this.queryNode.layoutX;
         this.queryNode.y = this.queryNode.layoutY;
         for (const node of foreground) {
@@ -73831,7 +73901,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         this.lastTerrainAt = 0;
       }
       this.draw();
-      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || this.nodes.some((node) => Math.abs(node.visibility - node.targetVisibility) > 0.015 || Math.abs(node.blur - node.targetBlur) > 0.03), settling = queryActive && positionalError >= 3e-3;
+      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || this.nodes.some((node) => Math.abs(node.visibility - node.targetVisibility) > 0.015 || Math.abs(node.blur - node.targetBlur) > 0.03), settling = queryActive && !linkMode && positionalError >= 3e-3;
       if (this.alpha > 0.01 || this.dragging || transitioning || settling) this.simulationFrame = requestAnimationFrame(tick);
     };
     this.simulationFrame = requestAnimationFrame(tick);
