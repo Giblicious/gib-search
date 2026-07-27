@@ -70535,20 +70535,6 @@ function topicCoordinates(entries, center, axes) {
     return [point.id, { topicAngle: angle, topicStrength: strength, topicHue: (angle * 180 / Math.PI + 360) % 360 }];
   }));
 }
-function vaultThresholdLayout(nodes) {
-  const values = nodes.filter((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
-  if (values.length !== nodes.length) return null;
-  const meanX = values.reduce((sum, node) => sum + node.x, 0) / values.length, meanY = values.reduce((sum, node) => sum + node.y, 0) / values.length, radii = values.map((node) => Math.hypot(node.x - meanX, node.y - meanY)).sort((a2, b) => a2 - b), extent = Math.max(1e-3, radii[Math.min(radii.length - 1, Math.floor(radii.length * 0.92))]), scale = 0.78 / extent;
-  return new Map(values.map((node) => {
-    let x = (node.x - meanX) * scale, y = (node.y - meanY) * scale;
-    const radius = Math.hypot(x, y);
-    if (radius > 0.98) {
-      x *= 0.98 / radius;
-      y *= 0.98 / radius;
-    }
-    return [node.id, { x, y }];
-  }));
-}
 function classicalDistanceLayout(ids, distances, topics = /* @__PURE__ */ new Map()) {
   const count = ids.length;
   if (!count) return /* @__PURE__ */ new Map();
@@ -70792,7 +70778,7 @@ function mergeConnectedCommunities(ids, edges, communities, maximum) {
   ordered.forEach((members, community) => members.forEach((id2) => result.set(id2, community)));
   return result;
 }
-function clusteredSemanticPositions(entries, communities, thresholdEdges = []) {
+function clusteredSemanticPositions(entries, communities) {
   if (!entries.length) return /* @__PURE__ */ new Map();
   const first = entries[0], second = entries.reduce((best, entry) => dot(first.vector, entry.vector) < dot(first.vector, best.vector) ? entry : best, first), third = entries.reduce((best, entry) => Math.max(dot(first.vector, entry.vector), dot(second.vector, entry.vector)) < Math.max(dot(first.vector, best.vector), dot(second.vector, best.vector)) ? entry : best, first);
   const raw = entries.map((entry) => ({ id: entry.id, x: dot(entry.vector, first.vector) - dot(entry.vector, second.vector), y: dot(entry.vector, third.vector) - (dot(entry.vector, first.vector) + dot(entry.vector, second.vector)) * 0.5 })), meanX = raw.reduce((sum, point) => sum + point.x, 0) / raw.length, meanY = raw.reduce((sum, point) => sum + point.y, 0) / raw.length, rawExtent = Math.max(1e-3, ...raw.map((point) => Math.hypot(point.x - meanX, point.y - meanY)));
@@ -70851,138 +70837,12 @@ function clusteredSemanticPositions(entries, communities, thresholdEdges = []) {
       positions.set(point.id, { x: center.x + (point.x - groupX) * 0.42 + Math.cos(angle) * jitter, y: center.y + (point.y - groupY) * 0.42 + Math.sin(angle) * jitter });
     }
   }
-  if (thresholdEdges.length) {
-    const bodies = new Map([...positions].map(([id2, point]) => [id2, { ...point, seedX: point.x, seedY: point.y, vx: 0, vy: 0 }])), values = [...bodies.values()];
-    for (let step = 0; step < 110; step++) {
-      const alpha2 = 1 - step / 110;
-      for (const edge of thresholdEdges) {
-        const source = bodies.get(edge.source), target = bodies.get(edge.target);
-        if (!source || !target) continue;
-        let dx = target.x - source.x, dy = target.y - source.y;
-        const distance = Math.max(0.012, Math.hypot(dx, dy));
-        dx /= distance;
-        dy /= distance;
-        const affinity = Math.max(0, Math.min(1, Number(edge.affinity || 0))), desired = 0.045 + (1 - affinity) * 0.13, strength = (edge.bridge || edge.entityBridge ? 0.08 : 0.34 + affinity * 0.66) * alpha2, force = (distance - desired) * 0.018 * strength;
-        source.vx += dx * force;
-        source.vy += dy * force;
-        target.vx -= dx * force;
-        target.vy -= dy * force;
-      }
-      for (let first2 = 0; first2 < values.length; first2++) for (let second2 = first2 + 1; second2 < values.length; second2++) {
-        const a2 = values[first2], b = values[second2];
-        let dx = b.x - a2.x, dy = b.y - a2.y;
-        const distance = Math.max(0.014, Math.hypot(dx, dy));
-        if (distance >= 0.15) continue;
-        dx /= distance;
-        dy /= distance;
-        const force = (0.15 - distance) * 28e-4 * alpha2;
-        a2.vx -= dx * force;
-        a2.vy -= dy * force;
-        b.vx += dx * force;
-        b.vy += dy * force;
-      }
-      for (const body of values) {
-        body.vx += (body.seedX - body.x) * 12e-4 * alpha2;
-        body.vy += (body.seedY - body.y) * 12e-4 * alpha2;
-        body.vx *= 0.78;
-        body.vy *= 0.78;
-        body.x += body.vx;
-        body.y += body.vy;
-      }
-    }
-    for (const [id2, body] of bodies) positions.set(id2, { x: body.x, y: body.y });
-  }
   const meanPositionX = [...positions.values()].reduce((sum, point) => sum + point.x, 0) / positions.size, meanPositionY = [...positions.values()].reduce((sum, point) => sum + point.y, 0) / positions.size, extent = Math.max(1e-3, ...[...positions.values()].map((point) => Math.hypot(point.x - meanPositionX, point.y - meanPositionY))), scale = 0.86 / extent;
   for (const point of positions.values()) {
     point.x = (point.x - meanPositionX) * scale;
     point.y = (point.y - meanPositionY) * scale;
   }
   return positions;
-}
-function adaptiveVaultPositions(entries, graphEdges) {
-  if (entries.length < 4) return clusteredSemanticPositions(entries, /* @__PURE__ */ new Map(), []);
-  const index3 = new Map(entries.map((entry, position) => [entry.id, position])), basis = semanticTopicBasis(entries), seeds = entries.map((entry) => {
-    let x = 0, y = 0;
-    for (let dimension = 0; dimension < entry.vector.length; dimension++) {
-      const delta = entry.vector[dimension] - basis.center[dimension];
-      x += delta * basis.axes[0][dimension];
-      y += delta * basis.axes[1][dimension];
-    }
-    const angle = stableAngle(entry.id);
-    return { id: entry.id, x: x + Math.cos(angle) * 4e-3, y: y + Math.sin(angle) * 4e-3, vx: 0, vy: 0 };
-  }), seedExtent = Math.max(1e-3, ...seeds.map((point) => Math.hypot(point.x, point.y)));
-  for (const point of seeds) {
-    point.x = point.x / seedExtent * 0.28;
-    point.y = point.y / seedExtent * 0.28;
-  }
-  const usable = (graphEdges || []).filter((edge) => !edge.bridge && !edge.entityBridge && index3.has(edge.source) && index3.has(edge.target)), incident = entries.map(() => []);
-  for (const edge of usable) {
-    const first = index3.get(edge.source), second = index3.get(edge.target), distance = Math.sqrt(Math.max(1e-6, (1 - Math.max(-1, Math.min(1, Number(edge.score || 0)))) / 2));
-    incident[first].push({ edge, distance });
-    incident[second].push({ edge, distance });
-  }
-  const directed = incident.map((list4) => {
-    const ordered = list4.slice().sort((a2, b) => a2.distance - b.distance), rho = Number(ordered[0]?.distance || 0), target = Math.log2(Math.max(2, ordered.length)), membershipTotal = (sigma2) => ordered.reduce((sum, item) => sum + Math.exp(-Math.max(0, item.distance - rho) / Math.max(1e-4, sigma2)), 0);
-    let low = 1e-4, high = 1;
-    for (let iteration = 0; iteration < 32; iteration++) {
-      const middle = (low + high) / 2;
-      if (membershipTotal(middle) > target) high = middle;
-      else low = middle;
-    }
-    const sigma = (low + high) / 2;
-    return new Map(ordered.map((item) => [item.edge, Math.exp(-Math.max(0, item.distance - rho) / Math.max(1e-4, sigma))]));
-  }), relationships = usable.map((edge) => {
-    const first = index3.get(edge.source), second = index3.get(edge.target), forward = directed[first].get(edge) || 0, reverse3 = directed[second].get(edge) || 0, weight = forward + reverse3 - forward * reverse3;
-    return { first, second, weight: Math.max(0.02, Math.min(1, weight)) };
-  }), connected = new Set(relationships.flatMap((edge) => [edge.first, edge.second])), pairWeights = new Map(relationships.map((edge) => [`${Math.min(edge.first, edge.second)}:${Math.max(edge.first, edge.second)}`, edge.weight]));
-  const bodies = seeds;
-  for (let iteration = 0; iteration < 220; iteration++) {
-    const alpha2 = Math.max(0.04, 1 - iteration / 220);
-    for (const edge of relationships) {
-      const source = bodies[edge.first], target = bodies[edge.second];
-      let dx = target.x - source.x, dy = target.y - source.y;
-      const distance = Math.max(6e-3, Math.hypot(dx, dy));
-      dx /= distance;
-      dy /= distance;
-      const desired = 0.02 + (1 - edge.weight) * 0.075, force = Math.max(-0.024, Math.min(0.024, (distance - desired) * 0.052 * edge.weight * alpha2));
-      source.vx += dx * force;
-      source.vy += dy * force;
-      target.vx -= dx * force;
-      target.vy -= dy * force;
-    }
-    for (let first = 0; first < bodies.length; first++) for (let second = first + 1; second < bodies.length; second++) {
-      const a2 = bodies[first], b = bodies[second];
-      let dx = b.x - a2.x, dy = b.y - a2.y;
-      const distance = Math.max(0.012, Math.hypot(dx, dy));
-      if (distance > 0.38) continue;
-      dx /= distance;
-      dy /= distance;
-      const separation = 1 - Number(pairWeights.get(`${first}:${second}`) || 0), force = Math.min(9e-3, 75e-6 * alpha2 * separation * separation / (distance * distance));
-      a2.vx -= dx * force;
-      a2.vy -= dy * force;
-      b.vx += dx * force;
-      b.vy += dy * force;
-    }
-    for (let position = 0; position < bodies.length; position++) {
-      const body = bodies[position], anchor = connected.has(position) ? 8e-5 : 12e-4;
-      body.vx -= body.x * anchor * alpha2;
-      body.vy -= body.y * anchor * alpha2;
-      body.vx *= 0.76;
-      body.vy *= 0.76;
-      body.x += body.vx;
-      body.y += body.vy;
-    }
-  }
-  const meanX = bodies.reduce((sum, point) => sum + point.x, 0) / bodies.length, meanY = bodies.reduce((sum, point) => sum + point.y, 0) / bodies.length, radii = bodies.map((point) => Math.hypot(point.x - meanX, point.y - meanY)).sort((a2, b) => a2 - b), extent = Math.max(1e-3, radii[Math.min(radii.length - 1, Math.floor(radii.length * 0.92))]), scale = 0.78 / extent;
-  return new Map(bodies.map((point) => {
-    let x = (point.x - meanX) * scale, y = (point.y - meanY) * scale;
-    const radius = Math.hypot(x, y);
-    if (radius > 0.98) {
-      x *= 0.98 / radius;
-      y *= 0.98 / radius;
-    }
-    return [point.id, { x, y }];
-  }));
 }
 function contentFingerprint(source) {
   const value = String(source || "");
@@ -72170,9 +72030,7 @@ var init_mobile_runtime = __esm({
       async multiRelationalLayout(query, nodes, relationships = /* @__PURE__ */ new Map(), options = {}) {
         const values = [...new Map((nodes || []).filter((node) => node?.id).map((node) => [node.id, node])).values()], nodeById = new Map(values.map((node) => [node.id, node])), files = values.map((node) => node.id), vectors = this.fileVectors(files), entries = values.filter((node) => vectors.has(node.id)).map((node) => ({ id: node.id, vector: vectors.get(node.id).vector }));
         if (!entries.length) return /* @__PURE__ */ new Map();
-        const basis = this.topicBasis(), trimmed = String(query || "").trim(), centerFile = String(options.centerFile || ""), fileCenter = centerFile ? this.fileVectors([centerFile]).get(centerFile)?.vector : null, vaultCentered = Boolean(options.vaultCenter) && !trimmed && !fileCenter, thresholdLayout = vaultCentered ? vaultThresholdLayout(values) : null;
-        if (thresholdLayout) return thresholdLayout;
-        const conditioned = Boolean(trimmed || fileCenter || vaultCentered);
+        const basis = this.topicBasis(), trimmed = String(query || "").trim(), centerFile = String(options.centerFile || ""), fileCenter = centerFile ? this.fileVectors([centerFile]).get(centerFile)?.vector : null, vaultCentered = Boolean(options.vaultCenter) && !trimmed && !fileCenter, conditioned = Boolean(trimmed || fileCenter || vaultCentered);
         let center = fileCenter ? Float32Array.from(fileCenter) : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : Float32Array.from(basis.center), centerNorm = Math.sqrt(dot(center, center)) || 1;
         if (!fileCenter && !trimmed) for (let dimension = 0; dimension < center.length; dimension++) center[dimension] /= centerNorm;
         const topics = topicCoordinates(entries, center, basis.axes), rawResiduals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, center)])), rawConceptEntries = entries.map((entry) => ({ id: entry.id, vector: rawResiduals.get(entry.id) })), primaryIds = new Set(values.filter((node) => Number(node.generation || 1) === 1).map((node) => node.id)), primaryRawConcepts = rawConceptEntries.filter((entry) => primaryIds.has(entry.id)), conceptEntries = centeredVectorCloud(rawConceptEntries, primaryRawConcepts), primaryConceptEntries = conceptEntries.filter((entry) => primaryIds.has(entry.id)), residuals = new Map(conceptEntries.map((entry) => [entry.id, entry.centeredStrength > 1e-6 ? entry.vector : rawResiduals.get(entry.id)])), conceptBasis = semanticTopicBasis(primaryConceptEntries), conceptTopics = topicCoordinates(conceptEntries, conceptBasis.center, conceptBasis.axes), entitySets = this.fileEntities(files), frequency = /* @__PURE__ */ new Map();
@@ -72195,7 +72053,7 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && !vaultCentered && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = { relevance: { semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", weights = vaultCentered ? { semantic: 0.18, residual: 0.74, entity: 0.08, angular: 0, community: 0, relation: 0 } : { relevance: { semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
@@ -72212,12 +72070,19 @@ var init_mobile_runtime = __esm({
           const primaryEntries = entries.filter((value) => Number(nodeById.get(value.id)?.generation || 1) === 1), positioned = /* @__PURE__ */ new Map();
           for (const entry of primaryEntries) {
             const topic = conceptTopics.get(entry.id), point = layout.get(entry.id), conceptAngle = Number(topic?.topicStrength || 0) > 0.015 ? Number(topic.topicAngle) : 0, angle = lens === "relevance" ? conceptAngle : point && Math.hypot(point.x, point.y) > 1e-3 ? Math.atan2(point.y, point.x) : conceptAngle, radius = 0.08 + (1 - relevance.get(entry.id)) * 0.72;
-            positioned.set(entry.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+            positioned.set(entry.id, vaultCentered && point ? { x: point.x, y: point.y } : { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
           }
           const later = entries.filter((entry) => Number(nodeById.get(entry.id)?.generation || 1) > 1).sort((a2, b) => Number(nodeById.get(a2.id)?.generation || 1) - Number(nodeById.get(b.id)?.generation || 1));
           for (const entry of later) {
             const node = nodeById.get(entry.id), parent = positioned.get(node?.parent) || layout.get(node?.parent) || { x: 0, y: 0 }, topicAngle = Number(conceptTopics.get(entry.id)?.topicAngle ?? stableAngle(entry.id)), parentAngle = Math.atan2(parent.y, parent.x), blendX = Math.cos(topicAngle) * 0.68 + Math.cos(parentAngle) * 0.32, blendY = Math.sin(topicAngle) * 0.68 + Math.sin(parentAngle) * 0.32, jitter = (stableAngle(entry.id) / (Math.PI * 2) - 0.5) * 0.32, angle = Math.atan2(blendY, blendX) + jitter, step = 0.13 + (1 - Math.max(0, Math.min(1, Number(node?.relationScore || 0.5)))) * 0.1;
             positioned.set(entry.id, { x: parent.x + Math.cos(angle) * step, y: parent.y + Math.sin(angle) * step });
+          }
+          if (vaultCentered && positioned.size) {
+            const points2 = [...positioned.values()], meanX2 = points2.reduce((sum, point) => sum + point.x, 0) / points2.length, meanY2 = points2.reduce((sum, point) => sum + point.y, 0) / points2.length, extent2 = Math.max(1e-3, ...points2.map((point) => Math.hypot(point.x - meanX2, point.y - meanY2))), scale = 0.82 / extent2;
+            for (const point of points2) {
+              point.x = (point.x - meanX2) * scale;
+              point.y = (point.y - meanY2) * scale;
+            }
           }
           return positioned;
         }
@@ -72274,16 +72139,9 @@ var init_mobile_runtime = __esm({
             }
             return shared / Math.max(1e-3, Math.sqrt(aWeight * bWeight));
           };
-          const neighborhoodSize = Math.max(6, Math.min(12, Math.round(Math.log2(Math.max(2, entries2.length)) * 1.35))), allNeighbors = entries2.map((entry, first) => entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: vaultMode ? topChunkSimilarity(passages.get(entry.id), passages.get(other.id)) : dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08)), neighbors = allNeighbors.map((list4) => list4.slice(0, neighborhoodSize)), directed = neighbors.map((list4, index3) => {
-            const population = allNeighbors[index3], ceiling = Number(list4[0]?.score || 1), upper = Number(population[Math.min(population.length - 1, Math.floor(population.length * 0.2))]?.score ?? ceiling), threshold = upper + (ceiling - upper) * 0.62, distances = list4.map((item) => Math.sqrt(Math.max(1e-6, (1 - Math.max(-1, Math.min(1, item.score))) / 2))), rho = Number(distances[0] || 0), target = Math.log2(Math.max(2, list4.length));
-            let low = 1e-4, high = 1;
-            for (let iteration = 0; iteration < 32; iteration++) {
-              const sigma2 = (low + high) / 2, total = distances.reduce((sum, distance) => sum + Math.exp(-Math.max(0, distance - rho) / sigma2), 0);
-              if (total > target) high = sigma2;
-              else low = sigma2;
-            }
-            const sigma = (low + high) / 2;
-            return new Map(list4.map((item, position) => ({ item, position })).filter(({ item, position }) => position === 0 || item.score >= threshold).map(({ item, position }) => [item.index, { ...item, affinity: Math.exp(-Math.max(0, distances[position] - rho) / sigma) * 0.9 + item.entityScore * 0.1 }]));
+          const neighbors = entries2.map((entry, first) => entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: vaultMode ? topChunkSimilarity(passages.get(entry.id), passages.get(other.id)) : dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8)), directed = neighbors.map((list4) => {
+            const floor = Number(list4.at(-1)?.score || 0), ceiling = Number(list4[0]?.score || 1), spread = Math.max(0.02, ceiling - floor);
+            return new Map(list4.map((item) => [item.index, { ...item, affinity: Math.max(1e-3, (item.score - floor) / spread) * 0.82 + item.entityScore * 0.18 }]));
           }), edges2 = [], seen2 = /* @__PURE__ */ new Set(), incident = /* @__PURE__ */ new Set();
           const rawUniqueness = entries2.map((entry, index3) => ({ id: entry.id, value: 1 - neighbors[index3].slice(0, 5).reduce((sum, item) => sum + item.score, 0) / Math.max(1, Math.min(5, neighbors[index3].length)) })).sort((a2, b) => a2.value - b.value || a2.id.localeCompare(b.id)), uniqueness2 = new Map(rawUniqueness.map((item, index3) => [item.id, rawUniqueness.length > 1 ? index3 / (rawUniqueness.length - 1) : 0.5]));
           for (let first = 0; first < entries2.length; first++) for (const [second, relation] of directed[first]) {
@@ -72314,7 +72172,7 @@ var init_mobile_runtime = __esm({
               edges2.push({ source: entries2[first].id, target: entries2[relation.second].id, score: dot(entries2[first].vector, entries2[relation.second].vector), entityScore: relation.score, affinity: 0.08 + relation.score * 0.28, entityBridge: true });
             }
           }
-          const detected = louvainCommunities(entries2.map((entry) => entry.id), edges2), communities2 = vaultMode ? mergeConnectedCommunities(entries2.map((entry) => entry.id), edges2, detected, Math.max(10, Math.min(18, Math.round(Math.sqrt(entries2.length))))) : consolidateCommunities(entries2, detected), positions2 = vaultMode ? adaptiveVaultPositions(entries2, edges2) : clusteredSemanticPositions(entries2, communities2, []);
+          const detected = louvainCommunities(entries2.map((entry) => entry.id), edges2), communities2 = vaultMode ? mergeConnectedCommunities(entries2.map((entry) => entry.id), edges2, detected, Math.max(10, Math.min(18, Math.round(Math.sqrt(entries2.length))))) : consolidateCommunities(entries2, detected), positions2 = clusteredSemanticPositions(entries2, communities2);
           this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, entitySets: entitySets2, uniqueness: uniqueness2 };
         }
         const { entries, edges, positions, communities, entitySets, uniqueness } = this.starfieldCache, basis = this.topicBasis();
