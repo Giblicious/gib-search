@@ -72093,7 +72093,7 @@ var init_mobile_runtime = __esm({
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && !vaultCentered && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
         })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), weights = vaultCentered ? { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, relation: 0 } : { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens];
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", topicMode = options.mapMode === "topics", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), lensWeights = { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, relation: 0 } }[lens], topicalWeights = lens === "arguments" ? { content: 0, semantic: 0.1, residual: 0.14, entity: 0.04, angular: 0.04, community: 0.48, relation: 0.2 } : { content: 0, semantic: 0.12, residual: 0.18, entity: 0.05, angular: 0.05, community: 0.6, relation: 0 }, weights = vaultCentered ? topicMode ? { content: 0.38, semantic: 0.03, residual: 0.08, entity: 0.03, angular: 0, community: 0.48, relation: 0 } : { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, relation: 0 } : topicMode ? topicalWeights : lensWeights;
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
@@ -72212,13 +72212,23 @@ var init_mobile_runtime = __esm({
               edges2.push({ source: entries2[first].id, target: entries2[relation.second].id, score: dot(entries2[first].vector, entries2[relation.second].vector), entityScore: relation.score, affinity: 0.08 + relation.score * 0.28, entityBridge: true });
             }
           }
-          const detected = louvainCommunities(entries2.map((entry) => entry.id), edges2), communities2 = vaultMode ? mergeConnectedCommunities(entries2.map((entry) => entry.id), edges2, detected, Math.max(10, Math.min(18, Math.round(Math.sqrt(entries2.length))))) : consolidateCommunities(entries2, detected), positions2 = clusteredSemanticPositions(entries2, communities2);
-          this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, entitySets: entitySets2, uniqueness: uniqueness2 };
+          const detected = louvainCommunities(entries2.map((entry) => entry.id), edges2), communities2 = vaultMode ? mergeConnectedCommunities(entries2.map((entry) => entry.id), edges2, detected, Math.max(10, Math.min(18, Math.round(Math.sqrt(entries2.length))))) : consolidateCommunities(entries2, detected), positions2 = clusteredSemanticPositions(entries2, communities2), communityIds = [...new Set(communities2.values())], topicAffinities2 = /* @__PURE__ */ new Map();
+          const topicScores = new Map(entries2.map((entry) => [entry.id, Object.fromEntries(communityIds.map((id2) => [id2, id2 === communities2.get(entry.id) ? 0.22 : 0.015]))]));
+          for (const edge of edges2) {
+            const strength = Math.max(1e-3, Number(edge.affinity || 0)), sourceScores = topicScores.get(edge.source), targetScores = topicScores.get(edge.target), sourceCommunity = communities2.get(edge.source), targetCommunity = communities2.get(edge.target);
+            if (sourceScores) sourceScores[targetCommunity] = Number(sourceScores[targetCommunity] || 0) + strength;
+            if (targetScores) targetScores[sourceCommunity] = Number(targetScores[sourceCommunity] || 0) + strength;
+          }
+          for (const entry of entries2) {
+            const shaped = Object.fromEntries(Object.entries(topicScores.get(entry.id) || {}).map(([id2, score]) => [id2, Math.pow(score, 1.35)])), total = Object.values(shaped).reduce((sum, score) => sum + score, 0) || 1;
+            topicAffinities2.set(entry.id, Object.fromEntries(Object.entries(shaped).map(([id2, score]) => [id2, score / total])));
+          }
+          this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, topicAffinities: topicAffinities2, entitySets: entitySets2, uniqueness: uniqueness2 };
         }
-        const { entries, edges, positions, communities, entitySets, uniqueness } = this.starfieldCache, basis = this.topicBasis();
+        const { entries, edges, positions, communities, topicAffinities, entitySets, uniqueness } = this.starfieldCache, basis = this.topicBasis();
         if (!trimmed) {
           const topics2 = topicCoordinates(entries, basis.center, basis.axes);
-          return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, uniqueness: uniqueness.get(entry.id) ?? 0.5, community: communities.get(entry.id) ?? 0, entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics2.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
+          return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, uniqueness: uniqueness.get(entry.id) ?? 0.5, community: communities.get(entry.id) ?? 0, topicAffinities: topicAffinities.get(entry.id), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics2.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
         }
         const queryVector = await this.queryVector(this.correctQuery(trimmed)), residuals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, queryVector)])), topics = topicCoordinates(entries, queryVector, basis.axes);
         const outputEdges = [...edges], seen = new Set(edges.map((edge) => [edge.source, edge.target].sort().join("\0"))), focus = new Set(focusFiles || []), focused = entries.filter((entry) => focus.has(entry.id));
@@ -72232,7 +72242,7 @@ var init_mobile_runtime = __esm({
           }
         }
         return {
-          nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), community: communities.get(entry.id) ?? 0, entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics.get(entry.id) || {} })),
+          nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), community: communities.get(entry.id) ?? 0, topicAffinities: topicAffinities.get(entry.id), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics.get(entry.id) || {} })),
           edges: outputEdges.map((edge) => ({ ...edge, residualScore: dot(residuals.get(edge.source), residuals.get(edge.target)) }))
         };
       }
@@ -72346,7 +72356,10 @@ var SEARCH_LENSES = {
 function validSearchLens(value) {
   return value === "concepts" ? "relevance" : SEARCH_LENSES[value] ? value : "relevance";
 }
-var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
+function validMapGrouping(value) {
+  return value === "topics" ? "topics" : "similarity";
+}
+var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", mapGroupingMode: "similarity", magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
 function activeIndexDir(plugin6) {
   return path.join(plugin6.pluginDir, "embeddings", MODEL_PROFILES.bge.indexFolder);
 }
@@ -73070,6 +73083,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.showLinks = options.showLinks !== false;
     this.manualLinkInfluence = options.manualLinkInfluence !== false;
     this.tuning = Object.assign({}, MAP_TUNING_DEFAULTS, options.tuning || {});
+    this.mapGroupingMode = validMapGrouping(options.mapGroupingMode);
     this.cameraX = 0;
     this.cameraY = 0;
     this.cameraZoom = 1;
@@ -73127,9 +73141,34 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       });
       this.setManualLinkInfluence(this.manualLinkInfluence, false);
     }
+    if (options.onMapMode) this.setupMapModeControl();
     if (options.onTune) this.setupTuningPanel();
     this.setupViewportControls();
     this.canvas.addEventListener("wheel", (event) => this.wheel(event), { passive: false });
+  }
+  setupMapModeControl() {
+    this.mapModeControl = this.headingEl.createDiv({ cls: "gib-search-map-mode", attr: { "aria-label": "Map grouping mode" } });
+    this.headingEl.insertBefore(this.mapModeControl, this.statusEl);
+    this.mapModeButtons = [["similarity", "Similarity"], ["topics", "Topics"]].map(([value, label]) => {
+      const button = this.mapModeControl.createEl("button", { text: label, attr: { type: "button", title: value === "topics" ? "Group notes by dominant passage topics" : "Arrange notes by continuous semantic similarity" } });
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setMapGroupingMode(value);
+        this.options.onMapMode(value);
+      });
+      return button;
+    });
+    this.setMapGroupingMode(this.mapGroupingMode);
+  }
+  setMapGroupingMode(value) {
+    this.mapGroupingMode = validMapGrouping(value);
+    this.mapModeButtons?.forEach((button, index3) => {
+      const active = ["similarity", "topics"][index3] === this.mapGroupingMode;
+      button.toggleClass("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
   }
   setupTuningPanel() {
     this.tuneButton = this.headingEl.createEl("button", { cls: "gib-search-map-tune", attr: { type: "button", title: "Tune vault map", "aria-label": "Tune vault map", "aria-expanded": "false" } });
@@ -73898,6 +73937,7 @@ var SemanticSearchModal = class extends SuggestModal {
     this.lensRelationships = /* @__PURE__ */ new Map();
     this.lensRelationshipEdges = [];
     this.mapGenerations = Math.max(1, Math.min(3, Number(plugin6.settings.searchMapGenerations) || 1));
+    this.mapGroupingMode = validMapGrouping(plugin6.settings.mapGroupingMode);
     const fileName = filePath ? filePath.split("/").pop().replace(/\.md$/i, "") : "";
     this.setPlaceholder(filePath ? `Search within ${fileName}\u2026` : "Search vault by meaning\u2026");
     this.setInstructions([{ command: "Type", purpose: "to search" }, { command: "\u2191\u2193", purpose: "to navigate" }, { command: "\u21B5", purpose: "to open" }, { command: "esc", purpose: "to dismiss" }]);
@@ -74205,7 +74245,12 @@ var SemanticSearchModal = class extends SuggestModal {
         this.applyMapState();
       });
     }
-    this.map = new LivingSemanticMapCanvas(panel, this.app, { title: "Search map", generations: this.mapGenerations, showLinks: this.plugin.settings.showWikilinks, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, magicGraph: this.plugin.settings.magicGraphEnabled, semanticColors: this.plugin.settings.graphSemanticColors, tuning: this.plugin.settings.mapTuning, onTune: (values, key) => {
+    this.map = new LivingSemanticMapCanvas(panel, this.app, { title: "Search map", generations: this.mapGenerations, mapGroupingMode: this.mapGroupingMode, showLinks: this.plugin.settings.showWikilinks, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, magicGraph: this.plugin.settings.magicGraphEnabled, semanticColors: this.plugin.settings.graphSemanticColors, tuning: this.plugin.settings.mapTuning, onMapMode: async (value) => {
+      this.mapGroupingMode = validMapGrouping(value);
+      this.plugin.settings.mapGroupingMode = this.mapGroupingMode;
+      await this.plugin.save();
+      this.updateMap();
+    }, onTune: (values, key) => {
       this.plugin.settings.mapTuning = values;
       window.clearTimeout(this.mapTuneTimer);
       this.mapTuneTimer = window.setTimeout(async () => {
@@ -74261,8 +74306,8 @@ var SemanticSearchModal = class extends SuggestModal {
     const byFile = new Map(results.map((result) => [result.file, result])), rankingScores = results.map((result) => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = generations.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
     const graphNodes = graph.nodes.map((node) => {
       const result = byFile.get(node.id), generation = generationByFile.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance;
-      return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : semanticRelevance, fileScale: fileScale.get(node.id) ?? 0.35, facet: result?.facet, conceptAffinities: result?.conceptAffinities, contextScore: result?.contextScore };
-    }), layoutOptions = { magic: this.plugin.settings.magicGraphEnabled, lens: this.lens, vaultCenter: !query }, initialLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, this.lens === "arguments" ? this.lensRelationships : /* @__PURE__ */ new Map(), layoutOptions);
+      return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: query ? result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance : semanticRelevance, fileScale: fileScale.get(node.id) ?? 0.35, facet: result?.facet ?? node.community, conceptAffinities: result?.conceptAffinities || node.topicAffinities, contextScore: result?.contextScore };
+    }), layoutOptions = { magic: this.plugin.settings.magicGraphEnabled, lens: this.lens, vaultCenter: !query, mapMode: this.mapGroupingMode }, initialLayout = await this.plugin.search.multiRelationalLayout(query, graphNodes, this.lens === "arguments" ? this.lensRelationships : /* @__PURE__ */ new Map(), layoutOptions);
     if (version2 !== this.mapVersion) return;
     for (const node of graphNodes) {
       const target = initialLayout.get(node.id);
@@ -74682,6 +74727,10 @@ var SearchSettings = class extends PluginSettingTab {
         await this.plugin.save();
       });
     });
+    new Setting(this.containerEl).setName("Default map grouping").setDesc("Similarity preserves continuous semantic distance. Topics forms clearer subject regions while allowing bridge notes between them.").addDropdown((d2) => d2.addOption("similarity", "Similarity").addOption("topics", "Topics").setValue(validMapGrouping(this.plugin.settings.mapGroupingMode)).onChange(async (value) => {
+      this.plugin.settings.mapGroupingMode = validMapGrouping(value);
+      await this.plugin.save();
+    }));
     new Setting(this.containerEl).setName("Magic graph intelligence").setDesc("Combine topic direction, entities, communities, residual meaning, and relationships into a query-conditioned dimensional layout.").addToggle((t3) => t3.setValue(this.plugin.settings.magicGraphEnabled).onChange(async (value) => {
       this.plugin.settings.magicGraphEnabled = value;
       await this.plugin.save();
