@@ -73247,7 +73247,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         this.draw();
         this.ambientDrawing = false;
       }
-    }, 80);
+    }, 48);
     if (options.onGenerations) {
       this.headingEl.addClass("has-generations");
       this.generationControl = this.headingEl.createDiv({ cls: "gib-search-map-generations", attr: { "aria-label": "Semantic generations" } });
@@ -73723,7 +73723,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const centerX = this.nodes.reduce((sum, node) => sum + node.x, 0) / Math.max(1, this.nodes.length), centerY = this.nodes.reduce((sum, node) => sum + node.y, 0) / Math.max(1, this.nodes.length);
       this.queryNode.x = centerX;
       this.queryNode.y = centerY;
-      this.ambientStartedAt = performance.now();
     }
     this.queryNode.vx = this.queryNode.vy = 0;
     this.targetQueryPresence = 1;
@@ -73968,15 +73967,17 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     };
     this.simulationFrame = requestAnimationFrame(tick);
   }
-  ambientAngle() {
-    return matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : Math.sin((performance.now() - this.ambientStartedAt) * 75e-6) * 0.014;
+  ambientAngle(id2 = "") {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return 0;
+    const elapsed = performance.now() - this.ambientStartedAt, phase = stableMapAngle(id2);
+    return elapsed * 28e-7 + Math.sin(elapsed * 11e-5 + phase) * 3e-3;
   }
-  ambientPosition(x, y, inverse = false) {
-    const originX = this.queryPresence > 0.04 ? Number(this.queryNode.x) : 0, originY = this.queryPresence > 0.04 ? Number(this.queryNode.y) : 0, angle = this.ambientAngle() * (inverse ? -1 : 1), dx = Number(x) - originX, dy = Number(y) - originY, cosine = Math.cos(angle), sine = Math.sin(angle);
+  ambientPosition(x, y, inverse = false, id2 = "") {
+    const originX = this.queryPresence > 0.04 ? Number(this.queryNode.x) : 0, originY = this.queryPresence > 0.04 ? Number(this.queryNode.y) : 0, angle = this.ambientAngle(id2) * (inverse ? -1 : 1), dx = Number(x) - originX, dy = Number(y) - originY, cosine = Math.cos(angle), sine = Math.sin(angle);
     return { x: originX + dx * cosine - dy * sine, y: originY + dx * sine + dy * cosine };
   }
   coordinates(node, width, height) {
-    const point = node.isQuery ? { x: Number(node.x), y: Number(node.y) } : this.ambientPosition(node.x, node.y), scale = Math.max(20, Math.min(width, height) / 2 - 68) * this.cameraZoom * this.userZoom;
+    const point = node.isQuery ? { x: Number(node.x), y: Number(node.y) } : this.ambientPosition(node.x, node.y, false, node.id), scale = Math.max(20, Math.min(width, height) / 2 - 68) * this.cameraZoom * this.userZoom;
     return [width / 2 + (point.x - this.cameraX) * scale + this.panX, height / 2 + (point.y - this.cameraY) * scale + this.panY];
   }
   semanticDensityField(width, height) {
@@ -74489,7 +74490,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     if (this.dragging && this.draggingPointer === event.pointerId) {
       if (this.nodeDragOrigin && Math.hypot(event.clientX - this.nodeDragOrigin.x, event.clientY - this.nodeDragOrigin.y) > 3) this.suppressClick = true;
-      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom * this.userZoom, viewX = (event.clientX - rect.left - rect.width / 2 - this.panX) / scale + this.cameraX, viewY = (event.clientY - rect.top - rect.height / 2 - this.panY) / scale + this.cameraY, point = this.dragging.isQuery ? { x: viewX, y: viewY } : this.ambientPosition(viewX, viewY, true);
+      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom * this.userZoom, viewX = (event.clientX - rect.left - rect.width / 2 - this.panX) / scale + this.cameraX, viewY = (event.clientY - rect.top - rect.height / 2 - this.panY) / scale + this.cameraY, point = this.dragging.isQuery ? { x: viewX, y: viewY } : this.ambientPosition(viewX, viewY, true, this.dragging.id);
       this.dragging.x = point.x;
       this.dragging.y = point.y;
       this.dragging.vx = this.dragging.vy = 0;
