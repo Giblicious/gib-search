@@ -73037,6 +73037,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.roadEdges = [];
     this.roadIntroducedAt = /* @__PURE__ */ new Map();
     this.roadAnimationFrame = null;
+    this.showLinks = options.showLinks !== false;
     this.manualLinkInfluence = options.manualLinkInfluence !== false;
     this.cameraX = 0;
     this.cameraY = 0;
@@ -73063,13 +73064,29 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       });
       this.setGenerations(options.generations || 1);
     }
+    if (options.onShowLinks) {
+      this.headingEl.addClass("has-link-lines");
+      this.linkLinesButton = this.headingEl.createEl("button", { cls: "gib-search-map-link-lines", attr: { type: "button", "aria-label": "Manual link lines" } });
+      this.headingEl.insertBefore(this.linkLinesButton, this.statusEl);
+      const icon = this.linkLinesButton.createSpan({ cls: "gib-search-map-link-lines-icon" });
+      setIcon(icon, "git-branch");
+      this.linkLinesButton.createSpan({ text: "Lines" });
+      this.linkLinesButton.addEventListener("mousedown", (event) => event.preventDefault());
+      this.linkLinesButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setShowLinks(!this.showLinks);
+        options.onShowLinks(this.showLinks);
+      });
+      this.setShowLinks(this.showLinks, false);
+    }
     if (options.onManualLinkInfluence) {
       this.headingEl.addClass("has-link-influence");
       this.linkInfluenceButton = this.headingEl.createEl("button", { cls: "gib-search-map-link-influence", attr: { type: "button", "aria-label": "Manual link influence" } });
       this.headingEl.insertBefore(this.linkInfluenceButton, this.statusEl);
       const icon = this.linkInfluenceButton.createSpan({ cls: "gib-search-map-link-influence-icon" });
-      setIcon(icon, "link-2");
-      this.linkInfluenceButton.createSpan({ text: "Links" });
+      setIcon(icon, "magnet");
+      this.linkInfluenceButton.createSpan({ text: "Pull" });
       this.linkInfluenceButton.addEventListener("mousedown", (event) => event.preventDefault());
       this.linkInfluenceButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -73089,6 +73106,13 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       button.toggleClass("is-active", active);
       button.setAttribute("aria-pressed", String(active));
     });
+  }
+  setShowLinks(value, redraw = true) {
+    this.showLinks = Boolean(value);
+    this.linkLinesButton?.toggleClass("is-active", this.showLinks);
+    this.linkLinesButton?.setAttribute("aria-pressed", String(this.showLinks));
+    this.linkLinesButton?.setAttribute("title", this.showLinks ? "Hide manual link lines" : "Show manual link lines");
+    if (redraw) this.draw();
   }
   setManualLinkInfluence(value, animate = true) {
     this.manualLinkInfluence = Boolean(value);
@@ -73473,7 +73497,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     return { x, y, visibility: node.visibility };
   }
   paintSweepLinks(ctx, width, height, colors2) {
-    if (!this.roadEdges.length) return;
+    if (!this.showLinks || !this.roadEdges.length) return;
     const positions = /* @__PURE__ */ new Map(), guides = /* @__PURE__ */ new Map(), endpoint = (id2) => {
       if (positions.has(id2)) return positions.get(id2);
       const point = this.roadEndpoint(id2, width, height);
@@ -74071,11 +74095,14 @@ var SemanticSearchModal = class extends SuggestModal {
         this.applyMapState();
       });
     }
-    this.map = new LivingSemanticMapCanvas(panel, this.app, { title: "Search map", generations: this.mapGenerations, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, magicGraph: this.plugin.settings.magicGraphEnabled, semanticColors: this.plugin.settings.graphSemanticColors, onGenerations: async (value) => {
+    this.map = new LivingSemanticMapCanvas(panel, this.app, { title: "Search map", generations: this.mapGenerations, showLinks: this.plugin.settings.showWikilinks, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, magicGraph: this.plugin.settings.magicGraphEnabled, semanticColors: this.plugin.settings.graphSemanticColors, onGenerations: async (value) => {
       this.mapGenerations = value;
       this.plugin.settings.searchMapGenerations = value;
       await this.plugin.save();
       this.updateMap();
+    }, onShowLinks: async (value) => {
+      this.plugin.settings.showWikilinks = value;
+      await this.plugin.save();
     }, onManualLinkInfluence: async (value) => {
       this.plugin.settings.graphManualLinkInfluence = value;
       await this.plugin.save();
@@ -74123,7 +74150,7 @@ var SemanticSearchModal = class extends SuggestModal {
         node.layoutY = target.y;
       }
     }
-    const displayEdges = this.lens === "arguments" ? [...combinedEdges.map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) })), ...this.lensRelationshipEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target))).map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) }))] : combinedEdges, roads = this.plugin.settings.showWikilinks ? manualRoadEdges(this.app, graphNodes.map((node) => node.id)) : [];
+    const displayEdges = this.lens === "arguments" ? [...combinedEdges.map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) })), ...this.lensRelationshipEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target))).map((edge) => ({ ...edge, relation: this.lensRelationships.get(mapEdgeKey(edge.source, edge.target)) }))] : combinedEdges, roads = manualRoadEdges(this.app, graphNodes.map((node) => node.id));
     this.map.setGraph({ label: query || "Search", hasQuery: Boolean(query), resultCount: results.length }, graphNodes, displayEdges, roads);
   }
   hoverResult(file) {
@@ -74194,7 +74221,10 @@ var NeighborhoodView = class extends ItemView {
       this.pinButton.setAttribute("title", this.pinned ? "Follow active note" : "Pin current note");
     });
     const mapHost = this.contentEl.createDiv({ cls: "gib-neighborhood-map" });
-    this.map = new LivingSemanticMapCanvas(mapHost, this.app, { title: "Closest notes", manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, onManualLinkInfluence: async (value) => {
+    this.map = new LivingSemanticMapCanvas(mapHost, this.app, { title: "Closest notes", showLinks: this.plugin.settings.showWikilinks, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, onShowLinks: async (value) => {
+      this.plugin.settings.showWikilinks = value;
+      await this.plugin.save();
+    }, onManualLinkInfluence: async (value) => {
       this.plugin.settings.graphManualLinkInfluence = value;
       await this.plugin.save();
     }, onSelect: (file) => this.openFile(file), onOpen: (file) => this.openFile(file) });
@@ -74244,7 +74274,7 @@ var NeighborhoodView = class extends ItemView {
       const layout = await this.plugin.search.multiRelationalLayout(file.basename, nodes, relationships, { lens: this.lens, magic: this.plugin.settings.magicGraphEnabled, centerFile: file.path });
       if (version2 !== this.loadVersion) return;
       nodes = nodes.map((node) => ({ ...node, layoutX: layout.get(node.id)?.x, layoutY: layout.get(node.id)?.y }));
-      const roads = this.plugin.settings.showWikilinks ? manualRoadEdges(this.app, [file.path, ...nodes.map((node) => node.id)]) : [];
+      const roads = manualRoadEdges(this.app, [file.path, ...nodes.map((node) => node.id)]);
       this.map.setTitle(`${SEARCH_LENSES[this.lens].label} \xB7 ${file.basename}`);
       this.map.setGraph({ id: file.path, label: file.basename, hasQuery: true, resultCount: nodes.length }, nodes, edges, roads);
       this.map.setIntelligenceStatus(intelligenceMessage);
