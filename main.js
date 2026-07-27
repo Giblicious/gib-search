@@ -73381,13 +73381,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const count = this.center?.resultCount || this.nodes.filter((node) => node.matched).length;
     this.statusEl.textContent = value || (this.hasQuery ? `${count} results${this.nodes.length > count ? ` \xB7 ${this.nodes.length} shown` : ""}` : `${this.nodes.length} notes`);
   }
-  setAnalysisPending(value) {
-    this.analysisPending = Boolean(value);
-    if (!this.analysisPending) {
-      this.lastTerrainAt = 0;
-      this.draw();
-    }
-  }
   applyCalculatedLayout(layout, details = null) {
     if (details instanceof Map) this.activeEdges = (this.activeEdges || []).map((edge) => ({ ...edge, relation: details.get(mapEdgeKey(edge.source, edge.target)) || edge.relation }));
     this.relationships = new Map(this.activeEdges.map((edge) => [mapEdgeKey(edge.source, edge.target), edge]));
@@ -73659,7 +73652,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       body.x += body.vx;
       body.y += body.vy;
     }
-    const cameraBodies = this.hasQuery ? this.pendingQuery ? this.nodes : [query, ...foreground] : this.nodes, cameraPoints = querySettling ? cameraBodies.map((body) => ({ x: body.layoutX, y: body.layoutY })) : cameraBodies, targetX = this.hasQuery && cameraPoints.length ? cameraPoints.reduce((sum, body) => sum + body.x, 0) / cameraPoints.length : 0, targetY = this.hasQuery && cameraPoints.length ? cameraPoints.reduce((sum, body) => sum + body.y, 0) / cameraPoints.length : 0, extent = this.hasQuery && cameraPoints.length ? Math.max(0.16, ...cameraPoints.map((body) => Math.hypot(body.x - targetX, body.y - targetY))) : 0.8, targetZoom = this.hasQuery && !this.pendingQuery ? Math.max(1.12, Math.min(2.15, 0.7 / extent)) : 1;
+    const cameraBodies = this.hasQuery ? this.pendingQuery ? this.nodes : [query, ...foreground] : this.nodes, targetX = this.hasQuery && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.x, 0) / cameraBodies.length : 0, targetY = this.hasQuery && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.y, 0) / cameraBodies.length : 0, extent = this.hasQuery && cameraBodies.length ? Math.max(0.16, ...cameraBodies.map((body) => Math.hypot(body.x - targetX, body.y - targetY))) : 0.8, targetZoom = this.hasQuery && !this.pendingQuery ? Math.max(1.12, Math.min(2.15, 0.7 / extent)) : 1;
     this.cameraX += (targetX - this.cameraX) * 0.055;
     this.cameraY += (targetY - this.cameraY) * 0.055;
     this.cameraZoom += (targetZoom - this.cameraZoom) * 0.05;
@@ -73707,8 +73700,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     return [width / 2 + (Number(node.x) - this.cameraX) * scale + this.panX, height / 2 + (Number(node.y) - this.cameraY) * scale + this.panY];
   }
   semanticDensityField(width, height) {
-    const tuning = this.tuning || MAP_TUNING_DEFAULTS, step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), heightWeights = new Float32Array(values.length), heightTotals = new Float32Array(values.length), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), canonicalTerrain = this.hasQuery && !this.pendingQuery, points = new Map(visible.map((node) => {
-      const position = canonicalTerrain ? { x: node.layoutX, y: node.layoutY } : node, [x, y] = this.coordinates(position, width, height);
+    const tuning = this.tuning || MAP_TUNING_DEFAULTS, step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), heightWeights = new Float32Array(values.length), heightTotals = new Float32Array(values.length), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
+      const [x, y] = this.coordinates(node, width, height);
       return [node.id, { node, x, y }];
     })), vaultTerrain = !this.hasQuery && !this.pendingQuery, zoom = Math.max(0.35, this.cameraZoom * this.userZoom), vaultDensityScale = this.hasQuery ? 1 : Math.max(0.48, Math.min(1, Math.sqrt(48 / Math.max(1, visible.length)))), sigma = Math.max(this.hasQuery ? 9 : 11, 27 * zoom * vaultDensityScale) * (vaultTerrain ? Number(tuning.terrainSpread || 1) : 1), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
@@ -73751,7 +73744,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }).slice(0, 28), ridgeRadius = sigma * 0.58;
     for (const edge of ridges) addRidge(points.get(edge.source), points.get(edge.target), ridgeRadius, 0.12 + Math.min(1, edge.strength) * 0.2);
     if (this.hasQuery && this.queryPresence > 0.04) {
-      const centerPosition = canonicalTerrain ? { x: this.queryNode.layoutX, y: this.queryNode.layoutY } : this.queryNode, [centerX, centerY] = this.coordinates(centerPosition, width, height), center = { x: centerX, y: centerY }, directResults = [...points.values()].filter(({ node }) => node.matched && node.generation === 1).sort((first, second) => second.node.relevance - first.node.relevance).slice(0, 5);
+      const [centerX, centerY] = this.coordinates(this.queryNode, width, height), center = { x: centerX, y: centerY }, directResults = [...points.values()].filter(({ node }) => node.matched && node.generation === 1).sort((first, second) => second.node.relevance - first.node.relevance).slice(0, 5);
       for (const target of directResults) addRidge(center, target, sigma * 0.46, this.queryPresence * target.node.visibility * (0.07 + Math.max(0, Math.min(1, target.node.relevance)) * 0.11));
       const supportMaximum = Math.max(0, ...values);
       addMass(centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
@@ -73797,7 +73790,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     for (let index3 = 0; index3 < values.length; index3++) values[index3] = Math.max(0, values[index3] - depression[index3]);
   }
   paintDensityTerrain(ctx, width, height, colors2) {
-    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, invalid = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey, refresh = invalid || !this.analysisPending && now - Number(this.lastTerrainAt || 0) >= 32;
+    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= 32;
     if (refresh) {
       const field = this.semanticDensityField(width, height), maximum = Math.max(0, ...field.values), vaultTerrain = !this.hasQuery && !this.pendingQuery, terrainRange = vaultTerrain ? 0.92 : 3;
       this.lastTerrainField = field;
@@ -74219,7 +74212,6 @@ var SemanticSearchModal = class extends SuggestModal {
       this.mapResults = [];
       this.lensRelationships = /* @__PURE__ */ new Map();
       this.lensRelationshipEdges = [];
-      this.map?.setAnalysisPending(false);
       if (changed) {
         this.map?.endQuery();
         window.setTimeout(() => this.updateMap(), 0);
@@ -74230,7 +74222,6 @@ var SemanticSearchModal = class extends SuggestModal {
     if (trimmed !== this.lastQuery) {
       const entering = !this.lastQuery;
       this.lastQuery = trimmed;
-      this.map?.setAnalysisPending(true);
       if (entering) this.map?.beginQuery(trimmed);
       this.visibleLimit = activeTweaks(this.plugin).topK;
       this.triggerSearch(trimmed);
@@ -74261,7 +74252,6 @@ var SemanticSearchModal = class extends SuggestModal {
           this.applyLens();
         }
       } catch (error) {
-        if (version2 === this.searchVersion) this.map?.setAnalysisPending(false);
         if (error?.name !== "AbortError") this.plugin.reportOnce(error.message);
       }
     }, immediate ? 0 : 75);
@@ -74582,13 +74572,11 @@ var SemanticSearchModal = class extends SuggestModal {
         }
       }
       this.map.setGraph({ label: "Search", hasQuery: false, resultCount: 0 }, nodes, graph.edges || [], manualRoadEdges(this.app, paths));
-      this.map.setAnalysisPending(false);
       return;
     }
     const model5 = await buildQueryMapModel(this.plugin, query, results, { lens: this.lens, generations: this.mapGenerations, relationships: this.lensRelationships, relationshipEdges: this.lensRelationshipEdges, mapMode: this.mapGroupingMode });
     if (version2 !== this.mapVersion) return;
     this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, model5.nodes, model5.edges, model5.roads);
-    this.map.setAnalysisPending(false);
   }
   hoverResult(file) {
     for (const item2 of this.modalEl.querySelectorAll(".suggestion-item.is-map-hovered")) item2.removeClass("is-map-hovered");
@@ -74872,7 +74860,6 @@ var GraphView = class extends ItemView {
     if (query.length < 3) {
       this.searchVersion++;
       this.results = [];
-      this.map.setAnalysisPending(false);
       this.resultsPanel.hide();
       this.reopenButton.hide();
       this.contentEl.addClass("is-results-collapsed");
@@ -74882,7 +74869,6 @@ var GraphView = class extends ItemView {
       } else this.loadVault();
       return;
     }
-    this.map.setAnalysisPending(true);
     this.map.beginQuery(query, true);
     this.map.setTitle(`Searching \u201C${query}\u201D\u2026`);
     this.setResultsCollapsed(false);
@@ -74893,7 +74879,6 @@ var GraphView = class extends ItemView {
   }
   async runSearch(query, immediate = false) {
     if (String(query).trim().length < 3) return;
-    this.map.setAnalysisPending(true);
     if (!immediate) this.map.beginQuery(query, true);
     const version2 = ++this.searchVersion, tweaks = activeTweaks(this.plugin), limit = Math.max(30, tweaks.topK);
     try {
@@ -74906,10 +74891,8 @@ var GraphView = class extends ItemView {
       this.renderResults();
       this.map.setTitle(`${results.length} results \xB7 ${this.mapGroupingMode === "topics" ? "Topics" : "Similarity"}`);
       this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, merged, model5.edges, model5.roads);
-      this.map.setAnalysisPending(false);
     } catch (error) {
       if (version2 === this.searchVersion) {
-        this.map.setAnalysisPending(false);
         this.resultList.empty();
         this.resultList.createDiv({ cls: "gib-graph-results-empty", text: error.message });
         this.map.setTitle(error.message);
