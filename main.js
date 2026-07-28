@@ -73659,13 +73659,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.pendingQuery = false;
     this.ambientStartedAt = performance.now();
     this.ambientDrawing = false;
-    this.ambientTimer = window.setInterval(() => {
-      if (!this.pendingQuery && this.canvas.isConnected && !document.hidden && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        this.ambientDrawing = true;
-        this.draw();
-        this.ambientDrawing = false;
-      }
-    }, 48);
+    this.linkIdleAnchored = false;
+    this.visibilityHandler = () => {
+      if (!document.hidden) this.startSimulation(0);
+    };
+    document.addEventListener("visibilitychange", this.visibilityHandler);
     if (options.onGenerations) {
       this.headingEl.addClass("has-generations");
       this.generationControl = this.headingEl.createDiv({ cls: "gib-search-map-generations", attr: { "aria-label": "Semantic generations" } });
@@ -74331,19 +74329,58 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.cameraY += (targetY - this.cameraY) * 0.055;
     this.cameraZoom += (targetZoom - this.cameraZoom) * 0.05;
   }
+  idlePhysicsStep(now) {
+    const queryActive = this.hasQuery && !this.pendingQuery, activeNodes = queryActive ? this.nodes.filter((node) => node.matched) : this.nodes, origin = this.queryPresence > 0.04 ? this.queryNode : { x: 0, y: 0 };
+    if (this.mapGroupingMode === "links" && !this.linkIdleAnchored) {
+      for (const node of activeNodes) {
+        node.layoutX = node.x;
+        node.layoutY = node.y;
+      }
+      this.linkIdleAnchored = true;
+    }
+    for (const node of activeNodes) {
+      if (node === this.dragging) continue;
+      const phase = stableMapAngle(node.id), speed = 12e-5 + phase / (Math.PI * 2) * 55e-6, orbit = 22e-4 + Math.max(0, Math.min(1, Number(node.fileScale || 0.35))) * 24e-4, angle = now * speed + phase, targetX2 = node.layoutX + Math.cos(angle) * orbit, targetY2 = node.layoutY + Math.sin(angle * 0.83 + phase) * orbit;
+      node.vx += (targetX2 - node.x) * 65e-4;
+      node.vy += (targetY2 - node.y) * 65e-4;
+      node.vx *= 0.91;
+      node.vy *= 0.91;
+      node.x += node.vx;
+      node.y += node.vy;
+    }
+    if (this.queryPresence > 0.04 && this.queryNode !== this.dragging) {
+      const phase = now * 9e-5;
+      this.queryNode.vx += (this.queryNode.layoutX + Math.cos(phase) * 12e-4 - this.queryNode.x) * 6e-3;
+      this.queryNode.vy += (this.queryNode.layoutY + Math.sin(phase * 0.79) * 12e-4 - this.queryNode.y) * 6e-3;
+      this.queryNode.vx *= 0.9;
+      this.queryNode.vy *= 0.9;
+      this.queryNode.x += this.queryNode.vx;
+      this.queryNode.y += this.queryNode.vy;
+    }
+    if ((this.idleCollisionFrame = (Number(this.idleCollisionFrame || 0) + 1) % 5) === 0) this.applyCollisionForces(this.queryPresence > 0.04 ? [this.queryNode, ...activeNodes] : activeNodes, 0.12);
+    const cameraBodies = queryActive ? [this.queryNode, ...activeNodes] : activeNodes, targetX = cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.x, 0) / cameraBodies.length : Number(origin.x), targetY = cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.y, 0) / cameraBodies.length : Number(origin.y);
+    if (queryActive || this.mapGroupingMode === "links") {
+      this.cameraX += (targetX - this.cameraX) * 0.012;
+      this.cameraY += (targetY - this.cameraY) * 0.012;
+    }
+  }
   startSimulation(alpha2 = 0.7) {
     const startingLinkLayout = this.mapGroupingMode === "links" && alpha2 >= 0.38;
     if (startingLinkLayout) {
       this.linkStableFrames = 0;
       this.linkSimulationTicks = 0;
+      this.linkIdleAnchored = false;
     }
     this.alpha = Math.max(this.alpha, alpha2);
     if (this.simulationFrame) return;
-    const tick = () => {
+    const tick = (now) => {
       this.simulationFrame = null;
-      const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (!reducedMotion) this.physicsStep(this.alpha);
-      else {
+      if (!this.canvas.isConnected) return;
+      const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches, activePhysics = this.alpha > 0.012 || this.dragging || this.pendingQuery;
+      if (!reducedMotion) {
+        if (activePhysics) this.physicsStep(Math.max(this.alpha, 0.025));
+        else this.idlePhysicsStep(now);
+      } else {
         this.queryPresence = this.targetQueryPresence;
         this.cameraZoom = this.hasQuery ? 1.35 : 1;
         this.queryNode.x = this.queryNode.layoutX;
@@ -74357,31 +74394,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
           node.y = node.layoutY;
         }
       }
-      const queryActive = this.hasQuery && !this.pendingQuery, linkMode = this.mapGroupingMode === "links" && !reducedMotion, foreground = queryActive ? this.nodes.filter((node) => node.matched) : [], linkNodes = queryActive ? foreground : this.nodes;
-      this.alpha *= linkMode ? 0.995 : 0.986;
-      const positionalError = queryActive && !linkMode ? Math.max(Math.hypot(this.queryNode.x - this.queryNode.layoutX, this.queryNode.y - this.queryNode.layoutY), ...foreground.map((node) => Math.hypot(node.x - node.layoutX, node.y - node.layoutY))) : 0;
-      if (!linkMode && this.alpha <= 0.01 && positionalError < 3e-3) {
-        this.queryNode.x = this.queryNode.layoutX;
-        this.queryNode.y = this.queryNode.layoutY;
-        for (const node of foreground) {
-          node.x = node.layoutX;
-          node.y = node.layoutY;
-          node.vx = node.vy = 0;
-        }
-        this.lastTerrainAt = 0;
-      }
-      if (linkMode) {
-        const kinetic = linkNodes.reduce((sum, node) => sum + node.vx * node.vx + node.vy * node.vy, 0) / Math.max(1, linkNodes.length);
-        this.linkSimulationTicks = Number(this.linkSimulationTicks || 0) + 1;
-        this.linkStableFrames = kinetic < 8e-8 ? Number(this.linkStableFrames || 0) + 1 : 0;
-      }
+      this.alpha = Math.max(0, this.alpha * (this.mapGroupingMode === "links" ? 0.992 : 0.984) - 12e-5);
+      this.ambientDrawing = !activePhysics;
       this.draw();
-      const transitioning = Math.abs(this.queryPresence - this.targetQueryPresence) > 0.01 || this.nodes.some((node) => Math.abs(node.visibility - node.targetVisibility) > 0.015 || Math.abs(node.blur - node.targetBlur) > 0.03), settling = queryActive && !linkMode && positionalError >= 3e-3, linkSettling = linkMode && Number(this.linkStableFrames || 0) < 24 && Number(this.linkSimulationTicks || 0) < 540;
-      if (linkMode && !linkSettling && !this.dragging && !transitioning) {
-        this.alpha = 0;
-        for (const node of linkNodes) node.vx = node.vy = 0;
-      }
-      if (!linkMode && this.alpha > 0.01 || linkSettling || this.dragging || transitioning || settling) this.simulationFrame = requestAnimationFrame(tick);
+      this.ambientDrawing = false;
+      if (!reducedMotion && !document.hidden) this.simulationFrame = requestAnimationFrame(tick);
     };
     this.simulationFrame = requestAnimationFrame(tick);
   }
@@ -74493,7 +74510,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   paintDensityTerrain(ctx, width, height, colors2) {
     if (this.tuning?.showTopography === false) return;
-    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refreshInterval = this.ambientDrawing ? 480 : 32, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= refreshInterval;
+    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refreshInterval = this.pendingQuery ? 120 : this.ambientDrawing ? 180 : 48, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= refreshInterval;
     if (refresh) {
       const field = this.semanticDensityField(width, height), maximum = Math.max(0, ...field.values), vaultTerrain = !this.hasQuery && !this.pendingQuery, terrainRange = vaultTerrain ? 0.92 : 3;
       this.lastTerrainField = field;
@@ -74632,7 +74649,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       this.communityLabelsForDraw = [];
       return;
     }
-    const now = performance.now(), dpr = window.devicePixelRatio || 1, colorKey = `${colors2.muted}|${this.options.semanticColors !== false}`, refreshInterval = this.ambientDrawing ? 420 : 42, refresh = !this.communityCanvas || this.communityCanvas.width !== Math.ceil(width * dpr) || this.communityCanvas.height !== Math.ceil(height * dpr) || this.communityColorKey !== colorKey || now - Number(this.lastCommunityAt || 0) >= refreshInterval;
+    const now = performance.now(), dpr = window.devicePixelRatio || 1, colorKey = `${colors2.muted}|${this.options.semanticColors !== false}`, refreshInterval = this.pendingQuery ? 150 : this.ambientDrawing ? 220 : 64, refresh = !this.communityCanvas || this.communityCanvas.width !== Math.ceil(width * dpr) || this.communityCanvas.height !== Math.ceil(height * dpr) || this.communityColorKey !== colorKey || now - Number(this.lastCommunityAt || 0) >= refreshInterval;
     if (refresh) {
       if (!this.communityCanvas) this.communityCanvas = document.createElement("canvas");
       const canvas = this.communityCanvas;
@@ -74988,7 +75005,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     super.open(event);
   }
   destroy() {
-    if (this.ambientTimer) window.clearInterval(this.ambientTimer);
+    document.removeEventListener("visibilitychange", this.visibilityHandler);
     cancelAnimationFrame(this.roadAnimationFrame);
     cancelAnimationFrame(this.simulationFrame);
     cancelAnimationFrame(this.animationFrame);
