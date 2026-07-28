@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.37.0
+
+- Rebuilds the dedicated Atlas as one continuous sheet with quiet results and note-annotation margins instead of layered overlays.
+- Makes the graph renderer reserve and animate around visible margins, keeping nodes, terrain, zoom, and dragging centered in the actual open field.
+- Changes result selection to preview first: single-click selects and annotates, while double-click or Enter opens the note.
+- Uses a single bottom margin on narrow screens so results and note content never compete for the map.
+- Reduces the search field to a clean coordinate line and removes the previous directional panel fades.
+
 ## 0.36.1
 
 - Integrates the dedicated Atlas results and note-preview regions into the landscape instead of presenting them as floating glass cards.
