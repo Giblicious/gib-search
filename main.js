@@ -71234,6 +71234,9 @@ var init_mobile_runtime = __esm({
         this.meta = [];
         this.vectors = [];
         this.metaStorageBytes = 0;
+        this.fileVectorCache = null;
+        this.fileEntityCache = null;
+        this.passageIndicesByFile = null;
         this.highlightPhraseVectors = /* @__PURE__ */ new Map();
         this.highlightCacheLoaded = false;
         this.highlightCacheSave = Promise.resolve();
@@ -72166,10 +72169,10 @@ var init_mobile_runtime = __esm({
           return cached;
         }
         const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery);
-        const queryTokens = [...new Set(tokens(`${query} ${correctedQuery}`))], queryEntities = new Set(extractGraphEntities(`${query} ${correctedQuery}`).map((value) => value.toLowerCase()));
+        const queryTokens = [...new Set(tokens(`${query} ${correctedQuery}`))], queryEntities = new Set(extractGraphEntities(`${query} ${correctedQuery}`).map((value) => value.toLowerCase())), yieldStride = this.isMobile ? 192 : 1024;
         const scores = [];
         for (let i3 = 0; i3 < this.vectors.length; i3++) {
-          if (i3 % 192 === 191) {
+          if (i3 % yieldStride === yieldStride - 1) {
             await yieldToUi();
             if (this.livePending) throw staleSearchError();
           }
@@ -72196,11 +72199,10 @@ var init_mobile_runtime = __esm({
         });
         return scores;
       }
-      fileVectors(files = null) {
-        const requested = files ? new Set(files) : null;
-        const groups = /* @__PURE__ */ new Map();
+      ensureFileCaches() {
+        if (this.fileVectorCache && this.fileCacheMeta === this.meta && this.fileCacheVectors === this.vectors && this.fileCacheMetaLength === this.meta.length && this.fileCacheVectorLength === this.vectors.length) return;
+        const groups = /* @__PURE__ */ new Map(), entities = /* @__PURE__ */ new Map(), indices = /* @__PURE__ */ new Map();
         this.meta.forEach((item, index3) => {
-          if (requested && !requested.has(item.file)) return;
           let entry = groups.get(item.file);
           if (!entry) {
             entry = { vector: new Float32Array(DIMENSION), count: 0 };
@@ -72210,12 +72212,30 @@ var init_mobile_runtime = __esm({
           if (!vector) return;
           for (let dimension = 0; dimension < DIMENSION; dimension++) entry.vector[dimension] += vector[dimension];
           entry.count++;
+          const fileEntities = entities.get(item.file) || /* @__PURE__ */ new Set();
+          for (const entity2 of item.entities || []) fileEntities.add(String(entity2).toLowerCase());
+          entities.set(item.file, fileEntities);
+          const fileIndices = indices.get(item.file) || [];
+          fileIndices.push(index3);
+          indices.set(item.file, fileIndices);
         });
         for (const entry of groups.values()) {
           const norm = Math.sqrt(dot(entry.vector, entry.vector)) || 1;
           for (let dimension = 0; dimension < DIMENSION; dimension++) entry.vector[dimension] /= norm;
         }
-        return groups;
+        this.fileVectorCache = groups;
+        this.fileEntityCache = entities;
+        this.passageIndicesByFile = indices;
+        this.fileCacheMeta = this.meta;
+        this.fileCacheVectors = this.vectors;
+        this.fileCacheMetaLength = this.meta.length;
+        this.fileCacheVectorLength = this.vectors.length;
+      }
+      fileVectors(files = null) {
+        this.ensureFileCaches();
+        if (!files) return this.fileVectorCache;
+        const requested = new Set(files);
+        return new Map([...this.fileVectorCache].filter(([file]) => requested.has(file)));
       }
       vaultContentProfiles(files = null, maximum = 8) {
         const tuning = Object.assign({ commonnessSuppression: 0.75, passageDiversity: 0.28 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:${this.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}:${tuning.commonnessSuppression}:${tuning.passageDiversity}`;
@@ -72255,14 +72275,10 @@ var init_mobile_runtime = __esm({
         return requested ? new Map([...this.contentProfileCache.profiles].filter(([file]) => requested.has(file))) : this.contentProfileCache.profiles;
       }
       fileEntities(files = null) {
-        const requested = files ? new Set(files) : null, groups = /* @__PURE__ */ new Map();
-        for (const item of this.meta) {
-          if (requested && !requested.has(item.file)) continue;
-          const values = groups.get(item.file) || /* @__PURE__ */ new Set();
-          for (const entity2 of item.entities || []) values.add(String(entity2).toLowerCase());
-          groups.set(item.file, values);
-        }
-        return groups;
+        this.ensureFileCaches();
+        if (!files) return this.fileEntityCache;
+        const requested = new Set(files);
+        return new Map([...this.fileEntityCache].filter(([file]) => requested.has(file)));
       }
       structuralSpeakerLabels(files) {
         const requested = new Set(files || []), occurrences = /* @__PURE__ */ new Map(), record = (name, file) => {
@@ -72297,13 +72313,13 @@ ${item.text || ""}`;
         return item?.contentHash || `${file}:${item?.mtime || 0}`;
       }
       indexedConceptCandidates(queryVector, files, query = "") {
-        const requested = new Set(files), passages = /* @__PURE__ */ new Map();
-        this.meta.forEach((item, index3) => {
-          if (!requested.has(item.file) || !this.vectors[index3]) return;
-          const group = passages.get(item.file) || [];
-          group.push({ index: index3, score: dot(queryVector, this.vectors[index3]) });
-          passages.set(item.file, group);
-        });
+        this.ensureFileCaches();
+        const passages = /* @__PURE__ */ new Map();
+        for (const file of files) {
+          const group = [];
+          for (const index3 of this.passageIndicesByFile.get(file) || []) if (this.vectors[index3]) group.push({ index: index3, score: dot(queryVector, this.vectors[index3]) });
+          passages.set(file, group);
+        }
         const output = /* @__PURE__ */ new Map();
         for (const file of files) {
           const candidates = /* @__PURE__ */ new Map(), selected = (passages.get(file) || []).sort((a2, b) => b.score - a2.score).slice(0, 2);
@@ -72885,14 +72901,14 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
         this.graphWarmSignature = signature;
         return pending;
       }
-      async semanticStarfield(query, files = null, focusFiles = []) {
+      async semanticStarfield(query, files = null, focusFiles = [], options = {}) {
         let requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))];
-        const trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18;
+        const trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18, queryLabels = options.queryLabels !== false;
         if (vaultMode) {
           const indexed = new Set(this.meta.map((item) => item.file));
           requested = requested.filter((file) => indexed.has(file)).sort();
         }
-        const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28, communitySensitivity: 1, communityMinSize: 3, communityLabelSensitivity: 0.58, neighborhoodStability: 0.68, neighborhoodSeparation: 0.06, neighborhoodCoverage: 0.58, neighborhoodSpread: 1 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:hierarchy-v1:${vaultMode ? "chunks" : "files"}:${Boolean(this.plugin.settings?.generatedTopicLabels)}:${tuning.passageCoverage}:${tuning.commonnessSuppression}:${tuning.passageDiversity}:${tuning.communitySensitivity}:${tuning.communityMinSize}:${tuning.communityLabelSensitivity}:${tuning.neighborhoodStability}:${tuning.neighborhoodSeparation}:${tuning.neighborhoodCoverage}:${tuning.neighborhoodSpread}:${requested.join("\0")}`;
+        const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28, communitySensitivity: 1, communityMinSize: 3, communityLabelSensitivity: 0.58, neighborhoodStability: 0.68, neighborhoodSeparation: 0.06, neighborhoodCoverage: 0.58, neighborhoodSpread: 1 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:hierarchy-v1:${vaultMode ? "chunks" : "files"}:${queryLabels ? "labels" : "facets"}:${Boolean(this.plugin.settings?.generatedTopicLabels)}:${tuning.passageCoverage}:${tuning.commonnessSuppression}:${tuning.passageDiversity}:${tuning.communitySensitivity}:${tuning.communityMinSize}:${tuning.communityLabelSensitivity}:${tuning.neighborhoodStability}:${tuning.neighborhoodSeparation}:${tuning.neighborhoodCoverage}:${tuning.neighborhoodSpread}:${requested.join("\0")}`;
         if (vaultMode && this.graphEvidenceCache?.rootGraph) {
           const descriptor = this.graphEvidenceSignature(tuning), cache2 = this.graphEvidenceCache, sameFiles = requested.length === cache2.files.length && requested.every((file) => cache2.fileIndex.has(file)), currentEvidence = descriptor.signature === cache2.signature;
           if (sameFiles && currentEvidence && cache2.rootGraph.signature === signature) return this.applyCachedGraphLabels(cache2.rootGraph.graph);
@@ -73002,6 +73018,10 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
             parentCommunityLabels2 = this.cachedTopicCommunityLabels(entries2, parentCommunities2, this.deferredCommunityLabels?.get(`${signature}:parents`) || /* @__PURE__ */ new Map());
             this.queueTopicCommunityAnalysis(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize, signature);
             this.queueTopicCommunityAnalysis(entries2, parentCommunities2, tuning.communityLabelSensitivity, tuning.communityMinSize, `${signature}:parents`);
+          } else if (!queryLabels) {
+            const blank = (ids) => new Map([...new Set(ids.values())].map((id2) => [id2, { label: "", fallbackLabel: "", confidence: 0 }]));
+            communityLabels2 = blank(communities2);
+            parentCommunityLabels2 = blank(parentCommunities2);
           } else {
             const communityAnalysis = this.topicCommunityAnalysis(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize), parentCommunityAnalysis = this.topicCommunityAnalysis(entries2, parentCommunities2, tuning.communityLabelSensitivity, tuning.communityMinSize);
             communityLabels2 = communityAnalysis.labels;
@@ -73706,13 +73726,13 @@ async function buildQueryMapModel(plugin6, query, results, options = {}) {
     return clone(cached);
   }
   const pending = (async () => {
-    const expansion = plugin6.search.semanticGenerations(roots, generations, 5), generationByFile = new Map(expansion.nodes.map((node) => [node.id, node])), activeFiles = expansion.nodes.map((node) => node.id), facets = await plugin6.search.conceptFacets(query, activeFiles);
+    const expansion = plugin6.search.semanticGenerations(roots, generations, 5), generationByFile = new Map(expansion.nodes.map((node) => [node.id, node])), activeFiles = expansion.nodes.map((node) => node.id), [facets, graph] = await Promise.all([plugin6.search.conceptFacets(query, activeFiles), plugin6.search.semanticStarfield(query, activeFiles, activeFiles, { queryLabels: false })]);
     for (const result of sourceResults) {
       const facet = facets.get(result.file);
       result.facet = facet?.facet;
       result.conceptAffinities = facet?.affinities;
     }
-    const graph = await plugin6.search.semanticStarfield(query, activeFiles, activeFiles), byFile = new Map(sourceResults.map((result) => [result.file, result])), scales = options.fileScales || vaultFileScales(plugin6.app), rankingScores = sourceResults.map((result) => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = expansion.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
+    const byFile = new Map(sourceResults.map((result) => [result.file, result])), scales = options.fileScales || vaultFileScales(plugin6.app), rankingScores = sourceResults.map((result) => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(1e-3, rankingHigh - rankingLow), semanticScores = graph.nodes.map((node) => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(1e-3, semanticHigh - semanticLow), expansionEdges = expansion.edges.map((edge) => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map((edge) => mapEdgeKey(edge.source, edge.target))), combinedEdges = [...graph.edges || [], ...expansionEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)))];
     const nodes = graph.nodes.map((node) => {
       const result = byFile.get(node.id), generation = generationByFile.get(node.id), subtopic = facets.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance, community = mapMode === "topics" && subtopic ? subtopic.facet : node.community, communityMembership = subtopic ? Number(subtopic.affinities?.[subtopic.facet] || 0) : Number(node.communityMembership || 0);
       return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance, fileScale: scales.get(node.id) ?? 0.35, facet: subtopic?.facet ?? result?.facet ?? node.community, community, communityMembership: mapMode === "topics" ? communityMembership : node.communityMembership, communityLabel: mapMode === "topics" ? subtopic?.label || "" : node.communityLabel, communityFallbackLabel: mapMode === "topics" ? subtopic?.fallbackLabel || "" : node.communityFallbackLabel, communityLabelConfidence: mapMode === "topics" ? Number(subtopic?.confidence || 0) : node.communityLabelConfidence, conceptAffinities: subtopic?.affinities || result?.conceptAffinities || node.topicAffinities, topicAffinities: mapMode === "topics" && subtopic ? subtopic.affinities : node.topicAffinities, contextScore: result?.contextScore };
@@ -76382,11 +76402,18 @@ var GraphView = class extends ItemView {
     try {
       const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), raw = await runSearch(query, Math.min(240, limit * 5), tweaks.minScore, { scoreWindow: tweaks.scoreWindow, folderPathBoost: this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 20, files: this.activeScope()?.files });
       if (version2 !== this.searchVersion || query !== this.query) return;
-      const results = groupSearchResults(raw, query, limit), model5 = await buildQueryMapModel(this.plugin, query, results, { lens: "relevance", generations: this.mapGenerations, mapMode: this.mapGroupingMode, fileScales: new Map(this.baseNodes.map((node) => [node.id, node.fileScale])) });
-      if (version2 !== this.searchVersion || query !== this.query) return;
-      const queryById = new Map(model5.nodes.map((node) => [node.id, node])), merged = this.baseNodes.map((base) => queryById.get(base.id) || { ...base, matched: false, relevance: 0 });
+      const results = groupSearchResults(raw, query, limit), resultScores = results.map((result) => Number(result.score || 0)), low = resultScores.length ? Math.min(...resultScores) : 0, high = resultScores.length ? Math.max(...resultScores) : 1, spread = Math.max(1e-3, high - low), provisionalByFile = new Map(results.map((result) => [result.file, result]));
       this.results = results;
       this.renderResults();
+      this.map.setTitle(`Mapping ${results.length} results\u2026`);
+      this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, this.baseNodes.map((base) => {
+        const result = provisionalByFile.get(base.id);
+        return result ? { ...base, matched: true, generation: 1, relevance: 0.08 + (Number(result.score || 0) - low) / spread * 0.92 } : { ...base, matched: false, relevance: 0 };
+      }), this.baseEdges, this.baseRoads);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const model5 = await buildQueryMapModel(this.plugin, query, results, { lens: "relevance", generations: this.mapGenerations, mapMode: this.mapGroupingMode, fileScales: new Map(this.baseNodes.map((node) => [node.id, node.fileScale])) });
+      if (version2 !== this.searchVersion || query !== this.query) return;
+      const queryById = new Map(model5.nodes.map((node) => [node.id, node])), merged = this.baseNodes.map((base) => queryById.get(base.id) || { ...base, matched: false, relevance: 0 });
       this.map.setTitle(`${results.length} results \xB7 ${mapGroupingLabel(this.mapGroupingMode)}`);
       const edgeKeys = new Set(model5.edges.map((edge) => mapEdgeKey(edge.source, edge.target))), backgroundEdges = this.baseEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)));
       this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, merged, [...model5.edges, ...backgroundEdges], model5.roads);
