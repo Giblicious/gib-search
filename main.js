@@ -71195,6 +71195,16 @@ function buildHighlightCandidates(file, chunk) {
     return true;
   });
 }
+function packIndexMeta(meta) {
+  return (meta || []).map((item) => ({ ...item, highlightCandidates: (item.highlightCandidates || []).map((candidate) => Array.isArray(candidate) ? candidate : [candidate.phrase, candidate.field, candidate.sentenceId, candidate.start, candidate.end, candidate.words, (candidate.hasNoun ? 1 : 0) | (candidate.hasVerb ? 2 : 0) | (candidate.hasExpression ? 4 : 0) | (candidate.adjectiveOnly ? 8 : 0), candidate.quality]) }));
+}
+function unpackIndexMeta(meta) {
+  return (meta || []).map((item) => ({ ...item, highlightCandidates: (item.highlightCandidates || []).map((candidate) => {
+    if (!Array.isArray(candidate)) return candidate;
+    const flags = Number(candidate[6] || 0);
+    return { phrase: candidate[0], field: candidate[1], sentenceId: candidate[2], start: candidate[3], end: candidate[4], words: candidate[5], hasNoun: Boolean(flags & 1), hasVerb: Boolean(flags & 2), hasExpression: Boolean(flags & 4), adjectiveOnly: Boolean(flags & 8), quality: Number(candidate[7] || 0) };
+  }) }));
+}
 var MODEL_ID, RELATION_MODEL_ID, TOPIC_LABEL_MODEL_ID, DIMENSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, GRAPH_EVIDENCE_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, STRUCTURAL_TOPIC_LABELS, VAGUE_LABEL_WORDS, IRREGULAR_LEMMAS, MobileSearchRuntime;
 var init_mobile_runtime = __esm({
   "src/mobile-runtime.js"() {
@@ -71223,10 +71233,11 @@ var init_mobile_runtime = __esm({
         this.isMobile = plugin6.isMobile;
         this.meta = [];
         this.vectors = [];
-        this.highlightVectors = [];
+        this.metaStorageBytes = 0;
         this.highlightPhraseVectors = /* @__PURE__ */ new Map();
+        this.highlightCacheLoaded = false;
+        this.highlightCacheSave = Promise.resolve();
         this.packedVectors = new Float32Array();
-        this.packedHighlightVectors = new Int16Array();
         this.lexical = [];
         this.spellingVocabulary = /* @__PURE__ */ new Map();
         this.spellingByLength = /* @__PURE__ */ new Map();
@@ -71300,7 +71311,7 @@ var init_mobile_runtime = __esm({
         this.changed();
       }
       highlightPhraseCount() {
-        return this.meta.reduce((total, item) => total + (item.highlightCandidates?.length || 0), 0);
+        return this.highlightPhraseVectors.size;
       }
       workerStatus() {
         return { phase: this.phase, message: this.message, modelMessage: this.modelMessage || "", relationMessage: this.relationMessage || "", topicLabelMessage: this.topicLabelMessage || "", pid: "mobile", startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt };
@@ -71321,19 +71332,28 @@ var init_mobile_runtime = __esm({
         return this.database;
       }
       async databaseGet() {
-        if (!this.isMobile) return this.plugin.desktopIndexStore.get();
-        const database = await this.openDatabase();
-        return new Promise((resolve, reject) => {
-          const request = database.transaction("indexes", "readonly").objectStore("indexes").get(this.indexKey);
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error);
-        });
+        let stored;
+        if (!this.isMobile) stored = await this.plugin.desktopIndexStore.get();
+        else {
+          const database = await this.openDatabase();
+          stored = await new Promise((resolve, reject) => {
+            const request = database.transaction("indexes", "readonly").objectStore("indexes").get(this.indexKey);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+        }
+        if (!stored) return stored;
+        this.metaStorageBytes = new TextEncoder().encode(JSON.stringify(stored.meta || [])).length;
+        const needsMetaCompaction = (stored.meta || []).some((item) => (item.highlightCandidates || []).some((candidate) => !Array.isArray(candidate)));
+        return { ...stored, meta: unpackIndexMeta(stored.meta), needsMetaCompaction };
       }
       async databasePut(value) {
-        if (!this.isMobile) return this.plugin.desktopIndexStore.put(value);
+        const stored = { ...value, meta: packIndexMeta(value.meta) };
+        this.metaStorageBytes = new TextEncoder().encode(JSON.stringify(stored.meta)).length;
+        if (!this.isMobile) return this.plugin.desktopIndexStore.put(stored);
         const database = await this.openDatabase();
         return new Promise((resolve, reject) => {
-          const request = database.transaction("indexes", "readwrite").objectStore("indexes").put(value, this.indexKey);
+          const request = database.transaction("indexes", "readwrite").objectStore("indexes").put(stored, this.indexKey);
           request.onsuccess = () => resolve();
           request.onerror = () => reject(request.error);
         });
@@ -71393,6 +71413,75 @@ var init_mobile_runtime = __esm({
             request.onerror = () => reject(request.error);
           });
         } else await this.plugin.desktopIndexStore.putTopicLabels(entries);
+      }
+      highlightCacheLimit() {
+        return this.isMobile ? 1e3 : 3e3;
+      }
+      rememberHighlightPhrase(phrase, vector) {
+        const key = String(phrase || "").trim().toLowerCase();
+        if (!key || vector?.length !== DIMENSION) return null;
+        this.highlightPhraseVectors.delete(key);
+        this.highlightPhraseVectors.set(key, vector);
+        while (this.highlightPhraseVectors.size > this.highlightCacheLimit()) this.highlightPhraseVectors.delete(this.highlightPhraseVectors.keys().next().value);
+        return vector;
+      }
+      cachedHighlightPhrase(phrase) {
+        const key = String(phrase || "").trim().toLowerCase(), vector = this.highlightPhraseVectors.get(key);
+        if (!vector) return null;
+        this.highlightPhraseVectors.delete(key);
+        this.highlightPhraseVectors.set(key, vector);
+        return vector;
+      }
+      async loadHighlightPhraseCache() {
+        try {
+          let stored;
+          if (this.isMobile) {
+            const database = await this.openDatabase();
+            stored = await new Promise((resolve, reject) => {
+              const request = database.transaction("indexes", "readonly").objectStore("indexes").get(`${this.indexKey}:highlight-cache`);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+          } else stored = await this.plugin.desktopIndexStore?.getHighlightCache?.();
+          this.highlightPhraseVectors.clear();
+          for (const [phrase, source] of Array.isArray(stored) ? stored.slice(-this.highlightCacheLimit()) : []) {
+            const vector = source instanceof Int16Array ? source : new Int16Array(source?.buffer || source || new ArrayBuffer(0));
+            this.rememberHighlightPhrase(phrase, vector);
+          }
+        } catch {
+          this.highlightPhraseVectors.clear();
+        } finally {
+          this.highlightCacheLoaded = true;
+        }
+      }
+      async saveHighlightPhraseCache() {
+        if (!this.highlightCacheLoaded && !this.highlightPhraseVectors.size) return;
+        const entries = [...this.highlightPhraseVectors].slice(-this.highlightCacheLimit()), write = async () => {
+          if (this.isMobile) {
+            const database = await this.openDatabase(), stored = entries.map(([phrase, vector]) => [phrase, vector.buffer.slice(vector.byteOffset, vector.byteOffset + vector.byteLength)]);
+            await new Promise((resolve, reject) => {
+              const request = database.transaction("indexes", "readwrite").objectStore("indexes").put(stored, `${this.indexKey}:highlight-cache`);
+              request.onsuccess = () => resolve();
+              request.onerror = () => reject(request.error);
+            });
+          } else await this.plugin.desktopIndexStore?.putHighlightCache?.(entries);
+        };
+        this.highlightCacheSave = this.highlightCacheSave.catch(() => {
+        }).then(write);
+        return this.highlightCacheSave;
+      }
+      queueHighlightPhraseCacheSave() {
+        clearTimeout(this.highlightCacheTimer);
+        this.highlightCacheTimer = setTimeout(() => {
+          this.highlightCacheTimer = null;
+          this.saveHighlightPhraseCache().catch((error) => this.plugin.logDiagnostic?.(`Highlight cache save failed: ${error?.message || error}`));
+        }, 1200);
+      }
+      flushHighlightPhraseCache() {
+        clearTimeout(this.highlightCacheTimer);
+        this.highlightCacheTimer = null;
+        return this.saveHighlightPhraseCache().catch(() => {
+        });
       }
       async loadGraphEvidenceCache() {
         try {
@@ -71683,10 +71772,6 @@ var init_mobile_runtime = __esm({
           return best;
         });
       }
-      refreshHighlightPhraseCache() {
-        this.highlightPhraseVectors.clear();
-        this.meta.forEach((item, passageIndex) => (item.highlightCandidates || []).forEach((candidate, candidateIndex) => this.highlightPhraseVectors.set(candidate.phrase.trim().toLowerCase(), this.highlightVectors[passageIndex]?.[candidateIndex])));
-      }
       async loadIndex() {
         try {
           let stored = await this.databaseGet();
@@ -71698,64 +71783,37 @@ var init_mobile_runtime = __esm({
           this.meta = stored.meta || [];
           this.lastSuccessfulIndexAt = stored.lastSuccessfulIndexAt || null;
           const all4 = new Float32Array(stored.vectors);
-          const highlights = new Int16Array(stored.highlightVectors || new ArrayBuffer(0));
           if (all4.length !== this.meta.length * DIMENSION) throw new Error("Index dimensions do not match BGE");
-          const highlightCount = this.meta.reduce((total, item) => total + (item.highlightCandidates?.length || 0), 0);
-          if (highlights.length !== highlightCount * DIMENSION) throw new Error("Highlight index dimensions do not match BGE");
-          let highlightOffset = 0;
-          this.highlightVectors = this.meta.map((item) => (item.highlightCandidates || []).map(() => {
-            const vector = highlights.subarray(highlightOffset, highlightOffset + DIMENSION);
-            highlightOffset += DIMENSION;
-            return vector;
-          }));
           this.packedVectors = all4;
-          this.packedHighlightVectors = highlights;
           this.vectors = this.meta.map((_2, index3) => all4.subarray(index3 * DIMENSION, (index3 + 1) * DIMENSION));
           this.refreshLexical();
-          this.refreshHighlightPhraseCache();
-          await Promise.all([this.loadRelationCache(), this.loadTopicLabelCache(), this.loadGraphEvidenceCache()]);
+          await Promise.all([this.loadHighlightPhraseCache(), this.loadRelationCache(), this.loadTopicLabelCache(), this.loadGraphEvidenceCache()]);
+          if (stored.legacyHighlights || stored.needsMetaCompaction || Object.prototype.hasOwnProperty.call(stored, "highlightVectors")) await this.databasePut({ meta: this.meta, vectors: all4.buffer.slice(all4.byteOffset, all4.byteOffset + all4.byteLength), lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
         } catch (error) {
           this.plugin.logDiagnostic(`Index load failed: ${error?.message || String(error)}`, true);
           if (!this.isMobile) throw error;
           this.meta = [];
           this.vectors = [];
-          this.highlightVectors = [];
           this.highlightPhraseVectors.clear();
           this.packedVectors = new Float32Array();
-          this.packedHighlightVectors = new Int16Array();
           this.refreshLexical();
         }
       }
       async saveIndex() {
         const packed = new Float32Array(this.vectors.length * DIMENSION);
         this.vectors.forEach((vector, index3) => packed.set(vector, index3 * DIMENSION));
-        const highlightCount = this.highlightVectors.reduce((total, vectors) => total + vectors.length, 0);
-        const packedHighlights = new Int16Array(highlightCount * DIMENSION);
-        let highlightOffset = 0;
-        this.highlightVectors.forEach((vectors) => vectors.forEach((vector) => {
-          packedHighlights.set(vector, highlightOffset);
-          highlightOffset += DIMENSION;
-        }));
         this.packedVectors = packed;
-        this.packedHighlightVectors = packedHighlights;
         this.vectors = this.meta.map((_2, index3) => packed.subarray(index3 * DIMENSION, (index3 + 1) * DIMENSION));
-        highlightOffset = 0;
-        this.highlightVectors = this.meta.map((item) => (item.highlightCandidates || []).map(() => {
-          const vector = packedHighlights.subarray(highlightOffset, highlightOffset + DIMENSION);
-          highlightOffset += DIMENSION;
-          return vector;
-        }));
         this.queryCache.clear();
         this.resultCache.clear();
         this.conceptFacetCache.clear();
         this.invalidateGraphEvidence();
         this.topicBasisCache = null;
-        await this.databasePut({ meta: this.meta, vectors: packed.buffer, highlightVectors: packedHighlights.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
+        await this.databasePut({ meta: this.meta, vectors: packed.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
         this.refreshLexical();
-        this.refreshHighlightPhraseCache();
       }
       storageBytes() {
-        return this.vectors.length * DIMENSION * 4 + this.highlightVectors.reduce((total, vectors) => total + vectors.length, 0) * DIMENSION * 2 + new TextEncoder().encode(JSON.stringify(this.meta)).length;
+        return this.vectors.length * DIMENSION * 4 + this.highlightPhraseVectors.size * DIMENSION * 2 + this.metaStorageBytes;
       }
       files() {
         return this.plugin.app.vault.getFiles().filter((file) => INDEXABLE.has(file.extension.toLowerCase()));
@@ -71793,20 +71851,32 @@ var init_mobile_runtime = __esm({
           this.indexRun = null;
         }
       }
-      async embedHighlightCandidates(groups) {
-        const unique2 = [];
-        const missing = /* @__PURE__ */ new Set();
+      async embedHighlightCandidates(groups, cancellable = false, resolvedKeys = /* @__PURE__ */ new Set()) {
+        const unique2 = [], missing = /* @__PURE__ */ new Set(), resolved = /* @__PURE__ */ new Map();
         groups.flat().forEach((candidate) => {
           const phrase = candidate.phrase.trim(), key = phrase.toLowerCase();
-          if (!this.highlightPhraseVectors.has(key) && !missing.has(key)) {
+          if (resolvedKeys.has(key)) return;
+          const cached = this.cachedHighlightPhrase(key);
+          if (cached) resolved.set(key, cached);
+          else if (!missing.has(key)) {
             missing.add(key);
             unique2.push(phrase);
           }
         });
-        const embedded = await this.embedBatch(unique2, false, this.isMobile ? 8 : 24);
-        if (embedded.length !== unique2.length) throw new Error(`Highlight embedding returned ${embedded.length} of ${unique2.length} vectors`);
-        unique2.forEach((phrase, index3) => this.highlightPhraseVectors.set(phrase.toLowerCase(), quantizeHighlightVector(embedded[index3])));
-        return groups.map((candidates) => candidates.map((candidate) => this.highlightPhraseVectors.get(candidate.phrase.trim().toLowerCase())));
+        const batchSize = this.isMobile ? 8 : 48;
+        for (let offset2 = 0; offset2 < unique2.length; offset2 += batchSize) {
+          const phrases = unique2.slice(offset2, offset2 + batchSize), embedded = await this.embedBatch(phrases, false, batchSize);
+          if (embedded.length !== phrases.length) throw new Error(`Highlight embedding returned ${embedded.length} of ${phrases.length} vectors`);
+          phrases.forEach((phrase, index3) => {
+            const vector = quantizeHighlightVector(embedded[index3]);
+            resolved.set(phrase.toLowerCase(), vector);
+            this.rememberHighlightPhrase(phrase, vector);
+          });
+          if (cancellable && this.livePending) throw staleSearchError();
+          await yieldToUi();
+        }
+        if (unique2.length) this.queueHighlightPhraseCacheSave();
+        return groups.map((candidates) => candidates.map((candidate) => resolved.get(candidate.phrase.trim().toLowerCase())));
       }
       async performIndexUpdate(force = false) {
         this.indexStable = false;
@@ -71862,12 +71932,10 @@ var init_mobile_runtime = __esm({
         }
         let meta = [];
         let vectors = [];
-        let highlightVectors = [];
         let checkpointAt = Date.now();
         for (let i3 = 0; i3 < this.meta.length; i3++) if (!deleted.has(this.meta[i3].file)) {
           meta.push(this.meta[i3]);
           vectors.push(this.vectors[i3]);
-          highlightVectors.push(this.highlightVectors[i3] || []);
         }
         for (let fileIndex = 0; fileIndex < changed.length; fileIndex++) {
           if (this.cancelRequested || !this.enabled) return;
@@ -71881,24 +71949,19 @@ var init_mobile_runtime = __esm({
             const chunks2 = chunkMarkdown(content);
             const embedded = await this.embedBatch(chunks2.map((chunk) => embeddingText(file.path, chunk)));
             const highlightCandidates = chunks2.map((chunk) => buildHighlightCandidates(file.path, chunk));
-            const embeddedHighlights = await this.embedHighlightCandidates(highlightCandidates);
             const retainedMeta = [];
             const retainedVectors = [];
-            const retainedHighlights = [];
             for (let i3 = 0; i3 < meta.length; i3++) if (meta[i3].file !== file.path) {
               retainedMeta.push(meta[i3]);
               retainedVectors.push(vectors[i3]);
-              retainedHighlights.push(highlightVectors[i3] || []);
             }
             meta = retainedMeta;
             vectors = retainedVectors;
-            highlightVectors = retainedHighlights;
             chunks2.forEach((chunk, index3) => {
               meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: highlightCandidates[index3], graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ""} ${chunk.text}`) });
               vectors.push(embedded[index3]);
-              highlightVectors.push(embeddedHighlights[index3]);
             });
-            this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks2.length} chunks, ${highlightCandidates.flat().length} highlight phrases in ${Date.now() - fileStartedAt} ms`);
+            this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks2.length} chunks, ${highlightCandidates.flat().length} highlight candidates in ${Date.now() - fileStartedAt} ms`);
           } catch (error) {
             this.plugin.reportOnce(`Could not index ${file.path}: ${error.message}`);
           }
@@ -71906,7 +71969,6 @@ var init_mobile_runtime = __esm({
           if (Date.now() - checkpointAt >= 3e4) {
             this.meta = meta;
             this.vectors = vectors;
-            this.highlightVectors = highlightVectors;
             await this.saveIndex();
             checkpointAt = Date.now();
             this.plugin.logDiagnostic(`Saved index checkpoint: ${this.processedFiles}/${files.length} files`);
@@ -71916,7 +71978,6 @@ var init_mobile_runtime = __esm({
         if (this.cancelRequested || !this.enabled) return;
         this.meta = meta;
         this.vectors = vectors;
-        this.highlightVectors = highlightVectors;
         this.lastSuccessfulIndexAt = Date.now();
         await this.saveIndex();
         this.staleFiles = 0;
@@ -71955,6 +72016,7 @@ var init_mobile_runtime = __esm({
         this.enabled = false;
         clearTimeout(this.updateTimer);
         this.updateTimer = null;
+        this.flushHighlightPhraseCache();
         if (this.livePending) {
           this.livePending.reject(staleSearchError());
           this.livePending = null;
@@ -71974,10 +72036,8 @@ var init_mobile_runtime = __esm({
           if (this.startPromise) return setTimeout(rebuild, 100);
           this.meta = [];
           this.vectors = [];
-          this.highlightVectors = [];
           this.highlightPhraseVectors.clear();
           this.packedVectors = new Float32Array();
-          this.packedHighlightVectors = new Int16Array();
           this.queryCache.clear();
           this.resultCache.clear();
           this.conceptFacetCache.clear();
@@ -72017,16 +72077,16 @@ var init_mobile_runtime = __esm({
       }
       async semanticHighlights(results, queryVector, options) {
         const limit = Math.max(1, Math.min(15, Number(options.highlightLimit) || 15));
-        const anchors = queryAnchors(options.query);
+        const anchors = queryAnchors(options.query), selected = results.slice(0, limit).filter((result) => result.semanticScore >= options.resultMinScore), groups = selected.map((result) => result.highlightCandidates || buildHighlightCandidates(result.file, result)), directKeys = new Set(groups.flat().filter((candidate) => {
+          const meaningful = sentenceWords(candidate.phrase).filter((word) => !word.stop);
+          return meaningful.length && meaningful.every((word) => anchors.has(word.lemma));
+        }).map((candidate) => candidate.phrase.trim().toLowerCase())), vectorGroups = await this.embedHighlightCandidates(groups, true, directKeys);
         let resultIndex = 0;
-        for (const result of results.slice(0, limit)) {
-          if (result.semanticScore < options.resultMinScore) continue;
-          const candidates = result.highlightCandidates || [];
-          const vectors = this.highlightVectors[result.passageIndex] || [];
-          if (vectors.length !== candidates.length) throw new Error(`Highlight vectors are incomplete for ${result.file}`);
+        for (const result of selected) {
+          const candidates = groups[resultIndex] || [], vectors = vectorGroups[resultIndex] || [];
           const scored = candidates.map((candidate, index3) => {
-            const anchorCount = new Set(sentenceWords(candidate.phrase).filter((word) => anchors.has(word.lemma)).map((word) => word.lemma)).size;
-            const directScore = dotHighlight(queryVector, vectors[index3]);
+            const key = candidate.phrase.trim().toLowerCase(), anchorCount = new Set(sentenceWords(candidate.phrase).filter((word) => anchors.has(word.lemma)).map((word) => word.lemma)).size;
+            const directScore = directKeys.has(key) ? 1 : dotHighlight(queryVector, vectors[index3]);
             const confidence = directScore + anchorCount * 0.025;
             return { ...candidate, anchorCount, directScore, confidence, rankScore: confidence + anchorCount * 0.05 + (candidate.words > 1 ? 0.02 : 0) + candidate.words * 0.012 + candidate.quality };
           });
@@ -72248,15 +72308,13 @@ ${item.text || ""}`;
         for (const file of files) {
           const candidates = /* @__PURE__ */ new Map(), selected = (passages.get(file) || []).sort((a2, b) => b.score - a2.score).slice(0, 2);
           for (const passage of selected) {
-            const item = this.meta[passage.index], vectors = this.highlightVectors[passage.index] || [];
-            (item.highlightCandidates || []).forEach((candidate, candidateIndex) => {
+            const item = this.meta[passage.index];
+            (item.highlightCandidates || buildHighlightCandidates(item.file, item)).forEach((candidate) => {
               if (candidate.field === "filename") return;
-              const vector = vectors[candidateIndex];
-              if (!vector?.length) return;
               const accepted = conceptLabelCandidates(candidate.phrase, query, candidate.field).find((value2) => value2.phrase.toLowerCase() === candidate.phrase.trim().toLowerCase());
               if (!accepted) return;
-              const value = { ...accepted, vector, field: candidate.field }, previous = candidates.get(value.key);
-              if (!previous || value.quality * value.novelty > previous.quality * previous.novelty) candidates.set(value.key, value);
+              const value = { ...accepted, field: candidate.field, passageScore: passage.score }, previous = candidates.get(value.key);
+              if (!previous || value.quality * value.novelty + value.passageScore * 0.04 > previous.quality * previous.novelty + previous.passageScore * 0.04) candidates.set(value.key, value);
             });
           }
           output.set(file, candidates);
@@ -72266,14 +72324,14 @@ ${item.text || ""}`;
       async conceptFacets(query, files) {
         const ordered = [...new Set((files || []).filter(Boolean))], key = JSON.stringify([this.meta.length, this.vectors.length, String(query).trim().toLowerCase(), ordered]);
         if (this.conceptFacetCache.has(key)) return this.cacheResult(this.conceptFacetCache, key, this.conceptFacetCache.get(key), 40);
-        const result = this.conceptFacetsFromVector(await this.queryVector(this.correctQuery(query)), ordered, query);
+        const queryVector = await this.queryVector(this.correctQuery(query)), result = await this.conceptFacetsFromVector(queryVector, ordered, query);
         return this.cacheResult(this.conceptFacetCache, key, result, 40);
       }
-      conceptFacetsFromFile(file, files) {
+      async conceptFacetsFromFile(file, files) {
         const vector = this.fileVectors([file]).get(file)?.vector;
         return vector ? this.conceptFacetsFromVector(vector, files) : /* @__PURE__ */ new Map();
       }
-      conceptFacetsFromVector(queryVector, files, query = "") {
+      async conceptFacetsFromVector(queryVector, files, query = "") {
         const ordered = [...new Set((files || []).filter(Boolean))], vectors = this.fileVectors(ordered), entries = centeredVectorCloud(ordered.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: residualVector(vectors.get(id2).vector, queryVector) })));
         if (!entries.length) return /* @__PURE__ */ new Map();
         const neighbors = entries.map((entry, first) => entries.map((other, second) => first === second ? null : { second, score: dot(entry.vector, other.vector) }).filter(Boolean).sort((a2, b) => b.score - a2.score).slice(0, Math.min(4, Math.max(1, entries.length - 1)))), directed = neighbors.map((list4) => new Map(list4.map((item) => [item.second, item.score]))), edges = [];
@@ -72308,21 +72366,35 @@ ${item.text || ""}`;
           centroids.set(community, conceptual);
           semanticCentroids.set(community, semantic);
         }
+        const labelShortlists = [];
+        for (const members of groups.values()) {
+          const candidates = /* @__PURE__ */ new Map();
+          for (const file of members) for (const [key, candidate] of candidateSets.get(file) || []) {
+            const value = candidates.get(key) || { ...candidate, files: /* @__PURE__ */ new Set(), passageScore: 0 };
+            value.files.add(file);
+            value.quality = Math.max(value.quality, candidate.quality);
+            value.novelty = Math.max(value.novelty, candidate.novelty);
+            value.passageScore = Math.max(value.passageScore, candidate.passageScore);
+            candidates.set(key, value);
+          }
+          labelShortlists.push([...candidates.values()].filter((candidate) => !speakerLabels.has(candidate.key) && !isTemporalConceptLabel(candidate.phrase) && !isStructuralConceptLabel(candidate.phrase)).sort((a2, b) => b.files.size / members.length * 0.5 + b.quality * 1.5 + b.passageScore * 0.12 + b.novelty * 0.08 - (a2.files.size / members.length * 0.5 + a2.quality * 1.5 + a2.passageScore * 0.12 + a2.novelty * 0.08)).slice(0, 8));
+        }
+        const labelVectors = await this.embedHighlightCandidates(labelShortlists), labelVectorByKey = /* @__PURE__ */ new Map();
+        labelShortlists.forEach((candidates, groupIndex) => candidates.forEach((candidate, candidateIndex) => labelVectorByKey.set(candidate.key, labelVectors[groupIndex]?.[candidateIndex])));
         const labels = /* @__PURE__ */ new Map();
         for (const [community, members] of groups) {
           const candidates = /* @__PURE__ */ new Map();
           for (const file of members) for (const [key, candidate] of candidateSets.get(file) || []) {
-            const value = candidates.get(key) || { ...candidate, files: /* @__PURE__ */ new Set() };
+            const value = candidates.get(key) || { ...candidate, vector: labelVectorByKey.get(key), files: /* @__PURE__ */ new Set() };
             value.files.add(file);
             if (candidate.quality > value.quality) {
               value.phrase = candidate.phrase;
               value.quality = candidate.quality;
-              value.vector = candidate.vector;
               value.novelty = candidate.novelty;
             }
             candidates.set(key, value);
           }
-          const centroid = semanticCentroids.get(community), otherCentroids = [...semanticCentroids].filter(([id2]) => id2 !== community).map(([, vector]) => vector), ranked = [...candidates.values()].map((candidate) => {
+          const centroid = semanticCentroids.get(community), otherCentroids = [...semanticCentroids].filter(([id2]) => id2 !== community).map(([, vector]) => vector), ranked = [...candidates.values()].filter((candidate) => candidate.vector?.length).map((candidate) => {
             const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), memberCoverage = members.reduce((sum, file) => sum + Math.max(0, Math.min(1, (dotHighlight(vectors.get(file).vector, candidate.vector) + 1) / 2)), 0) / Math.max(1, members.length), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.5)), grounded = Math.sqrt(candidate.files.size / Math.max(1, members.length)), quality = Math.min(1, candidate.quality / 0.18), vaultCoverage = (globalFiles.get(candidate.key)?.size || candidate.files.size) / Math.max(2, ordered.length), rarity = Math.max(0, 1 - Math.log1p(vaultCoverage * 16) / Math.log(17)), score = candidate.novelty * (centrality * 0.35 + memberCoverage * 0.22 + distinction * 0.18 + grounded * 0.1 + rarity * 0.1 + quality * 0.05);
             return { ...candidate, score, centrality, memberCoverage, distinction };
           }).filter((candidate) => !speakerLabels.has(candidate.key) && !isTemporalConceptLabel(candidate.phrase) && !isStructuralConceptLabel(candidate.phrase)).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase)), best = ranked[0], runnerUp = ranked[1], margin = Number(best?.score || 0) - Number(runnerUp?.score || 0), supported = Number(best?.files?.size || 0) >= Math.min(2, members.length) || Number(best?.centrality || 0) >= 0.82 && Number(best?.memberCoverage || 0) >= 0.76, confidence = best && supported && best.score >= 0.5 && (margin >= 8e-3 || best.files.size > 1 || best.memberCoverage >= 0.79) ? Math.max(0, Math.min(1, (best.score - 0.4) * 1.8 + margin * 2 + Math.min(0.14, best.files.size / members.length * 0.14))) : 0, fallbackLabel = best && supported && best.score >= 0.42 && String(best.phrase).split(/\s+/).length <= 5 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
@@ -73216,18 +73288,17 @@ var DesktopIndexStore = class {
         const meta = JSON.parse(await fs2.promises.readFile(path.join(this.directory, "index.meta.json"), "utf8"));
         const data = await fs2.promises.readFile(path.join(this.directory, "index.vectors.bin"));
         if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index pair is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`);
-        const highlightCount = meta.reduce((total, item) => total + (item.highlightCandidates?.length || 0), 0);
-        let highlightData = Buffer.alloc(0);
-        if (highlightCount) {
-          highlightData = await fs2.promises.readFile(path.join(this.directory, "index.highlights.bin"));
-          if (highlightData.byteLength !== highlightCount * 384 * 2) throw new Error(`Highlight index is incomplete (${highlightCount} phrases, ${highlightData.byteLength} vector bytes)`);
-        }
         let state = {};
         try {
           state = JSON.parse(await fs2.promises.readFile(path.join(this.directory, "index.state.json"), "utf8"));
         } catch {
         }
-        return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), highlightVectors: highlightData.buffer.slice(highlightData.byteOffset, highlightData.byteOffset + highlightData.byteLength), ...state };
+        let legacyHighlights = false;
+        try {
+          legacyHighlights = (await fs2.promises.stat(path.join(this.directory, "index.highlights.bin"))).size > 0;
+        } catch {
+        }
+        return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), legacyHighlights, ...state };
       } catch (error) {
         lastError = error;
         if (attempt < 39) await new Promise((resolve) => setTimeout(resolve, 250));
@@ -73242,7 +73313,7 @@ var DesktopIndexStore = class {
     fs2.mkdirSync(this.directory, { recursive: true });
     await fs2.promises.writeFile(path.join(this.directory, "index.meta.json"), JSON.stringify(value.meta));
     await fs2.promises.writeFile(path.join(this.directory, "index.vectors.bin"), Buffer.from(value.vectors));
-    await fs2.promises.writeFile(path.join(this.directory, "index.highlights.bin"), Buffer.from(value.highlightVectors || new ArrayBuffer(0)));
+    await fs2.promises.writeFile(path.join(this.directory, "index.highlights.bin"), Buffer.alloc(0));
     await fs2.promises.writeFile(path.join(this.directory, "index.state.json"), JSON.stringify({ lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null }));
   }
   async getRelations() {
@@ -73270,6 +73341,23 @@ var DesktopIndexStore = class {
     const target = path.join(this.directory, "index.topic-labels.json"), temporary = `${target}.download`;
     await fs2.promises.writeFile(temporary, JSON.stringify(entries));
     await fs2.promises.rename(temporary, target);
+  }
+  async getHighlightCache() {
+    try {
+      const metadata = JSON.parse(await fs2.promises.readFile(path.join(this.directory, "index.highlight-cache.json"), "utf8")), data = await fs2.promises.readFile(path.join(this.directory, "index.highlight-cache.bin")), phrases = Array.isArray(metadata.phrases) ? metadata.phrases : [], bytes = 384 * 2;
+      if (metadata.version !== 1 || data.byteLength !== phrases.length * bytes) return [];
+      return phrases.map((phrase, index3) => [phrase, new Int16Array(data.buffer.slice(data.byteOffset + index3 * bytes, data.byteOffset + (index3 + 1) * bytes))]);
+    } catch {
+      return [];
+    }
+  }
+  async putHighlightCache(entries) {
+    fs2.mkdirSync(this.directory, { recursive: true });
+    const metadataTarget = path.join(this.directory, "index.highlight-cache.json"), binaryTarget = path.join(this.directory, "index.highlight-cache.bin"), metadataTemporary = `${metadataTarget}.download`, binaryTemporary = `${binaryTarget}.download`, valid = entries.filter(([, vector]) => vector?.length === 384);
+    await fs2.promises.writeFile(metadataTemporary, JSON.stringify({ version: 1, phrases: valid.map(([phrase]) => phrase) }));
+    await fs2.promises.writeFile(binaryTemporary, Buffer.concat(valid.map(([, vector]) => Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength))));
+    await fs2.promises.rename(binaryTemporary, binaryTarget);
+    await fs2.promises.rename(metadataTemporary, metadataTarget);
   }
   async getGraphEvidence() {
     try {
@@ -75983,7 +76071,7 @@ var NeighborhoodView = class extends ItemView {
       if (version2 !== this.loadVersion) return;
       let nodes = graph.nodes.map((node) => ({ ...node, semanticScore: Number(node.score || 0) })), relationships = /* @__PURE__ */ new Map(), edges = graph.edges, intelligenceMessage = "";
       if (this.lens === "relevance") {
-        const facets = this.plugin.search.conceptFacetsFromFile(file.path, nodes.map((node) => node.id));
+        const facets = await this.plugin.search.conceptFacetsFromFile(file.path, nodes.map((node) => node.id));
         nodes = nodes.map((node) => ({ ...node, facet: facets.get(node.id)?.facet, conceptAffinities: facets.get(node.id)?.affinities }));
       }
       if (this.lens === "context") {
@@ -76610,7 +76698,7 @@ var SearchSettings = class extends PluginSettingTab {
     this.field("Progress", total ? `${done}/${total}` : "Waiting");
     this.field("Indexed", remote?.indexedFiles ?? local.indexedFiles ?? 0);
     this.field("Chunks", remote?.totalChunks ?? local.totalChunks ?? 0);
-    this.field("Highlight phrases", remote?.highlightPhrases ?? local.highlightPhrases ?? 0);
+    this.field("Cached highlight phrases", remote?.highlightPhrases ?? local.highlightPhrases ?? 0);
     this.field("Graph entities", remote?.graphEntities ?? 0);
     this.field("Graph cache", remote?.graphCacheReady ? "Ready" : remote?.isIndexing ? "Waiting for index" : "Preparing");
     this.field("Cached relationships", remote?.cachedRelationships ?? 0);
