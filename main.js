@@ -72032,7 +72032,7 @@ var init_mobile_runtime = __esm({
       }
       async search(query, topK, minScore, options = {}) {
         if (!this.vectors.length) throw new Error(this.message || "The semantic index is not ready");
-        const cacheKey = JSON.stringify([String(query).trim().toLowerCase(), topK, minScore, options.scoreWindow, options.folderPathBoost, Boolean(options.semanticHighlights), options.resultMinScore, options.singleWordMinScore, options.phraseMinScore, options.maxPhrases, options.highlightLimit || 15, options.file || ""]);
+        const requestedFiles = options.files?.length ? [...new Set(options.files)].sort() : null, requestedFileSet = requestedFiles ? new Set(requestedFiles) : null, cacheKey = JSON.stringify([String(query).trim().toLowerCase(), topK, minScore, options.scoreWindow, options.folderPathBoost, Boolean(options.semanticHighlights), options.resultMinScore, options.singleWordMinScore, options.phraseMinScore, options.maxPhrases, options.highlightLimit || 15, options.file || "", requestedFiles]);
         const cached = this.resultCache.get(cacheKey);
         if (cached) {
           this.cacheResult(this.resultCache, cacheKey, cached, 80);
@@ -72046,7 +72046,7 @@ var init_mobile_runtime = __esm({
             await yieldToUi();
             if (this.livePending) throw staleSearchError();
           }
-          if (options.file && this.meta[i3].file !== options.file) continue;
+          if (options.file && this.meta[i3].file !== options.file || requestedFileSet && !requestedFileSet.has(this.meta[i3].file)) continue;
           const semantic = dotPacked(queryVector, this.packedVectors, i3 * DIMENSION);
           if (semantic < minScore) continue;
           const filenameBoost = lexicalCoverage(queryTokens, this.lexical[i3].filename) * 0.05;
@@ -72619,14 +72619,19 @@ ${item.text || ""}`;
           }
           const communitySizes2 = /* @__PURE__ */ new Map();
           for (const community of communities2.values()) communitySizes2.set(community, (communitySizes2.get(community) || 0) + 1);
-          const communityAnalysis = this.topicCommunityAnalysis(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize);
-          let communityLabels2 = communityAnalysis.labels;
-          if (vaultMode) communityLabels2 = await this.generatedTopicCommunityLabels(entries2, communities2, communityAnalysis, tuning.communityMinSize);
-          this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, parentCommunities: parentCommunities2, hierarchyAnalysis: hierarchy.analysis, topicAffinities: topicAffinities2, communitySizes: communitySizes2, communityLabels: communityLabels2, entitySets: entitySets2, uniqueness: uniqueness2 };
+          const parentCommunitySizes2 = /* @__PURE__ */ new Map();
+          for (const community of parentCommunities2.values()) parentCommunitySizes2.set(community, (parentCommunitySizes2.get(community) || 0) + 1);
+          const communityAnalysis = this.topicCommunityAnalysis(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize), parentCommunityAnalysis = this.topicCommunityAnalysis(entries2, parentCommunities2, tuning.communityLabelSensitivity, tuning.communityMinSize);
+          let communityLabels2 = communityAnalysis.labels, parentCommunityLabels2 = parentCommunityAnalysis.labels;
+          if (vaultMode) {
+            communityLabels2 = await this.generatedTopicCommunityLabels(entries2, communities2, communityAnalysis, tuning.communityMinSize);
+            parentCommunityLabels2 = await this.generatedTopicCommunityLabels(entries2, parentCommunities2, parentCommunityAnalysis, tuning.communityMinSize);
+          }
+          this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, parentCommunities: parentCommunities2, hierarchyAnalysis: hierarchy.analysis, topicAffinities: topicAffinities2, communitySizes: communitySizes2, parentCommunitySizes: parentCommunitySizes2, communityLabels: communityLabels2, parentCommunityLabels: parentCommunityLabels2, entitySets: entitySets2, uniqueness: uniqueness2 };
         }
-        const { entries, edges, positions, communities, parentCommunities, hierarchyAnalysis, topicAffinities, communitySizes, communityLabels, entitySets, uniqueness } = this.starfieldCache, basis = this.topicBasis(), communityFields = (entry) => {
-          const community = communities.get(entry.id) ?? 0, parentCommunity = parentCommunities?.get(entry.id) ?? community, parentAnalysis = hierarchyAnalysis?.get(parentCommunity), affinities = topicAffinities.get(entry.id) || {};
-          return { community, parentCommunity, neighborhoodDepth: community === parentCommunity ? 1 : 2, neighborhoodTemperature: Number(parentAnalysis?.temperature || 0), neighborhoodStability: Number(parentAnalysis?.stability || 0), topicAffinities: affinities, communityMembership: Number(affinities[community] || 0), communitySize: Number(communitySizes.get(community) || 1), communityLabel: communityLabels.get(community)?.label || "", communityFallbackLabel: communityLabels.get(community)?.fallbackLabel || "", communityLabelConfidence: Number(communityLabels.get(community)?.confidence || 0) };
+        const { entries, edges, positions, communities, parentCommunities, hierarchyAnalysis, topicAffinities, communitySizes, parentCommunitySizes, communityLabels, parentCommunityLabels, entitySets, uniqueness } = this.starfieldCache, basis = this.topicBasis(), communityFields = (entry) => {
+          const community = communities.get(entry.id) ?? 0, parentCommunity = parentCommunities?.get(entry.id) ?? community, parentAnalysis = hierarchyAnalysis?.get(parentCommunity), affinities = topicAffinities.get(entry.id) || {}, parentLabel = parentCommunityLabels?.get(parentCommunity) || {};
+          return { community, parentCommunity, parentCommunitySize: Number(parentCommunitySizes?.get(parentCommunity) || 1), parentCommunityLabel: parentLabel.label || "", parentCommunityFallbackLabel: parentLabel.fallbackLabel || "", parentCommunityLabelConfidence: Number(parentLabel.confidence || 0), neighborhoodDepth: community === parentCommunity ? 1 : 2, neighborhoodTemperature: Number(parentAnalysis?.temperature || 0), neighborhoodStability: Number(parentAnalysis?.stability || 0), topicAffinities: affinities, communityMembership: Number(affinities[community] || 0), communitySize: Number(communitySizes.get(community) || 1), communityLabel: communityLabels.get(community)?.label || "", communityFallbackLabel: communityLabels.get(community)?.fallbackLabel || "", communityLabelConfidence: Number(communityLabels.get(community)?.confidence || 0) };
         };
         if (!trimmed) {
           const topics2 = topicCoordinates(entries, basis.center, basis.axes);
@@ -73499,6 +73504,14 @@ var SemanticMapCanvas = class {
     this.canvas = this.stage.createEl("canvas", { cls: "gib-search-map-canvas" });
     this.detail = host.createDiv({ cls: "gib-search-map-detail" });
     this.detailText = this.detail.createDiv({ cls: "gib-search-map-detail-text" });
+    if (options.onFocusNeighborhood) {
+      this.focusNeighborhoodButton = this.detail.createEl("button", { text: "Focus", attr: { type: "button", title: "Focus this semantic neighborhood" } });
+      this.focusNeighborhoodButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (this.selected) options.onFocusNeighborhood(this.selected);
+      });
+    }
     if (options.onExplore) {
       const explore = this.detail.createEl("button", { text: "Explore from note" });
       explore.addEventListener("click", () => {
@@ -73724,11 +73737,16 @@ var SemanticMapCanvas = class {
       return;
     }
     this.detail.show();
-    const folder = node.id.includes("/") ? node.id.slice(0, node.id.lastIndexOf("/")) : "Vault";
+    const folder = node.id.includes("/") ? node.id.slice(0, node.id.lastIndexOf("/")) : "Vault", neighborhood = node.parentCommunityLabel || node.parentCommunityFallbackLabel || "", focusable = Number(node.parentCommunitySize || 0) >= 4 && Number(node.parentCommunitySize || 0) < this.nodes.length;
     this.detailText.empty();
     this.detailText.createDiv({ cls: "gib-search-map-detail-title", text: node.label });
     this.detailText.createDiv({ cls: "gib-search-map-detail-folder", text: folder });
+    if (neighborhood && this.options.onFocusNeighborhood) this.detailText.createDiv({ cls: "gib-search-map-detail-neighborhood", text: neighborhood });
     if (node.entities?.length) this.detailText.createDiv({ cls: "gib-search-map-detail-entities", text: node.entities.slice(0, 4).join(" \xB7 ") });
+    if (this.focusNeighborhoodButton) {
+      this.focusNeighborhoodButton.disabled = !focusable;
+      this.focusNeighborhoodButton.toggle(focusable);
+    }
   }
   destroy() {
     cancelAnimationFrame(this.animationFrame);
@@ -74253,6 +74271,16 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       node.targetAccent = 0;
     }
     this.startSimulation(0.86);
+  }
+  beginScope(files) {
+    const active = new Set(files || []);
+    for (const node of this.nodes) {
+      const included = active.has(node.id);
+      node.targetVisibility = included ? Math.max(0.62, Number(node.visibility || 0)) : 0.025;
+      node.targetBlur = included ? 0 : 0.42;
+      node.targetAccent = included ? 0.18 : 0;
+    }
+    this.startSimulation(0.72);
   }
   endQuery() {
     if (!this.queryNode || !this.hasQuery) return;
@@ -75677,6 +75705,7 @@ var GraphView = class extends ItemView {
     this.baseNodes = [];
     this.baseEdges = [];
     this.baseRoads = [];
+    this.scopeStack = [];
     this.mapGroupingMode = validMapGrouping(plugin6.settings.mapGroupingMode);
     this.mapGenerations = Math.max(1, Math.min(3, Number(plugin6.settings.searchMapGenerations) || 1));
   }
@@ -75698,6 +75727,8 @@ var GraphView = class extends ItemView {
     this.input = search.createEl("input", { type: "search", placeholder: "Preparing vault map\u2026", attr: { "aria-label": "Search semantic map", disabled: "true" } });
     this.clearButton = search.createEl("button", { attr: { type: "button", title: "Clear search", "aria-label": "Clear search" } });
     setIcon(this.clearButton, "x");
+    this.scopeBar = this.contentEl.createDiv({ cls: "gib-graph-scope", attr: { "aria-label": "Semantic scope" } });
+    this.renderScopeBreadcrumbs();
     this.resultsPanel = this.contentEl.createDiv({ cls: "gib-graph-results-panel" });
     const resultHeader = this.resultsPanel.createDiv({ cls: "gib-graph-results-header" });
     this.resultTitle = resultHeader.createSpan({ text: "Results" });
@@ -75766,7 +75797,8 @@ var GraphView = class extends ItemView {
       },
       onHover: (file) => this.hoverResult(file),
       onSelect: (file) => this.showPreview(file),
-      onOpen: (file) => this.openFile(file)
+      onOpen: (file) => this.openFile(file),
+      onFocusNeighborhood: (file) => this.focusNeighborhood(file)
     });
     this.input.addEventListener("input", () => this.handleQuery(this.input.value));
     this.clearButton.addEventListener("click", () => {
@@ -75794,12 +75826,71 @@ var GraphView = class extends ItemView {
   indexableFiles() {
     return this.app.vault.getFiles().filter((file) => /\.(?:md|txt|markdown)$/i.test(file.path));
   }
+  activeScope() {
+    return this.scopeStack.at(-1) || null;
+  }
+  scopedFiles() {
+    const active = this.activeScope();
+    if (!active) return this.indexableFiles();
+    const allowed = new Set(active.files);
+    return this.indexableFiles().filter((file) => allowed.has(file.path));
+  }
+  renderScopeBreadcrumbs() {
+    if (!this.scopeBar) return;
+    this.scopeBar.empty();
+    const add = (label, depth, current) => {
+      const button = this.scopeBar.createEl("button", { text: label, attr: { type: "button", title: current ? `Current semantic scope: ${label}` : `Return to ${label}` } });
+      button.toggleClass("is-current", current);
+      button.disabled = current;
+      if (!current) button.addEventListener("click", () => this.setScopeDepth(depth));
+    };
+    add("Vault", 0, !this.scopeStack.length);
+    this.scopeStack.forEach((scope, index3) => {
+      this.scopeBar.createSpan({ cls: "gib-graph-scope-separator", text: "/" });
+      add(scope.label, index3 + 1, index3 === this.scopeStack.length - 1);
+    });
+    this.contentEl.toggleClass("has-semantic-scope", Boolean(this.scopeStack.length));
+  }
+  async setScopeDepth(depth) {
+    this.scopeStack = this.scopeStack.slice(0, Math.max(0, depth));
+    this.query = "";
+    if (this.input) this.input.value = "";
+    this.searchVersion++;
+    this.results = [];
+    this.resultsPanel.hide();
+    this.reopenButton.hide();
+    this.closePreview();
+    this.baseNodes = [];
+    this.baseEdges = [];
+    this.baseRoads = [];
+    this.renderScopeBreadcrumbs();
+    await this.loadVault();
+  }
+  async focusNeighborhood(filePath) {
+    if (this.query.length >= 3) return;
+    const selected = this.baseNodes.find((node) => node.id === filePath);
+    if (!selected) return;
+    const parent = selected.parentCommunity, files = this.baseNodes.filter((node) => node.parentCommunity === parent).map((node) => node.id);
+    if (files.length < 4 || files.length >= this.baseNodes.length) return;
+    const rawLabel = selected.parentCommunityLabel || selected.parentCommunityFallbackLabel || selected.communityLabel || selected.communityFallbackLabel, label = rawLabel || `Neighborhood of ${selected.label}`;
+    this.map?.beginScope(files);
+    this.map?.setTitle(`Refining ${label}\u2026`);
+    this.scopeStack.push({ label, files });
+    this.baseNodes = [];
+    this.baseEdges = [];
+    this.baseRoads = [];
+    this.closePreview();
+    this.renderScopeBreadcrumbs();
+    await this.loadVault();
+  }
   async loadVault() {
     const version2 = ++this.loadVersion;
     this.map?.setTitle("Loading vault\u2026");
     try {
-      const files = this.indexableFiles(), paths = files.map((file) => file.path), scales = vaultFileScales(this.app);
-      if (!this.baseNodes.length && !this.map?.nodes?.length) {
+      const files = this.scopedFiles(), paths = files.map((file) => file.path), scales = vaultFileScales(this.app), scope = this.activeScope();
+      this.renderScopeBreadcrumbs();
+      if (this.input) this.input.placeholder = scope ? `Search within ${scope.label}\u2026` : "Search the vault by meaning\u2026";
+      if (!this.baseNodes.length) {
         const count = Math.max(1, files.length), seeds = files.map((file, index3) => {
           const angle = stableMapAngle(file.path), radius = 0.035 + Math.sqrt((index3 + 0.5) / count) * 0.16;
           return { id: file.path, label: file.basename, matched: false, generation: 1, relevance: 0.5, uniqueness: 0.5, fileScale: scales.get(file.path) ?? 0.35, layoutX: Math.cos(angle) * radius, layoutY: Math.sin(angle) * radius };
@@ -75816,7 +75907,7 @@ var GraphView = class extends ItemView {
       this.baseNodes = nodes;
       this.baseEdges = graph.edges || [];
       this.baseRoads = manualRoadEdges(this.app, paths);
-      this.map.setTitle(`${mapGroupingLabel(this.mapGroupingMode)} \xB7 vault`);
+      this.map.setTitle(scope ? `${mapGroupingLabel(this.mapGroupingMode)} \xB7 ${scope.label}` : `${mapGroupingLabel(this.mapGroupingMode)} \xB7 vault`);
       this.map.setGraph({ label: "Search", hasQuery: false, resultCount: 0 }, nodes, this.baseEdges, this.baseRoads);
     } catch (error) {
       if (version2 === this.loadVersion) this.map?.setTitle(error.message);
@@ -75832,8 +75923,9 @@ var GraphView = class extends ItemView {
       this.resultsPanel.hide();
       this.reopenButton.hide();
       this.contentEl.addClass("is-results-collapsed");
+      const scope = this.activeScope();
       if (this.baseNodes.length) {
-        this.map.setTitle(`${mapGroupingLabel(this.mapGroupingMode)} \xB7 vault`);
+        this.map.setTitle(scope ? `${mapGroupingLabel(this.mapGroupingMode)} \xB7 ${scope.label}` : `${mapGroupingLabel(this.mapGroupingMode)} \xB7 vault`);
         this.map.setGraph({ label: "Search", hasQuery: false, resultCount: 0 }, this.baseNodes, this.baseEdges, this.baseRoads);
       } else this.loadVault();
       return;
@@ -75852,7 +75944,7 @@ var GraphView = class extends ItemView {
     if (!immediate) this.map.beginQuery(query, true);
     const version2 = ++this.searchVersion, tweaks = activeTweaks(this.plugin), limit = Math.max(30, tweaks.topK);
     try {
-      const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), raw = await runSearch(query, Math.min(240, limit * 5), tweaks.minScore, { scoreWindow: tweaks.scoreWindow, folderPathBoost: this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 20 });
+      const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), raw = await runSearch(query, Math.min(240, limit * 5), tweaks.minScore, { scoreWindow: tweaks.scoreWindow, folderPathBoost: this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 20, files: this.activeScope()?.files });
       if (version2 !== this.searchVersion || query !== this.query) return;
       const results = groupSearchResults(raw, query, limit), model5 = await buildQueryMapModel(this.plugin, query, results, { lens: "relevance", generations: this.mapGenerations, mapMode: this.mapGroupingMode, fileScales: new Map(this.baseNodes.map((node) => [node.id, node.fileScale])) });
       if (version2 !== this.searchVersion || query !== this.query) return;
