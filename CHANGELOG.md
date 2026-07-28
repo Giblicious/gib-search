@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.39.0
+
+- Adds saved Atlas Views with reusable folder, exclusion, tag, lens, and anchor settings.
+- Adds guided semantic reference frames: editable category beacons place notes by soft membership, allowing notes to sit between categories instead of becoming hard buckets.
+- Includes local templates for emotional tone, writing mode, theological inquiry, and project state.
+- Supports optional example notes for teaching each category with material already in the local semantic index.
+- Adds a compact View switcher to the Atlas while preserving Natural landscape as the default.
+
 ## 0.38.0
 
 - Reimagines the Atlas as a clean center workspace instead of a graph surrounded by internal panels.
