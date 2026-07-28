@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.42.0
+
+- Rebuilds the Atlas View editor around Territory, Reference frame, Relationship field, Dynamics, and Cartography, with a live preview throughout.
+- Blends Meaning, Emotion, Purpose, Position, Form, and authored Links into one normalized distance model before layout and physics.
+- Adds free, centered, constellation, and two-pole reference frames without requiring categories to determine the underlying landscape.
+- Expands emotional analysis from broad buckets to a continuous 24-landmark affect profile, including nuanced states such as longing, grief, despondency, anxiety, frustration, indignation, guilt, and determination.
+- Separates visual encoding from placement, allowing emotional color or profile intensity terrain without silently changing graph physics.
+- Migrates existing saved Views to the equivalent relationship field and removes stale controls from earlier View-builder experiments.
+
 ## 0.41.0
 
 - Adds distinct Meaning, Emotion, Purpose, Position, and Form signals to the Atlas View builder.
