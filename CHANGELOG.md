@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.35.0
+
+- Introduces a canonical Atlas state built from a saved View, declarative scope, active anchor, lens, and semantic scale.
+- Routes vault, query, and active-note maps through one cached Atlas scene engine so every surface receives the same coordinates, relationships, terrain inputs, results, and legend semantics.
+- Adds folder, exclusion, tag, property, and file-type rules to saved View scopes without changing the local semantic index.
+- Keeps first-time searches fluid with an immediate provisional scene while the refined scene is calculated and cached.
+- Reduces the primary Atlas to its search field and landscape; results and note previews now appear only when they are relevant.
+- Removes the primary view's experimental scope, grouping, tuning, generation, link, viewport, collapse, and preview action controls.
+
 ## 0.5.12
 
 - Removes all terrain, heatmap, contour, ridge, and connecting-line rendering from semantic maps.
