@@ -1,9 +1,9 @@
 {
   "id": "gib-search",
   "name": "Gib Search",
-  "version": "0.34.5",
+  "version": "0.35.0",
   "minAppVersion": "1.4.5",
-  "description": "Local semantic search and a similarity graph for your Obsidian vault.",
+  "description": "Local semantic search and an idea-centered Atlas for your Obsidian vault.",
   "author": "Giblicious",
   "isDesktopOnly": false
 }
