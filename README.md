@@ -16,15 +16,24 @@ Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the esta
 
 The dedicated map view begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query enters the map while results load. Matching notes form a query-centered layout; nonmatches remain as subdued spatial context. A collapsible floating panel shows the matching source excerpts.
 
-Saved Atlas Views can organize the same notes through five different analysis signals:
+Saved Atlas Views are built as a readable map formula:
+
+- **Territory** selects which notes exist in the landscape.
+- **Reference frame** leaves the map free, centers it on an idea, orients it with a constellation or two-pole axis.
+- **Relationship field** blends Meaning, Emotion, Purpose, Position, Form, and authored Links into one normalized note-to-note distance model.
+- **Dynamics** controls contrast, cohesion, and spacing without inventing new relationships.
+- **Cartography** assigns color, dot size, terrain, and optional beacon regions independently from placement.
+
+The relationship field can use six measurements:
 
 - **Meaning** maps what the writing is about using semantic embeddings.
-- **Emotion** reads feelings expressed by the writer rather than matching emotional keywords as topics.
+- **Emotion** reads a continuous profile across 24 affective landmarks, including joy, gratitude, awe, longing, grief, despondency, anxiety, frustration, indignation, guilt, and determination. A note can express several at once.
 - **Purpose** distinguishes questioning, explaining, reflecting, persuading, comparing, planning, and summarizing.
 - **Position** compares passages directly with a reference claim and separates support, opposition, questioning, uncertainty, and neutral reporting.
 - **Form** combines local language inference with document structure to distinguish journals, essays, conversations, reference notes, narratives, and plans.
+- **Links** makes authored wikilinks contribute directly to distance alongside any analytical measurements.
 
-The View builder includes editable local templates for these signals. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes. Hovering a classified map node shows its strongest quality and the source passage behind that judgment.
+The View builder includes local starting templates while keeping the five parts independently editable. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes. Hovering an analyzed map node shows its strongest quality and the source passage behind that judgment.
 
 ## Install with BRAT
 
