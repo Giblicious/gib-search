@@ -2,12 +2,15 @@ const { pipeline, env } = require('@huggingface/transformers');
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
+const TOPIC_LABEL_MODEL_ID = 'Xenova/flan-t5-base';
 const QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';
 let configuration = null;
 let pipe = null;
 let modelPromise = null;
 let relationPipe = null;
 let relationPromise = null;
+let topicLabelPipe = null;
+let topicLabelPromise = null;
 let nextCacheId = 1;
 const pendingCache = new Map();
 let embedQueue = Promise.resolve();
@@ -74,11 +77,32 @@ async function classifyRelations(pairs) {
   return pairs.map((_, index) => { const probabilities = softmax(Array.from(output.logits.data.slice(index * width, (index + 1) * width))), result = { entailment: 0, neutral: 0, contradiction: 0 }; probabilities.forEach((score, labelIndex) => { const label = String(labels[labelIndex] || labels[String(labelIndex)] || '').toLowerCase(); if (label.includes('entail') || !label && labelIndex === 2) result.entailment = score; else if (label.includes('contrad') || !label && labelIndex === 0) result.contradiction = score; else result.neutral = score; }); return result; });
 }
 
+async function initializeTopicLabelModel() {
+  if (topicLabelPipe) return topicLabelPipe;
+  if (topicLabelPromise) return topicLabelPromise;
+  await initializeModel();
+  topicLabelPromise = pipeline('text2text-generation', TOPIC_LABEL_MODEL_ID, { dtype: 'q8', progress_callback: progress => {
+    if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'topic-label-progress', file: progress.file || 'topic label model', progress: Number(progress.progress) });
+  } });
+  try { topicLabelPipe = await topicLabelPromise; self.postMessage({ type: 'topic-label-ready' }); return topicLabelPipe; }
+  finally { topicLabelPromise = null; }
+}
+
+async function generateTopicLabels(prompts) {
+  const generator = await initializeTopicLabelModel(), labels = [];
+  for (const prompt of prompts) {
+    const output = await generator(String(prompt || ''), { max_new_tokens: 8, do_sample: false, num_beams: 4, repetition_penalty: 1.1 });
+    labels.push(String(output?.[0]?.generated_text || '').trim());
+  }
+  return labels;
+}
+
 async function handleEmbed(message) {
   try { const result = await embed(message.texts || [], Boolean(message.query)); self.postMessage({ type: 'result', id: message.id, buffers: result.buffers }, result.transfer); }
   catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
 }
 async function handleRelations(message) { try { self.postMessage({ type: 'relation-result', id: message.id, results: await classifyRelations(message.pairs || []) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
+async function handleTopicLabels(message) { try { self.postMessage({ type: 'topic-label-result', id: message.id, labels: await generateTopicLabels(message.prompts || []) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
 
 self.onmessage = event => {
   const message = event.data;
@@ -89,4 +113,5 @@ self.onmessage = event => {
   if (message.type === 'init') { configuration = message; self.postMessage({ type: 'initialized' }); return; }
   if (message.type === 'embed') embedQueue = embedQueue.then(() => handleEmbed(message));
   else if (message.type === 'relations') handleRelations(message);
+  else if (message.type === 'topic-labels') handleTopicLabels(message);
 };

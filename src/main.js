@@ -51,7 +51,7 @@ function validSearchLens(value) { return value === 'concepts' ? 'relevance' : SE
 function validMapGrouping(value) { return ['similarity', 'topics', 'links'].includes(value) ? value : 'similarity'; }
 function mapGroupingLabel(value) { return value === 'topics' ? 'Topics' : value === 'links' ? 'Links' : 'Similarity'; }
 function mapTuningNeedsLayout(key) { return ['contentWeight', 'residualWeight', 'semanticWeight', 'entityWeight', 'commonnessSuppression', 'passageCoverage', 'passageDiversity', 'distanceContrast', 'communitySensitivity', 'communityMinSize', 'communityLabelSensitivity', 'reset'].includes(key); }
-const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: 'relevance', mapGroupingMode: 'similarity', magicGraphEnabled: true, graphSemanticColors: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
+const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: 'relevance', mapGroupingMode: 'similarity', magicGraphEnabled: true, graphSemanticColors: true, generatedTopicLabels: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
 function activeIndexDir(plugin) {
   return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
 }
@@ -150,9 +150,11 @@ class DesktopIndexStore {
   }
   async getRelations() { try { return JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.relationships.json'), 'utf8')); } catch { return []; } }
   async putRelations(entries) { fs.mkdirSync(this.directory, { recursive: true }); const target = path.join(this.directory, 'index.relationships.json'), temporary = `${target}.download`; await fs.promises.writeFile(temporary, JSON.stringify(entries)); await fs.promises.rename(temporary, target); }
+  async getTopicLabels() { try { return JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.topic-labels.json'), 'utf8')); } catch { return []; } }
+  async putTopicLabels(entries) { fs.mkdirSync(this.directory, { recursive: true }); const target = path.join(this.directory, 'index.topic-labels.json'), temporary = `${target}.download`; await fs.promises.writeFile(temporary, JSON.stringify(entries)); await fs.promises.rename(temporary, target); }
 }
 class DesktopEmbedder {
-  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; }
+  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.topicLabelReady = false; }
   start() {
     if (this.worker) return;
     this.workerUrl = URL.createObjectURL(new Blob([EMBEDDED_DESKTOP_WORKER], { type: 'text/javascript' }));
@@ -166,11 +168,14 @@ class DesktopEmbedder {
     if (message.type === 'cache') { await this.cache(message); return; }
     if (message.type === 'ready') { this.ready = true; this.plugin.search?.changed(); return; }
     if (message.type === 'relation-ready') { this.relationReady = true; this.plugin.search?.changed(); return; }
+    if (message.type === 'topic-label-ready') { this.topicLabelReady = true; this.plugin.search?.topicLabelActivity?.('Topic labeler ready'); return; }
+    if (message.type === 'topic-label-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.topicLabelActivity?.(`Downloading topic labeler: ${percent}%`); return; }
     if (message.type === 'relation-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.relationActivity?.(`Downloading relationship model: ${percent}%`); return; }
     if (message.type === 'progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.setState('loading_model', `Downloading ${message.file}: ${percent}%`); return; }
     const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id);
     if (message.type === 'error') pending.reject(new Error(message.message));
     else if (message.type === 'relation-result') pending.resolve(message.results || []);
+    else if (message.type === 'topic-label-result') pending.resolve(message.labels || []);
     else pending.resolve((message.buffers || []).map(buffer => new Float32Array(buffer)));
   }
   async cache(message) {
@@ -189,7 +194,8 @@ class DesktopEmbedder {
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'embed', id, texts, query }); } catch (error) { this.pending.delete(id); reject(error); } });
   }
   classifyRelations(pairs) { this.start(); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'relations', id, pairs }); } catch (error) { this.pending.delete(id); reject(error); } }); }
-  stop() { const worker = this.worker; this.worker = null; this.ready = false; this.relationReady = false; for (const pending of this.pending.values()) pending.reject(new Error('Desktop embedding worker stopped')); this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
+  generateTopicLabels(prompts) { this.start(); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'topic-labels', id, prompts }); } catch (error) { this.pending.delete(id); reject(error); } }); }
+  stop() { const worker = this.worker; this.worker = null; this.ready = false; this.relationReady = false; this.topicLabelReady = false; for (const pending of this.pending.values()) pending.reject(new Error('Desktop embedding worker stopped')); this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
 }
 function activeTweaks(plugin) {
   return plugin.settings.modelTweaks.bge;
@@ -904,6 +910,7 @@ class SearchSettings extends PluginSettingTab {
     new Setting(this.containerEl).setName('Default map grouping').setDesc('Similarity follows meaning, Topics forms query-relative subject regions, and Links emphasizes explicit note connections.').addDropdown(d => d.addOption('similarity', 'Similarity').addOption('topics', 'Topics').addOption('links', 'Links').setValue(validMapGrouping(this.plugin.settings.mapGroupingMode)).onChange(async value => { this.plugin.settings.mapGroupingMode = validMapGrouping(value); await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Magic graph intelligence').setDesc('Combine topic direction, entities, communities, residual meaning, and relationships into a query-conditioned dimensional layout.').addToggle(t => t.setValue(this.plugin.settings.magicGraphEnabled).onChange(async value => { this.plugin.settings.magicGraphEnabled = value; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Semantic color compass').setDesc('Color notes by their direction on the vault-wide semantic compass. Similar directions share a hue.').addToggle(t => t.setValue(this.plugin.settings.graphSemanticColors).onChange(async value => { this.plugin.settings.graphSemanticColors = value; await this.plugin.save(); }));
+    new Setting(this.containerEl).setName('Generated topic labels').setDesc('Use a small local language model to name full-vault topic communities from representative passages. The first use downloads it; labels are cached and statistical labels remain available as a fallback.').addToggle(t => t.setValue(this.plugin.settings.generatedTopicLabels).onChange(async value => { this.plugin.settings.generatedTopicLabels = value; this.plugin.search.starfieldCache = null; await this.plugin.save(); }));
     new Setting(this.containerEl).setName('Relationship intelligence').setDesc('Use a small local NLI model on only the strongest visible graph connections. The first use downloads it; results are cached locally.').addToggle(t => t.setValue(this.plugin.settings.graphRelationshipIntelligence).onChange(async value => { this.plugin.settings.graphRelationshipIntelligence = value; await this.plugin.save(); this.display(); }));
     if (this.plugin.settings.graphRelationshipIntelligence) new Setting(this.containerEl).setName(this.plugin.isMobile ? 'Mobile relationship budget' : 'Desktop relationship budget').setDesc('Maximum uncached visible connections classified per graph update. Cached connections are free.').addSlider(s => { const key = this.plugin.isMobile ? 'graphRelationshipBudgetMobile' : 'graphRelationshipBudgetDesktop'; s.setLimits(0, this.plugin.isMobile ? 12 : 30, 1).setValue(this.plugin.settings[key]).setDynamicTooltip().onChange(async value => { this.plugin.settings[key] = value; await this.plugin.save(); }); });
     new Setting(this.containerEl).setName('Show manual links').setDesc('Draw smooth, gently bundled curves between visibly linked notes.').addToggle(t => t.setValue(this.plugin.settings.showWikilinks).onChange(async value => { this.plugin.settings.showWikilinks = value; await this.plugin.save(); }));
