@@ -72619,12 +72619,14 @@ ${item.text || ""}`;
           }
           const centroid = centroids.get(id2), memberIds = members.map((member) => member.id), candidates = /* @__PURE__ */ new Map();
           for (const [file, values] of this.indexedConceptCandidates(centroid, memberIds)) for (const [key, candidate] of values) {
-            const value = candidates.get(key) || { ...candidate, files: /* @__PURE__ */ new Set() };
+            const value = candidates.get(key) || { ...candidate, files: /* @__PURE__ */ new Set(), passageScore: -1 };
             value.files.add(file);
+            value.passageScore = Math.max(Number(value.passageScore ?? -1), Number(candidate.passageScore ?? -1));
+            value.quality = Math.max(Number(value.quality || 0), Number(candidate.quality || 0));
             candidates.set(key, value);
           }
-          const otherCentroids = [...centroids].filter(([other]) => other !== id2).map(([, vector]) => vector), ranked = [...candidates.values()].map((candidate) => {
-            const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.4)), coverage = Math.min(1, candidate.files.size / members.length), quality = Math.min(1, Number(candidate.quality || 0) / 0.18), vaultCoverage = (globalFiles.get(candidate.key)?.size || candidate.files.size) / totalFiles, rarity = Math.max(0, 1 - Math.log1p(vaultCoverage * 24) / Math.log(25)), score = centrality * 0.38 + distinction * 0.22 + coverage * 0.16 + rarity * 0.16 + quality * 0.08;
+          const ranked = [...candidates.values()].map((candidate) => {
+            const centrality = Math.max(0, Math.min(1, (Number(candidate.passageScore ?? -1) + 1) / 2)), coverage = Math.min(1, candidate.files.size / members.length), outside = Math.max(0, (globalFiles.get(candidate.key)?.size || candidate.files.size) - candidate.files.size), distinction = 1 - outside / Math.max(1, totalFiles - members.length), quality = Math.min(1, Number(candidate.quality || 0) / 0.18), vaultCoverage = (globalFiles.get(candidate.key)?.size || candidate.files.size) / totalFiles, rarity = Math.max(0, 1 - Math.log1p(vaultCoverage * 24) / Math.log(25)), score = centrality * 0.38 + distinction * 0.22 + coverage * 0.16 + rarity * 0.16 + quality * 0.08;
             return { ...candidate, centrality, distinction, coverage, rarity, score };
           }).map((candidate) => ({ ...candidate, score: candidate.score * (0.55 + Math.max(0, Math.min(1, Number(candidate.novelty || 0))) * 0.45) })).filter((candidate) => candidate.files.size >= Math.min(2, members.length) && !speakerLabels.has(candidate.key) && !isTemporalConceptLabel(candidate.phrase) && !isStructuralConceptLabel(candidate.phrase)).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase));
           rankedByCommunity.set(id2, ranked.slice(0, 8));
