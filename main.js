@@ -70417,9 +70417,13 @@ function isTemporalConceptLabel(source) {
   const value = cleanText(source).toLowerCase(), words = value.match(/[\p{L}\p{N}]+/gu) || [];
   return !value || /(?:^|\D)(?:19|20)\d{2}(?:\D|$)/.test(value) || /\b\d{1,4}[-/.]\d{1,2}(?:[-/.]\d{1,4})?\b/.test(value) || words.some((word) => TEMPORAL_LABEL_WORDS.has(word)) || words.length > 0 && words.every((word) => /^\d+(?:st|nd|rd|th)?$/.test(word));
 }
+function isStructuralConceptLabel(source) {
+  const words = cleanText(source).toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  return !words.length || words.some((word) => STRUCTURAL_TOPIC_LABELS.has(word) || /^(?:yyyy|yy|mm|dd)$/.test(word)) || words.length <= 2 && VAGUE_LABEL_WORDS.has(words[0]) || words.every((word) => STOP_WORDS.has(word) || GENERIC_CONCEPTS.has(word) || VAGUE_LABEL_WORDS.has(word));
+}
 function cleanGeneratedTopicLabel(source) {
-  const value = cleanText(source).replace(/^(?:the )?(?:shared )?(?:topic|subject|label)(?: is)?\s*[:\-–—]?\s*/i, "").replace(/^["'“”‘’]+|["'“”‘’.,;:!?]+$/g, "").replace(/\s+/g, " ").trim(), words = value.match(/[\p{L}\p{N}'’&-]+/gu) || [], normalized = words.map((word) => word.toLowerCase());
-  if (words.length < 1 || words.length > 5 || value.length > 54 || isTemporalConceptLabel(value) || normalized.every((word) => STOP_WORDS.has(word) || GENERIC_CONCEPTS.has(word) || STRUCTURAL_TOPIC_LABELS.has(word)) || normalized.some((word) => STRUCTURAL_TOPIC_LABELS.has(word)) && words.length <= 2) return "";
+  const value = cleanText(source).replace(/^(?:the )?(?:shared |main )?(?:topic|subject|label|answer)(?: is)?\s*[:\-–—]?\s*/i, "").replace(/^["'“”‘’]+|["'“”‘’.,;:!?]+$/g, "").replace(/\s+/g, " ").trim(), words = value.match(/[\p{L}\p{N}'’&-]+/gu) || [], normalized = words.map((word) => word.toLowerCase());
+  if (words.length < 1 || words.length > 5 || value.length > 54 || isTemporalConceptLabel(value) || normalized.some((word) => STRUCTURAL_TOPIC_LABELS.has(word) || /^\d+$/.test(word)) || normalized.every((word) => STOP_WORDS.has(word) || GENERIC_CONCEPTS.has(word))) return "";
   return words.join(" ").replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
 }
 function basename(file) {
@@ -71096,7 +71100,7 @@ function buildHighlightCandidates(file, chunk) {
     return true;
   });
 }
-var MODEL_ID, RELATION_MODEL_ID, TOPIC_LABEL_MODEL_ID, DIMENSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, STRUCTURAL_TOPIC_LABELS, IRREGULAR_LEMMAS, MobileSearchRuntime;
+var MODEL_ID, RELATION_MODEL_ID, TOPIC_LABEL_MODEL_ID, DIMENSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, STRUCTURAL_TOPIC_LABELS, VAGUE_LABEL_WORDS, IRREGULAR_LEMMAS, MobileSearchRuntime;
 var init_mobile_runtime = __esm({
   "src/mobile-runtime.js"() {
     init_transformers_web();
@@ -71113,7 +71117,8 @@ var init_mobile_runtime = __esm({
     GENERIC_CONCEPTS = /* @__PURE__ */ new Set(["answer", "concept", "example", "fact", "idea", "kind", "part", "point", "question", "section", "thing", "thought", "type", "way"]);
     GENERIC_DEMOGRAPHICS = /* @__PURE__ */ new Set(["adult", "female", "male", "man", "person", "woman"]);
     TEMPORAL_LABEL_WORDS = /* @__PURE__ */ new Set(["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "today", "tomorrow", "yesterday"]);
-    STRUCTURAL_TOPIC_LABELS = /* @__PURE__ */ new Set(["ai", "assistant", "chat", "chatbot", "conversation", "discussion", "journal", "notes", "transcript"]);
+    STRUCTURAL_TOPIC_LABELS = /* @__PURE__ */ new Set(["ai", "answer", "assistant", "candidate", "chat", "chatbot", "connections", "conversation", "dataview", "discussion", "evidence", "journal", "label", "notes", "passage", "response", "resources", "template", "templates", "templater", "text", "topic", "tp", "transcript"]);
+    VAGUE_LABEL_WORDS = /* @__PURE__ */ new Set(["all", "entry", "entries", "material", "now", "other", "rename", "something", "still", "there", "word", "words"]);
     IRREGULAR_LEMMAS = /* @__PURE__ */ new Map([["felt", "feel"], ["feels", "feel"], ["feelings", "feel"], ["children", "child"], ["people", "person"], ["men", "man"], ["women", "woman"]]);
     MobileSearchRuntime = class {
       constructor(plugin6) {
@@ -71189,7 +71194,7 @@ var init_mobile_runtime = __esm({
         return this.meta.reduce((total, item) => total + (item.highlightCandidates?.length || 0), 0);
       }
       workerStatus() {
-        return { phase: this.phase, message: this.message, relationMessage: this.relationMessage || "", topicLabelMessage: this.topicLabelMessage || "", pid: "mobile", startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt };
+        return { phase: this.phase, message: this.message, modelMessage: this.modelMessage || "", relationMessage: this.relationMessage || "", topicLabelMessage: this.topicLabelMessage || "", pid: "mobile", startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt };
       }
       async health() {
         return { indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), graphEntities: new Set(this.meta.flatMap((item) => item.entities || [])).size, cachedRelationships: this.relationCache.size, cachedTopicLabels: this.topicLabelCache.size, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === "indexing", modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), relationModelLoaded: Boolean(this.relationPipe || this.plugin.desktopEmbedder?.relationReady), topicLabelModelLoaded: Boolean(this.topicLabelPipe || this.plugin.desktopEmbedder?.topicLabelReady), modelProfile: "bge", modelId: MODEL_ID, modelBackend: this.isMobile ? this.modelBackend : "web-worker-wasm" };
@@ -71315,8 +71320,21 @@ var init_mobile_runtime = __esm({
           this.modelPromise = null;
         }
       }
+      modelActivity(message = "") {
+        this.modelMessage = message;
+        if (this.indexRun || this.phase === "indexing" || this.startPromise && this.phase !== "ready") this.setState("loading_model", message);
+        else {
+          this.lastEvent = message;
+          this.changed();
+        }
+      }
+      modelReady() {
+        this.modelMessage = "Semantic model ready";
+        if (this.phase === "loading_model" && !this.indexRun && this.totalFiles > 0 && this.processedFiles >= this.totalFiles) this.setState("ready", `Ready (${new Set(this.meta.map((item) => item.file)).size} files, ${this.meta.length} passages)`);
+        else this.changed();
+      }
       async loadModel() {
-        this.setState("loading_model", "Loading BGE. The first run downloads the model into Gib Search.");
+        this.modelActivity("Loading BGE. The first run downloads the model into Gib Search.");
         __webpack_exports__env.allowRemoteModels = true;
         __webpack_exports__env.allowLocalModels = false;
         __webpack_exports__env.useCustomCache = !this.isMobile;
@@ -71326,7 +71344,7 @@ var init_mobile_runtime = __esm({
         const progress_callback = (progress) => {
           if (progress.status !== "progress") return;
           const percent = Number(progress.progress);
-          if (Number.isFinite(percent)) this.setState("loading_model", `Downloading ${progress.file || "BGE"}: ${Math.round(percent)}%`);
+          if (Number.isFinite(percent)) this.modelActivity(`Downloading ${progress.file || "BGE"}: ${Math.round(percent)}%`);
         };
         if (__webpack_exports__env.backends?.onnx?.wasm) {
           __webpack_exports__env.backends.onnx.wasm.numThreads = 1;
@@ -71350,6 +71368,7 @@ var init_mobile_runtime = __esm({
         try {
           this.pipe = await __webpack_exports__pipeline("feature-extraction", MODEL_ID, { dtype: "q8", progress_callback });
           await this.pipe([`${QUERY_PREFIX}warm semantic search`], { pooling: "mean", normalize: true });
+          this.modelReady();
           this.plugin.logDiagnostic(`Bundled semantic engine warmed with ${this.modelBackend.toUpperCase()}`);
         } finally {
           if (this.plugin.embeddedWasmModuleUrl) {
@@ -72295,7 +72314,7 @@ var init_mobile_runtime = __esm({
         for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(entries[first].vector, entries[second].vector), residualScore: dot(residuals[first].vector, residuals[second].vector) });
         return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: dot(queryVector, entry.vector), ...positions.get(entry.id) || {} })), edges };
       }
-      topicCommunityLabels(entries, communities, sensitivity = 0.58, minimumSize = 3) {
+      topicCommunityAnalysis(entries, communities, sensitivity = 0.58, minimumSize = 3) {
         const groups = /* @__PURE__ */ new Map();
         for (const entry of entries) {
           const id2 = communities.get(entry.id) ?? 0, members = groups.get(id2) || [];
@@ -72310,10 +72329,26 @@ var init_mobile_runtime = __esm({
           for (let dimension = 0; dimension < DIMENSION; dimension++) vector[dimension] /= norm;
           centroids.set(id2, vector);
         }
-        const labels = /* @__PURE__ */ new Map(), threshold = Math.max(0.35, Math.min(0.85, Number(sensitivity) || 0.58));
+        const requested = new Set(entries.map((entry) => entry.id)), globalFiles = /* @__PURE__ */ new Map();
+        for (const item of this.meta) {
+          if (!requested.has(item.file)) continue;
+          const seen = /* @__PURE__ */ new Set();
+          for (const candidate of item.highlightCandidates || []) {
+            if (candidate.field === "filename") continue;
+            const accepted = conceptLabelCandidates(candidate.phrase, "", candidate.field).find((value) => value.phrase.toLowerCase() === candidate.phrase.trim().toLowerCase());
+            if (accepted) seen.add(accepted.key);
+          }
+          for (const key of seen) {
+            const files = globalFiles.get(key) || /* @__PURE__ */ new Set();
+            files.add(item.file);
+            globalFiles.set(key, files);
+          }
+        }
+        const labels = /* @__PURE__ */ new Map(), rankedByCommunity = /* @__PURE__ */ new Map(), threshold = Math.max(0.35, Math.min(0.85, Number(sensitivity) || 0.58)), totalFiles = Math.max(2, requested.size), minimum = Math.max(2, Number(minimumSize) || 3);
         for (const [id2, members] of groups) {
-          if (members.length < Math.max(2, Number(minimumSize) || 3)) {
+          if (members.length < minimum) {
             labels.set(id2, { label: "", fallbackLabel: "", confidence: 0 });
+            rankedByCommunity.set(id2, []);
             continue;
           }
           const centroid = centroids.get(id2), memberIds = members.map((member) => member.id), candidates = /* @__PURE__ */ new Map();
@@ -72323,74 +72358,63 @@ var init_mobile_runtime = __esm({
             candidates.set(key, value);
           }
           const otherCentroids = [...centroids].filter(([other]) => other !== id2).map(([, vector]) => vector), ranked = [...candidates.values()].map((candidate) => {
-            const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.4)), coverage = Math.min(1, candidate.files.size / Math.max(1, members.length)), quality = Math.min(1, Number(candidate.quality || 0) / 0.18), score = centrality * 0.5 + distinction * 0.27 + coverage * 0.13 + quality * 0.1;
-            return { phrase: candidate.phrase, score, files: candidate.files };
-          }).sort((a2, b) => b.score - a2.score || a2.phrase.localeCompare(b.phrase)), best = ranked[0], margin = Number(best?.score || 0) - Number(ranked[1]?.score || 0), supported = Number(best?.files?.size || 0) >= Math.min(2, members.length), confidence = best && supported ? Math.max(0, Math.min(1, best.score * 0.82 + margin * 1.8)) : 0, fallbackLabel = best && supported && best.score >= 0.42 && !isTemporalConceptLabel(best.phrase) && String(best.phrase).split(/\s+/).length <= 4 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
+            const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.4)), coverage = Math.min(1, candidate.files.size / members.length), quality = Math.min(1, Number(candidate.quality || 0) / 0.18), vaultCoverage = (globalFiles.get(candidate.key)?.size || candidate.files.size) / totalFiles, rarity = Math.max(0, 1 - Math.log1p(vaultCoverage * 24) / Math.log(25)), score = centrality * 0.38 + distinction * 0.22 + coverage * 0.16 + rarity * 0.16 + quality * 0.08;
+            return { ...candidate, centrality, distinction, coverage, rarity, score };
+          }).map((candidate) => ({ ...candidate, score: candidate.score * (0.55 + Math.max(0, Math.min(1, Number(candidate.novelty || 0))) * 0.45) })).filter((candidate) => candidate.files.size >= Math.min(2, members.length) && !isTemporalConceptLabel(candidate.phrase) && !isStructuralConceptLabel(candidate.phrase)).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase));
+          rankedByCommunity.set(id2, ranked.slice(0, 8));
+          const best = ranked[0], margin = Number(best?.score || 0) - Number(ranked[1]?.score || 0), confidence = best ? Math.max(0, Math.min(1, best.score * 0.84 + margin * 1.6)) : 0, fallbackLabel = best && best.score >= 0.44 && String(best.phrase).split(/\s+/).length <= 5 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
           labels.set(id2, { label: confidence >= threshold ? fallbackLabel : "", fallbackLabel, confidence });
         }
-        return labels;
+        return { groups, centroids, labels, rankedByCommunity };
       }
-      async generatedTopicCommunityLabels(entries, communities, fallbackLabels, minimumSize = 3) {
-        if (!this.plugin.settings?.generatedTopicLabels || this.topicLabelUnavailable) return fallbackLabels;
-        const groups = /* @__PURE__ */ new Map();
-        for (const entry of entries) {
-          const id2 = communities.get(entry.id) ?? 0, members = groups.get(id2) || [];
-          members.push(entry);
-          groups.set(id2, members);
-        }
-        const centroids = /* @__PURE__ */ new Map();
+      topicCommunityLabels(entries, communities, sensitivity = 0.58, minimumSize = 3) {
+        return this.topicCommunityAnalysis(entries, communities, sensitivity, minimumSize).labels;
+      }
+      async generatedTopicCommunityLabels(entries, communities, analysis, minimumSize = 3) {
+        if (!this.plugin.settings?.generatedTopicLabels || this.topicLabelUnavailable) return analysis.labels;
+        const { groups, centroids, labels: fallbackLabels, rankedByCommunity } = analysis, requests = [], minimum = Math.max(2, Number(minimumSize) || 3);
         for (const [id2, members] of groups) {
-          const vector = new Float32Array(DIMENSION);
-          for (const member of members) for (let dimension = 0; dimension < DIMENSION; dimension++) vector[dimension] += member.vector[dimension];
-          const norm = Math.sqrt(dot(vector, vector)) || 1;
-          for (let dimension = 0; dimension < DIMENSION; dimension++) vector[dimension] /= norm;
-          centroids.set(id2, vector);
-        }
-        const requests = [];
-        for (const [id2, members] of groups) {
-          if (members.length < Math.max(2, Number(minimumSize) || 3)) continue;
-          const memberIds = new Set(members.map((member) => member.id)), fingerprint = `${TOPIC_LABEL_MODEL_ID}:v2:${members.map((member) => `${member.id}:${this.fileFingerprint(member.id)}`).sort().join("|")}`;
-          if (this.topicLabelCache.has(fingerprint)) continue;
+          if (members.length < minimum) continue;
+          const memberIds = new Set(members.map((member) => member.id)), fingerprint = `${TOPIC_LABEL_MODEL_ID}:v3:${members.map((member) => `${member.id}:${this.fileFingerprint(member.id)}`).sort().join("|")}`, candidates = rankedByCommunity.get(id2) || [];
+          if (this.topicLabelCache.has(fingerprint) || !candidates.length) continue;
           const centroid = centroids.get(id2), passages = this.meta.map((item, index3) => memberIds.has(item.file) && this.vectors[index3] ? { item, score: dot(centroid, this.vectors[index3]) } : null).filter(Boolean).sort((a2, b) => b.score - a2.score), chosen = [], chosenFiles = /* @__PURE__ */ new Set();
           for (const passage of passages) {
             if (chosenFiles.has(passage.item.file)) continue;
-            const text = cleanText(`${passage.item.heading || ""}. ${passage.item.text || ""}`).slice(0, 430);
+            const text = cleanText(`${passage.item.heading || ""}. ${passage.item.text || ""}`).slice(0, 300);
             if (text.length < 24) continue;
             chosen.push(text);
             chosenFiles.add(passage.item.file);
-            if (chosen.length >= 4) break;
+            if (chosen.length >= 3) break;
           }
           if (chosen.length < 2) continue;
-          const prompt = `What is the main topic shared by these passages? Answer with a concise noun phrase.
-
-${chosen.map((text, index3) => `Passage ${index3 + 1}: ${text}`).join("\n\n")}`.slice(0, 2200);
-          requests.push({ id: id2, fingerprint, prompt });
+          const options = candidates.slice(0, 6).map((candidate) => candidate.phrase).join(" | "), evidence = chosen.join(" "), prompt = `Select the single best topic label from this list. Copy only the label: ${options}. Text: ${evidence}`.slice(0, 1900);
+          requests.push({ id: id2, fingerprint, prompt, evidence: evidence.toLowerCase(), candidates });
         }
         try {
           if (requests.length) {
             this.topicLabelActivity(`Naming ${requests.length} topic communit${requests.length === 1 ? "y" : "ies"}`);
             const generated = await this.generateTopicLabelTexts(requests.map((request) => request.prompt));
-            requests.forEach((request, index3) => this.topicLabelCache.set(request.fingerprint, cleanGeneratedTopicLabel(generated[index3])));
+            for (let index3 = 0; index3 < requests.length; index3++) {
+              const request = requests[index3], vote = cleanGeneratedTopicLabel(generated[index3]), voteTokens = new Set(tokens(vote)), scored = request.candidates.map((candidate) => {
+                const candidateTokens = new Set(tokens(candidate.phrase)), overlap = [...voteTokens].filter((token) => candidateTokens.has(token)).length / Math.max(1, Math.max(voteTokens.size, candidateTokens.size)), exact = vote && vote.toLowerCase() === candidate.phrase.toLowerCase();
+                return { candidate, score: candidate.score + (exact ? 0.12 : overlap * 0.07) };
+              }).sort((a2, b) => b.score - a2.score), selected = scored[0]?.candidate, grounded = selected && tokens(selected.phrase).some((token) => request.evidence.includes(token));
+              this.topicLabelCache.set(request.fingerprint, grounded ? String(selected.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "");
+            }
             await this.saveTopicLabelCache();
           }
-          const output = new Map(fallbackLabels), used = /* @__PURE__ */ new Map();
+          const output = new Map(fallbackLabels), used = /* @__PURE__ */ new Set();
           for (const [id2, members] of groups) {
-            const fingerprint = `${TOPIC_LABEL_MODEL_ID}:v2:${members.map((member) => `${member.id}:${this.fileFingerprint(member.id)}`).sort().join("|")}`, label = this.topicLabelCache.get(fingerprint) || "";
-            if (!label) continue;
-            const vector = await this.embed(label, false), centroid = centroids.get(id2), centrality = Math.max(0, Math.min(1, (dot(centroid, vector) + 1) / 2)), other = [...centroids].filter(([otherId]) => otherId !== id2).map(([, value]) => Math.max(0, Math.min(1, (dot(value, vector) + 1) / 2))), distinction = centrality - (other.length ? Math.max(...other) : centrality - 0.08), confidence = Math.max(0, Math.min(1, centrality * 0.72 + Math.max(0, distinction) * 1.4));
-            if (centrality < 0.56 || distinction < -0.025) continue;
-            const key = label.toLowerCase(), previous = used.get(key);
-            if (!previous || confidence > previous.confidence) {
-              if (previous) output.set(previous.id, fallbackLabels.get(previous.id) || { label: "", fallbackLabel: "", confidence: 0 });
-              used.set(key, { id: id2, confidence });
-              output.set(id2, { label, fallbackLabel: fallbackLabels.get(id2)?.fallbackLabel || "", confidence });
-            }
+            const fingerprint = `${TOPIC_LABEL_MODEL_ID}:v3:${members.map((member) => `${member.id}:${this.fileFingerprint(member.id)}`).sort().join("|")}`, label = this.topicLabelCache.get(fingerprint) || "", fallback2 = fallbackLabels.get(id2) || { label: "", fallbackLabel: "", confidence: 0 };
+            if (!label || used.has(label.toLowerCase())) continue;
+            used.add(label.toLowerCase());
+            output.set(id2, { label, fallbackLabel: fallback2.fallbackLabel, confidence: Math.max(0.62, fallback2.confidence) });
           }
           this.topicLabelActivity(requests.length ? "Topic labels ready" : "Using cached topic labels");
           return output;
         } catch (error) {
           this.topicLabelUnavailable = true;
-          this.topicLabelActivity("Generated labels unavailable; using statistical labels");
+          this.topicLabelActivity("Generated labels unavailable; using grounded labels");
           this.plugin.logDiagnostic?.(`Topic labeler unavailable: ${error?.message || error}`);
           return fallbackLabels;
         }
@@ -72468,8 +72492,9 @@ ${chosen.map((text, index3) => `Passage ${index3 + 1}: ${text}`).join("\n\n")}`.
           }
           const communitySizes2 = /* @__PURE__ */ new Map();
           for (const community of communities2.values()) communitySizes2.set(community, (communitySizes2.get(community) || 0) + 1);
-          let communityLabels2 = this.topicCommunityLabels(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize);
-          if (vaultMode) communityLabels2 = await this.generatedTopicCommunityLabels(entries2, communities2, communityLabels2, tuning.communityMinSize);
+          const communityAnalysis = this.topicCommunityAnalysis(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize);
+          let communityLabels2 = communityAnalysis.labels;
+          if (vaultMode) communityLabels2 = await this.generatedTopicCommunityLabels(entries2, communities2, communityAnalysis, tuning.communityMinSize);
           this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, topicAffinities: topicAffinities2, communitySizes: communitySizes2, communityLabels: communityLabels2, entitySets: entitySets2, uniqueness: uniqueness2 };
         }
         const { entries, edges, positions, communities, topicAffinities, communitySizes, communityLabels, entitySets, uniqueness } = this.starfieldCache, basis = this.topicBasis(), communityFields = (entry) => {
@@ -72829,7 +72854,7 @@ var DesktopEmbedder = class {
     }
     if (message.type === "ready") {
       this.ready = true;
-      this.plugin.search?.changed();
+      this.plugin.search?.modelReady?.();
       return;
     }
     if (message.type === "relation-ready") {
@@ -72854,7 +72879,7 @@ var DesktopEmbedder = class {
     }
     if (message.type === "progress") {
       const percent = Math.round(Number(message.progress) || 0);
-      this.plugin.search?.setState("loading_model", `Downloading ${message.file}: ${percent}%`);
+      this.plugin.search?.modelActivity?.(`Downloading ${message.file}: ${percent}%`);
       return;
     }
     const pending = this.pending.get(message.id);
@@ -75828,8 +75853,10 @@ var SearchSettings = class extends PluginSettingTab {
     this.field("Highlight phrases", remote?.highlightPhrases ?? local.highlightPhrases ?? 0);
     this.field("Graph entities", remote?.graphEntities ?? 0);
     this.field("Cached relationships", remote?.cachedRelationships ?? 0);
+    this.field("Cached topic labels", remote?.cachedTopicLabels ?? 0);
     const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || remote?.modelId || "Loaded";
     this.field("Model", remote?.modelLoaded ? `${modelLabel} (${String(remote.modelBackend || "WASM").toUpperCase()})` : healthy ? "Loads on demand" : "Not ready");
+    this.field("Topic labeler", remote?.topicLabelModelLoaded ? "Loaded" : this.plugin.settings.generatedTopicLabels ? "Loads on demand" : "Disabled");
     this.field("Relationship model", remote?.relationModelLoaded ? "Loaded" : this.plugin.settings.graphRelationshipIntelligence ? "Loads on demand" : "Disabled");
     this.field("Index size", formatBytes(indexBytes));
     if (!this.plugin.isMobile) this.field("Model cache", formatBytes(modelBytes));
@@ -75840,7 +75867,7 @@ var SearchSettings = class extends PluginSettingTab {
       this.healthProgress.style.display = "";
       this.healthProgress.value = Math.min(100, done / total * 100);
     } else this.healthProgress.style.display = "none";
-    this.healthEvent.textContent = local.currentFile ? `Current file: ${local.currentFile}` : local.relationMessage ? `Graph intelligence: ${local.relationMessage}` : `Latest activity: ${this.plugin.indexer.lastEvent}`;
+    this.healthEvent.textContent = local.currentFile ? `Current file: ${local.currentFile}` : local.topicLabelMessage ? `Topic labels: ${local.topicLabelMessage}` : local.relationMessage ? `Graph intelligence: ${local.relationMessage}` : local.modelMessage ? `Semantic model: ${local.modelMessage}` : `Latest activity: ${this.plugin.indexer.lastEvent}`;
     if (this.retryButton?.buttonEl) this.retryButton.buttonEl.style.display = state === "error" ? "" : "none";
     if (showNotice) new Notice(healthy ? "Gib Search is healthy" : activelyWorking ? "Gib Search is currently indexing" : `Gib Search health check failed: ${stoppedResponding ? "indexer stopped responding" : error || local.message || "index unavailable"}`);
   }
