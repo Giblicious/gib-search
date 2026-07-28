@@ -70583,6 +70583,19 @@ function profileDistance(first, second) {
   const overlap = keys.reduce((sum, key) => sum + Math.sqrt(Math.max(0, Number(a2[key] || 0)) / aTotal * (Math.max(0, Number(b[key] || 0)) / bTotal)), 0);
   return Math.sqrt(Math.max(0, 1 - Math.min(1, overlap)));
 }
+function calibratedAffinities(source) {
+  if (!source?.length) return new Float32Array();
+  const sampleStep = Math.max(1, Math.floor(source.length / 24e3)), sample = [];
+  for (let index3 = 0; index3 < source.length; index3 += sampleStep) if (Number.isFinite(source[index3])) sample.push(source[index3]);
+  sample.sort((a2, b) => a2 - b);
+  const at = (amount) => sample[Math.max(0, Math.min(sample.length - 1, Math.round((sample.length - 1) * amount)))] ?? 0, low = at(0.12), high = at(0.9), range = high - low, output = new Float32Array(source.length);
+  if (range < 1e-4) {
+    output.fill(0.5);
+    return output;
+  }
+  for (let index3 = 0; index3 < source.length; index3++) output[index3] = Math.max(0, Math.min(1, (source[index3] - low) / range));
+  return output;
+}
 function dotPacked(query, packed, offset2) {
   let score = 0;
   for (let i3 = 0; i3 < DIMENSION; i3 += 4) score += query[i3] * packed[offset2 + i3] + query[i3 + 1] * packed[offset2 + i3 + 1] + query[i3 + 2] * packed[offset2 + i3 + 2] + query[i3 + 3] * packed[offset2 + i3 + 3];
@@ -71372,6 +71385,7 @@ var init_mobile_runtime = __esm({
         this.graphEvidenceGeneration = 0;
         this.graphWarmPromise = null;
         this.graphWarmSignature = "";
+        this.relationshipForceCaches = /* @__PURE__ */ new Map();
         this.relationCache = /* @__PURE__ */ new Map();
         this.relationPipe = null;
         this.relationModelPromise = null;
@@ -71687,6 +71701,7 @@ var init_mobile_runtime = __esm({
         this.graphEvidencePromiseSignature = "";
         this.graphWarmPromise = null;
         this.graphWarmSignature = "";
+        this.relationshipForceCaches.clear();
         this.contentProfileCache = null;
         this.clearStarfieldCaches();
       }
@@ -72753,6 +72768,47 @@ ${item.text || ""}`;
         }
         return [...spanning, ...remaining];
       }
+      async relationshipForceField(query, nodes, relationshipField = {}, options = {}) {
+        const values = [...new Map((nodes || []).filter((node) => node?.id).map((node) => [node.id, node])).values()], ids = values.map((node) => node.id), profileSignals = [...relationshipField.profiles?.keys?.() || []].sort(), centerFile = String(options.centerFile || ""), vectors = this.fileVectors(centerFile ? [...ids, centerFile] : ids), trimmed = String(query || "").trim(), conditioned = Boolean(trimmed || centerFile), reference = String(relationshipField.reference || ""), linkSignature = [...relationshipField.linkPairs || []].sort(), signature = contentFingerprint(JSON.stringify(["force-field-v1", ids.map((id2) => [id2, this.fileFingerprint(id2)]), trimmed.toLowerCase(), centerFile, profileSignals, reference, linkSignature])), cached = this.relationshipForceCaches.get(signature);
+        if (cached) return { ...cached, weights: { ...relationshipField.weights || {} }, dynamics: { ...relationshipField.dynamics || {} } };
+        const pairCount = ids.length * Math.max(0, ids.length - 1) / 2, raw = { semantic: new Float32Array(pairCount) };
+        for (const signal of profileSignals) raw[signal] = new Float32Array(pairCount);
+        if (relationshipField.linkPairs) raw.links = new Float32Array(pairCount);
+        const center = centerFile ? vectors.get(centerFile)?.vector : trimmed ? await this.queryVector(this.correctQuery(trimmed)) : null, queryScores = conditioned ? new Float32Array(ids.length) : null, evidence = !conditioned ? this.graphEvidenceCache : null, evidenceUsable = evidence && ids.every((id2) => evidence.fileIndex.has(id2)), evidenceAt = (first, second) => {
+          if (!evidenceUsable) return null;
+          const a2 = evidence.fileIndex.get(first), b = evidence.fileIndex.get(second);
+          return a2 === void 0 || b === void 0 ? null : Number(evidence.scores[a2 * evidence.files.length + b]);
+        };
+        if (conditioned) for (let index3 = 0; index3 < ids.length; index3++) queryScores[index3] = vectors.get(ids[index3])?.vector && center ? dot(vectors.get(ids[index3]).vector, center) : -1;
+        let cursor = 0;
+        for (let first = 0; first < ids.length; first++) {
+          const firstVector = vectors.get(ids[first])?.vector;
+          for (let second = first + 1; second < ids.length; second++, cursor++) {
+            const secondVector = vectors.get(ids[second])?.vector, ordinary = firstVector && secondVector ? dot(firstVector, secondVector) : -1;
+            if (conditioned && center && firstVector && secondVector) {
+              const firstScore = queryScores[first], secondScore = queryScores[second], denominator = Math.sqrt(Math.max(1e-4, 1 - firstScore * firstScore) * Math.max(1e-4, 1 - secondScore * secondScore)), residual = Math.max(-1, Math.min(1, (ordinary - firstScore * secondScore) / denominator));
+              raw.semantic[cursor] = residual * 0.72 + ordinary * 0.28;
+            } else raw.semantic[cursor] = evidenceAt(ids[first], ids[second]) ?? ordinary;
+            for (const signal of profileSignals) raw[signal][cursor] = 1 - profileDistance(relationshipField.profiles.get(signal)?.get(ids[first]), relationshipField.profiles.get(signal)?.get(ids[second]));
+            if (raw.links) raw.links[cursor] = relationshipField.linkPairs.has([ids[first], ids[second]].sort().join("\0")) ? 1 : 0;
+          }
+          if (first % 12 === 11) await yieldToUi();
+        }
+        const components = {};
+        for (const [signal, scores] of Object.entries(raw)) components[signal] = signal === "links" ? scores : calibratedAffinities(scores);
+        let relevance = null;
+        if (queryScores) {
+          relevance = calibratedAffinities(queryScores);
+          for (let index3 = 0; index3 < values.length; index3++) {
+            const supplied = Number(values[index3].relevance);
+            if (Number.isFinite(supplied)) relevance[index3] = Math.max(0, Math.min(1, supplied));
+          }
+        }
+        const built = { version: 1, signature, ids, pairCount, components, relevance, conditioned };
+        this.relationshipForceCaches.set(signature, built);
+        while (this.relationshipForceCaches.size > 8) this.relationshipForceCaches.delete(this.relationshipForceCaches.keys().next().value);
+        return { ...built, weights: { ...relationshipField.weights || {} }, dynamics: { ...relationshipField.dynamics || {} } };
+      }
       async multiRelationalLayout(query, nodes, relationships = /* @__PURE__ */ new Map(), options = {}) {
         const values = [...new Map((nodes || []).filter((node) => node?.id).map((node) => [node.id, node])).values()], nodeById = new Map(values.map((node) => [node.id, node])), files = values.map((node) => node.id), vectors = this.fileVectors(files), entries = values.filter((node) => vectors.has(node.id)).map((node) => ({ id: node.id, vector: vectors.get(node.id).vector })), relationshipField = options.relationshipField || null;
         if (!entries.length) return /* @__PURE__ */ new Map();
@@ -73185,6 +73241,17 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
           if (evidence.signature !== this.graphEvidenceSignature(tuning).signature) return;
           if (!evidence.rootGraph) await this.semanticStarfield("", evidence.files);
           if (evidence.signature !== this.graphEvidenceSignature(tuning).signature) return;
+          const configuredSignals = /* @__PURE__ */ new Set();
+          for (const view of this.plugin.settings?.atlasViews || []) {
+            for (const [signal, weight] of Object.entries(view.frame?.relationships || {})) if (!["semantic", "links", "position"].includes(signal) && Number(weight) > 1e-3) configuredSignals.add(signal);
+            if (view.frame?.appearance?.colorBy === "emotion") configuredSignals.add("emotion");
+            if (view.frame?.mode === "guided" && !["semantic", "position"].includes(view.frame?.signal)) configuredSignals.add(view.frame.signal);
+          }
+          for (const signal of configuredSignals) {
+            await this.textSignalProfiles(signal, evidence.files);
+            if (evidence.signature !== this.graphEvidenceSignature(tuning).signature) return;
+          }
+          if (configuredSignals.size) this.analysisActivity(`Atlas qualities ready (${evidence.files.length} notes)`);
           for (const listener of this.graphCacheListeners) listener();
         })().catch((error) => this.plugin.logDiagnostic?.(`Graph cache preparation failed: ${error?.message || error}`)).finally(() => {
           if (this.graphWarmPromise === pending) {
@@ -73645,9 +73712,11 @@ var init_atlas_engine = __esm({
         const index3 = this.plugin.search, indexSignature = `${index3.meta.length}:${index3.vectors.length}:${index3.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}`, relationships = state.lens === "arguments" && options.relationships instanceof Map ? [...options.relationships].map(([key, value]) => [key, value?.type, Number(value?.confidence || 0)]).sort() : [];
         return JSON.stringify([indexSignature, scope.signature, state.anchor, state.lens, state.scale, state.frame, results.map((result) => [result.file, Number(result.lensScore ?? result.score ?? 0)]), relationships]);
       }
-      async prepareRelationshipField(state, files, roads = []) {
+      async prepareRelationshipField(state, files, roads = [], options = {}) {
         const weights = { ...state.frame?.relationships || {} }, profiles = /* @__PURE__ */ new Map(), requested = new Set(Object.entries(weights).filter(([signal, weight]) => !["semantic", "links"].includes(signal) && Number(weight) > 1e-3).map(([signal]) => signal));
         if (state.frame?.appearance?.colorBy === "emotion") requested.add("emotion");
+        if (options.preloadRelationships) for (const signal of ["emotion", "purpose", "form"]) requested.add(signal);
+        if (options.preloadRelationships && String(state.frame?.reference || "").trim()) requested.add("position");
         for (const signal of requested) {
           if (signal === "position" && !String(state.frame?.reference || "").trim()) {
             weights.position = 0;
@@ -73656,20 +73725,26 @@ var init_atlas_engine = __esm({
           profiles.set(signal, await this.plugin.search.textSignalProfiles(signal, files, state.frame?.reference || ""));
         }
         const linkPairs = new Set((roads || []).map((road) => edgeKey(road.source, road.target)));
-        return { weights, profiles, linkPairs, dynamics: { ...state.frame?.dynamics || {} } };
+        return { weights, profiles, linkPairs, dynamics: { ...state.frame?.dynamics || {} }, reference: String(state.frame?.reference || "") };
       }
       applyRelationshipPresentation(state, nodes, field) {
         const colorBy = state.frame?.appearance?.colorBy || "semantic", preferredSignal = colorBy === "emotion" ? "emotion" : Object.entries(field.weights || {}).filter(([signal]) => !["semantic", "links"].includes(signal)).sort((a2, b) => Number(b[1]) - Number(a2[1]))[0]?.[0], signalProfiles = preferredSignal ? field.profiles.get(preferredSignal) : null, emotional = field.profiles.get("emotion");
         for (const node of nodes) {
           const profile = signalProfiles?.get(node.id), emotionProfile = emotional?.get(node.id), definitions = preferredSignal === "emotion" ? EMOTION_LANDMARKS : [], scores = profile?.scores || {}, ranked = Object.entries(scores).sort((a2, b) => Number(b[1]) - Number(a2[1])), strongest = ranked[0];
+          node.sourceFileScale = node.fileScale;
+          node.semanticHue = node.topicHue;
+          node.signalIntensities = Object.fromEntries([...field.profiles].map(([signal, values]) => [signal, Math.max(0, ...Object.values(values.get(node.id)?.scores || {}).map(Number))]));
           node.relationshipSignal = preferredSignal || "semantic";
           node.relationshipScores = scores;
           node.relationshipEvidence = profile?.evidence || null;
           node.relationshipIntensity = strongest ? Number(strongest[1] || 0) : Number(node.uniqueness ?? node.relevance ?? 0.5);
-          if (colorBy === "emotion" && emotionProfile) {
+          if (emotionProfile) {
             const weighted = EMOTION_LANDMARKS.map((item) => ({ item, score: Number(emotionProfile.scores?.[`emotion:${item.key}`] || 0) ** 2 })).filter((value) => value.score > 0.015), x = weighted.reduce((sum, value) => sum + Math.cos(value.item.hue * Math.PI / 180) * value.score, 0), y = weighted.reduce((sum, value) => sum + Math.sin(value.item.hue * Math.PI / 180) * value.score, 0);
-            if (weighted.length) node.topicHue = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+            if (weighted.length) node.emotionHue = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
           }
+          if (colorBy === "emotion" && Number.isFinite(node.emotionHue)) node.topicHue = node.emotionHue;
+          else if (colorBy === "none") node.topicHue = null;
+          else node.topicHue = node.semanticHue;
           if (strongest) {
             const key = strongest[0].split(":").pop(), definition = definitions.find((item) => item.key === key);
             node.relationshipLabel = definition?.name || key.replace(/(^|[-_])\p{L}/gu, (match2) => match2.replace(/[-_]/, "").toUpperCase());
@@ -73738,7 +73813,8 @@ var init_atlas_engine = __esm({
           node.communityFallbackLabel = node.communityLabel;
           node.communityLabelConfidence = unclaimed ? 1 - ranked[0].value : ranked[0].value;
           node.communityMembership = unclaimed ? 1 - ranked[0].value : ranked[0].value;
-          if (colorBy === "category") node.topicHue = unclaimed || hueStrength < 0.08 ? null : (Math.atan2(hueY, hueX) * 180 / Math.PI + 360) % 360;
+          node.categoryHue = unclaimed || hueStrength < 0.08 ? null : (Math.atan2(hueY, hueX) * 180 / Math.PI + 360) % 360;
+          if (colorBy === "category") node.topicHue = node.categoryHue;
           else if (colorBy === "none") node.topicHue = null;
           if (state.frame.appearance?.sizeBy === "uniform") node.fileScale = 0.35;
           node.guidedMemberships = Object.fromEntries(categories.map((category, index3) => [category.id, affinities[index3]]));
@@ -73769,9 +73845,9 @@ var init_atlas_engine = __esm({
         }
       }
       async vaultScene(state, scope, options = {}) {
-        const graph = await this.plugin.search.semanticStarfield("", scope.paths), scales = options.fileScales || fileScales(this.plugin.app), definition = atlasLens(state.lens), nodes = graph.nodes.map((node) => ({ ...node, matched: false, generation: 1, relevance: 0.5, fileScale: scales.get(node.id) ?? 0.35, facet: node.community, conceptAffinities: node.topicAffinities })), roads = manualLinks(this.plugin.app, scope.paths), field = await this.prepareRelationshipField(state, nodes.map((node) => node.id), roads);
+        const graph = await this.plugin.search.semanticStarfield("", scope.paths), scales = options.fileScales || fileScales(this.plugin.app), definition = atlasLens(state.lens), nodes = graph.nodes.map((node) => ({ ...node, matched: false, generation: 1, relevance: 0.5, fileScale: scales.get(node.id) ?? 0.35, facet: node.community, conceptAffinities: node.topicAffinities })), roads = manualLinks(this.plugin.app, scope.paths), field = await this.prepareRelationshipField(state, nodes.map((node) => node.id), roads, options);
         this.applyRelationshipPresentation(state, nodes, field);
-        const naturalLayout = await this.plugin.search.multiRelationalLayout("", nodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: definition.analysis, vaultCenter: true, mapMode: definition.mapMode, relationshipField: field }), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout;
+        const naturalLayout = new Map(nodes.map((node) => [node.id, { x: Number(node.x || 0), y: Number(node.y || 0) }])), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout, forceField = await this.plugin.search.relationshipForceField("", nodes, field, { vaultCenter: true });
         for (const node of nodes) {
           const target = layout.get(node.id);
           if (target) {
@@ -73779,7 +73855,7 @@ var init_atlas_engine = __esm({
             node.layoutY = target.y;
           }
         }
-        return { state, scopeSignature: scope.signature, center: { label: state.viewName, hasQuery: false, resultCount: 0, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, mapMode: guided.categories.length ? "topics" : definition.mapMode }, nodes, edges: graph.edges || [], roads, results: [], legend: this.legendFor(state), provisional: false };
+        return { state, scopeSignature: scope.signature, center: { label: state.viewName, hasQuery: false, resultCount: 0, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, mapMode: guided.categories.length ? "topics" : definition.mapMode }, nodes, edges: graph.edges || [], roads, results: [], legend: this.legendFor(state), provisional: false };
       }
       async queryScene(state, scope, results, options = {}) {
         const query = String(state.anchor.value || "").trim(), definition = atlasLens(state.lens), relationships = options.relationships instanceof Map ? options.relationships : /* @__PURE__ */ new Map(), relationshipEdges = options.relationshipEdges || [], sourceResults = results.map((result) => ({ ...result })), roots = sourceResults.map((result) => result.file), generations = Math.max(1, Math.min(3, Number(options.generations) || 1)), expansion = this.plugin.search.semanticGenerations(roots, generations, 5), generationByFile = new Map(expansion.nodes.map((node) => [node.id, node])), allowed = new Set(scope.paths), activeFiles = expansion.nodes.map((node) => node.id).filter((file) => allowed.has(file)), [facets, graph] = await Promise.all([this.plugin.search.conceptFacets(query, activeFiles), this.plugin.search.semanticStarfield(query, activeFiles, activeFiles, { queryLabels: false })]);
@@ -73792,9 +73868,9 @@ var init_atlas_engine = __esm({
         const nodes = graph.nodes.map((node) => {
           const result = byFile.get(node.id), generation = generationByFile.get(node.id), subtopic = facets.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(0.22, Math.min(0.62, Number(generation.relationScore || 0))) : semanticRelevance, community = definition.mapMode === "topics" && subtopic ? subtopic.facet : node.community, membership = subtopic ? Number(subtopic.affinities?.[subtopic.facet] || 0) : Number(node.communityMembership || 0);
           return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance, fileScale: scales.get(node.id) ?? 0.35, facet: subtopic?.facet ?? result?.facet ?? node.community, community, communityMembership: definition.mapMode === "topics" ? membership : node.communityMembership, communityLabel: definition.mapMode === "topics" ? subtopic?.label || "" : node.communityLabel, communityFallbackLabel: definition.mapMode === "topics" ? subtopic?.fallbackLabel || "" : node.communityFallbackLabel, communityLabelConfidence: definition.mapMode === "topics" ? Number(subtopic?.confidence || 0) : node.communityLabelConfidence, conceptAffinities: subtopic?.affinities || result?.conceptAffinities || node.topicAffinities, topicAffinities: definition.mapMode === "topics" && subtopic ? subtopic.affinities : node.topicAffinities, contextScore: result?.contextScore };
-        }), roads = manualLinks(this.plugin.app, nodes.map((node) => node.id)), field = await this.prepareRelationshipField(state, nodes.map((node) => node.id), roads);
+        }), roads = manualLinks(this.plugin.app, nodes.map((node) => node.id)), field = await this.prepareRelationshipField(state, nodes.map((node) => node.id), roads, options);
         this.applyRelationshipPresentation(state, nodes, field);
-        const naturalLayout = await this.plugin.search.multiRelationalLayout(query, nodes, definition.analysis === "arguments" ? relationships : /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: definition.analysis, mapMode: definition.mapMode, relationshipField: field }), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout;
+        const naturalLayout = new Map(nodes.map((node) => [node.id, { x: Number(node.x || 0), y: Number(node.y || 0) }])), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout, forceField = await this.plugin.search.relationshipForceField(query, nodes, field);
         for (const node of nodes) {
           const target = layout.get(node.id);
           if (target) {
@@ -73803,7 +73879,7 @@ var init_atlas_engine = __esm({
           }
         }
         const edges = definition.analysis === "arguments" ? [...combinedEdges.map((edge) => ({ ...edge, relation: relationships.get(edgeKey(edge.source, edge.target)) })), ...relationshipEdges.filter((edge) => !edgeKeys.has(edgeKey(edge.source, edge.target))).map((edge) => ({ ...edge, relation: relationships.get(edgeKey(edge.source, edge.target)) }))] : combinedEdges;
-        return { state, scopeSignature: scope.signature, center: { label: query, hasQuery: true, resultCount: sourceResults.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, mapMode: guided.categories.length ? "topics" : definition.mapMode }, nodes, edges, roads, results: sourceResults, legend: this.legendFor(state), provisional: false };
+        return { state, scopeSignature: scope.signature, center: { label: query, hasQuery: true, resultCount: sourceResults.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, mapMode: guided.categories.length ? "topics" : definition.mapMode }, nodes, edges, roads, results: sourceResults, legend: this.legendFor(state), provisional: false };
       }
       async noteScene(state, scope, options = {}) {
         const filePath = String(state.anchor.value || ""), definition = atlasLens(state.lens), limit = state.scale === "detail" ? 32 : state.scale === "neighborhood" ? 22 : 16, graph = this.plugin.search.semanticNeighbors(filePath, limit), allowed = new Set(scope.paths);
@@ -73823,9 +73899,9 @@ var init_atlas_engine = __esm({
         }
         const scores = nodes.map((node) => Number(node.score || 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(1e-3, high - low), scales = options.fileScales || fileScales(this.plugin.app);
         nodes = nodes.map((node) => ({ ...node, relevance: (Number(node.score || 0) - low) / spread, matched: true, generation: 1, fileScale: scales.get(node.id) ?? 0.35 }));
-        const roads = manualLinks(this.plugin.app, [filePath, ...nodes.map((node) => node.id)]), field = await this.prepareRelationshipField(state, nodes.map((node) => node.id), roads);
+        const roads = manualLinks(this.plugin.app, [filePath, ...nodes.map((node) => node.id)]), field = await this.prepareRelationshipField(state, nodes.map((node) => node.id), roads, options);
         this.applyRelationshipPresentation(state, nodes, field);
-        const naturalLayout = await this.plugin.search.multiRelationalLayout(basename2(filePath), nodes, relationships, { lens: definition.analysis, magic: this.plugin.settings.magicGraphEnabled, mapMode: definition.mapMode, centerFile: filePath, relationshipField: field }), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout;
+        const naturalLayout = new Map(nodes.map((node) => [node.id, { x: Number(node.x || 0), y: Number(node.y || 0) }])), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout, forceField = await this.plugin.search.relationshipForceField("", nodes, field, { centerFile: filePath });
         for (const node of nodes) {
           const target = layout.get(node.id);
           if (target) {
@@ -73833,14 +73909,14 @@ var init_atlas_engine = __esm({
             node.layoutY = target.y;
           }
         }
-        return { state, scopeSignature: scope.signature, center: { id: filePath, label: basename2(filePath), hasQuery: true, resultCount: nodes.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, mapMode: guided.categories.length ? "topics" : definition.mapMode }, nodes, edges, roads, results: nodes, legend: this.legendFor(state), provisional: false };
+        return { state, scopeSignature: scope.signature, center: { id: filePath, label: basename2(filePath), hasQuery: true, resultCount: nodes.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, mapMode: guided.categories.length ? "topics" : definition.mapMode }, nodes, edges, roads, results: nodes, legend: this.legendFor(state), provisional: false };
       }
       provisionalScene(state, baseScene, results, positions = /* @__PURE__ */ new Map()) {
         const scores = results.map((result) => Number(result.lensScore ?? result.score ?? 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(1e-3, high - low), byFile = new Map(results.map((result) => [result.file, result])), nodes = baseScene.nodes.map((base) => {
           const result = byFile.get(base.id), current = positions.get(base.id), positioned = current ? { layoutX: current.x, layoutY: current.y } : {};
           return result ? { ...base, ...positioned, matched: true, generation: 1, relevance: 0.08 + (Number(result.lensScore ?? result.score ?? 0) - low) / spread * 0.92 } : { ...base, ...positioned, matched: false, relevance: 0 };
         });
-        return { state, scopeSignature: baseScene.scopeSignature, center: { label: state.anchor.value, hasQuery: true, resultCount: results.length, transition: "provisional", guidedCategories: baseScene.center?.guidedCategories || [], appearance: state.frame?.appearance, mapMode: baseScene.center?.mapMode }, nodes, edges: baseScene.edges, roads: baseScene.roads, results, legend: this.legendFor(state), provisional: true };
+        return { state, scopeSignature: baseScene.scopeSignature, center: { label: state.anchor.value, hasQuery: true, resultCount: results.length, transition: "provisional", guidedCategories: baseScene.center?.guidedCategories || [], appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField: baseScene.center?.forceField || null, mapMode: baseScene.center?.mapMode }, nodes, edges: baseScene.edges, roads: baseScene.roads, results, legend: this.legendFor(state), provisional: true };
       }
       clear() {
         this.sceneCache.clear();
@@ -74919,6 +74995,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.queryPresence = 0;
     this.targetQueryPresence = 0;
     this.queryMarkerFocus = 0;
+    this.forceField = null;
+    this.forceBodies = [];
+    this.forcePairCursor = 0;
+    this.forcePairFirst = 0;
+    this.forcePairSecond = 1;
     this.gaussianLookup = Float32Array.from({ length: 1025 }, (_2, index3) => Math.exp(-index3 / 1024 * 9));
     this.roadEdges = [];
     this.roadIntroducedAt = /* @__PURE__ */ new Map();
@@ -75121,6 +75202,104 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.linkInfluenceButton?.setAttribute("aria-pressed", String(this.manualLinkInfluence && this.mapGroupingMode !== "links"));
     this.linkInfluenceButton?.setAttribute("title", this.mapGroupingMode === "links" ? "Links mode already uses manual links for placement" : this.manualLinkInfluence ? "Manual links gently influence placement" : "Manual links do not influence placement");
     if (animate && this.mapGroupingMode !== "links") this.startSimulation(0.72);
+  }
+  setForceRecipe(frame = {}) {
+    if (!this.forceField) return false;
+    this.forceField.weights = { ...frame.relationships || this.forceField.weights || {} };
+    this.forceField.dynamics = { ...frame.dynamics || this.forceField.dynamics || {} };
+    this.center = { ...this.center || {}, dynamics: this.forceField.dynamics, appearance: { ...frame.appearance || this.center?.appearance || {} } };
+    const colorBy = this.center.appearance?.colorBy || "semantic", uniform = this.center.appearance?.sizeBy === "uniform", weightedSignals = Object.entries(this.forceField.weights).filter(([, weight]) => Number(weight) > 1e-3), totalWeight = weightedSignals.reduce((sum, [, weight]) => sum + Number(weight), 0) || 1;
+    for (const node of this.nodes) {
+      node.topicHue = colorBy === "emotion" && Number.isFinite(node.emotionHue) ? node.emotionHue : colorBy === "category" && Number.isFinite(node.categoryHue) ? node.categoryHue : colorBy === "none" ? null : node.semanticHue ?? node.topicHue;
+      node.fileScale = uniform ? 0.35 : Number(node.sourceFileScale ?? node.fileScale ?? 0.35);
+      node.relationshipIntensity = weightedSignals.reduce((sum, [signal, weight]) => sum + Number(weight) * Number(signal === "semantic" ? node.uniqueness ?? node.relevance ?? 0.5 : node.signalIntensities?.[signal] ?? 0), 0) / totalWeight;
+      if (this.center.appearance?.terrain === "intensity") node.terrainValue = node.relationshipIntensity;
+    }
+    this.lastTerrainAt = 0;
+    this.lastCommunityAt = 0;
+    this.startSimulation(0.78);
+    return true;
+  }
+  prepareRelationshipForces() {
+    const field = this.center?.forceField;
+    if (!field?.ids?.length || !field?.pairCount || !field.components?.semantic) {
+      this.forceField = null;
+      this.forceBodies = [];
+      return;
+    }
+    const bodies = field.ids.map((id2) => this.byId.get(id2));
+    if (bodies.some((body) => !body)) {
+      this.forceField = null;
+      this.forceBodies = [];
+      return;
+    }
+    this.forceField = field;
+    this.forceBodies = bodies;
+    this.forcePairCursor = 0;
+    this.forcePairFirst = 0;
+    this.forcePairSecond = 1;
+  }
+  applyRelationshipForces(alpha2, querySettling = false) {
+    const field = this.forceField, bodies = this.forceBodies;
+    if (!field || bodies.length < 2 || this.mapGroupingMode === "links") return;
+    const weights = Object.entries(field.weights || {}).filter(([signal, weight]) => field.components[signal] && Number(weight) > 1e-3), total = weights.reduce((sum, [, weight]) => sum + Number(weight), 0) || 1, dynamics = field.dynamics || {}, contrast = Number(dynamics.contrast ?? 0.58), cohesion = Number(dynamics.cohesion ?? 0.62), spacing = Number(dynamics.spacing ?? 0.55), pairCount = Number(field.pairCount || 0), budget = weights.length ? Math.min(pairCount, Platform.isMobile ? 7e3 : 26e3) : 0, scale = 24e-5 / Math.sqrt(Math.max(1, bodies.length / 90));
+    let first = this.forcePairFirst, second = this.forcePairSecond, cursor = this.forcePairCursor;
+    for (let processed = 0; processed < budget; processed++) {
+      const a2 = bodies[first], b = bodies[second], active = !this.hasQuery || this.pendingQuery || a2.matched && b.matched;
+      if (active && a2 !== this.dragging && b !== this.dragging) {
+        let affinity = 0;
+        for (const [signal, weight] of weights) affinity += Number(field.components[signal][cursor] || 0) * Number(weight);
+        affinity = Math.max(0, Math.min(1, 0.5 + (affinity / total - 0.5) * (0.82 + contrast * 1.5)));
+        let dx = b.x - a2.x, dy = b.y - a2.y, distance = Math.max(0.014, Math.hypot(dx, dy));
+        dx /= distance;
+        dy /= distance;
+        let force = 0;
+        if (affinity > 0.63) {
+          const strength = ((affinity - 0.63) / 0.37) ** 1.65, desired = 0.032 + (1 - affinity) * (0.22 + spacing * 0.19);
+          force = Math.tanh((distance - desired) * 4.2) * scale * strength * (0.5 + cohesion);
+        } else if (affinity < 0.3) {
+          const reach = 0.095 + (1 - affinity) * (0.055 + spacing * 0.04);
+          if (distance < reach) force = -(reach - distance) / reach * scale * (0.3 - affinity) / 0.3 * (1.15 + contrast);
+        }
+        if (force) {
+          a2.vx += dx * force;
+          a2.vy += dy * force;
+          b.vx -= dx * force;
+          b.vy -= dy * force;
+        }
+      }
+      cursor++;
+      second++;
+      if (second >= bodies.length) {
+        first++;
+        second = first + 1;
+      }
+      if (first >= bodies.length - 1) {
+        first = 0;
+        second = 1;
+        cursor = 0;
+      }
+    }
+    this.forcePairFirst = first;
+    this.forcePairSecond = second;
+    this.forcePairCursor = cursor;
+    if (querySettling && field.relevance && this.queryPresence > 0.02) {
+      const query = this.queryNode, radialScale = 0.58 + spacing * 0.25;
+      for (let index3 = 0; index3 < bodies.length; index3++) {
+        const node = bodies[index3];
+        if (!node.matched || node === this.dragging) continue;
+        let dx = query.x - node.x, dy = query.y - node.y, distance = Math.max(0.018, Math.hypot(dx, dy));
+        dx /= distance;
+        dy /= distance;
+        const relevance = Math.max(0, Math.min(1, Number(field.relevance[index3] || 0))), desired = 0.065 + (1 - relevance) * radialScale, force = Math.tanh((distance - desired) * 3.8) * 21e-4 * (0.45 + cohesion) * Math.max(alpha2, 0.12);
+        node.vx += dx * force;
+        node.vy += dy * force;
+        if (query !== this.dragging) {
+          query.vx -= dx * force / Math.max(12, bodies.length * 0.3);
+          query.vy -= dy * force / Math.max(12, bodies.length * 0.3);
+        }
+      }
+    }
   }
   setIntelligenceStatus(value = "") {
     this.intelligenceStatus = value;
@@ -75439,7 +75618,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64), backgroundVisibility = 0.08 + fileScale * 0.12, promoted = Boolean(hasQuery && matched && old && !old.matched), captureX = promoted ? layoutX - Number(old.x || 0) : 0, captureY = promoted ? layoutY - Number(old.y || 0) : 0;
       return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : preserveBackground ? backgroundVisibility : 0 : targetVisibility, blur: old?.blur ?? 0, targetBlur: hasQuery && !matched && preserveBackground ? 1 : 0, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, capture: promoted ? 1 : Number(old?.capture || 0), layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: promoted ? Number(old.vx || 0) * 0.12 + captureX * 0.018 : old?.vx || 0, vy: promoted ? Number(old.vy || 0) * 0.12 + captureY * 0.018 : old?.vy || 0 };
     });
-    this.resolveLayoutOverlaps(hasQuery ? this.nodes.filter((node) => node.matched) : this.nodes, hasQuery);
+    if (!center?.forceField) this.resolveLayoutOverlaps(hasQuery ? this.nodes.filter((node) => node.matched) : this.nodes, hasQuery);
     const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
       const weight = Number(edge.affinity ?? edge.score ?? overallLow), overall = (weight - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0))), sourceCommunity = communityById.get(edge.source), targetCommunity = communityById.get(edge.target), crossCommunity = sourceCommunity !== void 0 && targetCommunity !== void 0 && sourceCommunity !== targetCommunity, baseStrength = edge.bridge ? 0.1 : overall * (0.62 + Math.max(0, residual) * 0.48), strength = crossCommunity ? baseStrength * 0.08 : baseStrength;
@@ -75449,6 +75628,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.pendingQuery = false;
     this.pendingQueryHasResults = false;
     this.byId = new Map(this.nodes.map((node) => [node.id, node]));
+    this.prepareRelationshipForces();
     this.prepareVisualHierarchy();
     const validRoadEndpoint = (id2) => this.byId.has(id2) || id2 === center?.id, nextRoads = roads.filter((road) => validRoadEndpoint(road.source) && validRoadEndpoint(road.target)), introduced = /* @__PURE__ */ new Map(), roadDegrees = /* @__PURE__ */ new Map();
     nextRoads.forEach((road) => {
@@ -75528,10 +75708,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       node.accent += (node.targetAccent - node.accent) * 0.09;
       node.capture = Number(node.capture || 0) * 0.93;
     }
-    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, linkMode = this.mapGroupingMode === "links", linkNodes = querySettling ? foreground : activeNodes, linkNodeIds = linkMode ? new Set(linkNodes.map((node) => node.id)) : null, tuning = this.tuning || MAP_TUNING_DEFAULTS, cohesion = Number(this.center?.dynamics?.cohesion ?? 0.62), anchorStrength = (vaultMode ? tuning.anchorStrength : 1) * (0.65 + cohesion * 0.7);
+    const query = this.queryNode, foreground = this.nodes.filter((node) => node.matched), preserveBackground = Boolean(this.options.preserveBackground), activeNodes = preserveBackground ? this.nodes : this.hasQuery && !this.pendingQuery ? foreground : this.nodes, vaultMode = !this.hasQuery && !this.pendingQuery, querySettling = this.hasQuery && !this.pendingQuery, linkMode = this.mapGroupingMode === "links", hasForceField = Boolean(this.forceField), linkNodes = querySettling ? foreground : activeNodes, linkNodeIds = linkMode ? new Set(linkNodes.map((node) => node.id)) : null, tuning = this.tuning || MAP_TUNING_DEFAULTS, cohesion = Number(this.center?.dynamics?.cohesion ?? 0.62), anchorStrength = (vaultMode ? tuning.anchorStrength : 1) * (0.65 + cohesion * 0.7);
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
-      const background = preserveBackground && this.hasQuery && !node.matched, captureBoost = node.matched ? Number(node.capture || 0) * 0.032 : 0, baseStrength = background ? 35e-4 * alpha2 : linkNodeIds?.has(node.id) ? 0 : 0.018 * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2) + captureBoost, strength = baseStrength * (node.guidedFrame ? 0.64 : 1);
+      const background = preserveBackground && this.hasQuery && !node.matched, captureBoost = node.matched ? Number(node.capture || 0) * 0.032 : 0, calculatedAnchor = hasForceField && !node.guidedFrame ? 7e-4 : 0.018, baseStrength = background ? 35e-4 * alpha2 : linkNodeIds?.has(node.id) ? 0 : calculatedAnchor * anchorStrength * (querySettling ? Math.max(alpha2, 0.28) : alpha2) + captureBoost, strength = baseStrength * (node.guidedFrame ? 0.64 : 1);
       node.vx += (node.layoutX - node.x) * strength;
       node.vy += (node.layoutY - node.y) * strength;
       if (!background && this.categoryAnchors?.length && node.guidedAnchorWeights) for (const category of this.categoryAnchors) {
@@ -75551,7 +75731,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.applyCollisionForces(collisionBodies, alpha2);
     if (preserveBackground && this.hasQuery && (this.backgroundCollisionFrame = (Number(this.backgroundCollisionFrame || 0) + 1) % 6) === 0) this.applyCollisionForces(this.nodes.filter((node) => !node.matched), alpha2 * 0.2);
     if (linkMode) this.applyLinkGraphForces(linkNodes, alpha2);
-    const relaxationNodes = linkMode ? [] : this.hasQuery ? foreground : Number(tuning.repulsion || 0) > 0 ? activeNodes : [];
+    else if (hasForceField) this.applyRelationshipForces(alpha2, querySettling);
+    const relaxationNodes = linkMode || hasForceField ? [] : this.hasQuery ? foreground : Number(tuning.repulsion || 0) > 0 ? activeNodes : [];
     for (let first = 0; first < relaxationNodes.length; first++) for (let second = first + 1; second < relaxationNodes.length; second++) {
       const a2 = relaxationNodes[first], b = relaxationNodes[second];
       let dx = b.x - a2.x, dy = b.y - a2.y;
@@ -75586,7 +75767,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         node.vy += forceY;
       }
     }
-    if (vaultMode && !linkMode && Number(tuning.neighborAttraction) > 0) for (const edge of this.activeEdges || []) {
+    if (vaultMode && !linkMode && !hasForceField && Number(tuning.neighborAttraction) > 0) for (const edge of this.activeEdges || []) {
       if (edge.bridge || edge.entityBridge || Number(edge.overall || 0) < 0.12) continue;
       const source = this.byId.get(edge.source), target = this.byId.get(edge.target);
       if (!source || !target) continue;
@@ -75694,6 +75875,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   idlePhysicsStep(now) {
     const queryActive = this.hasQuery && !this.pendingQuery, activeNodes = queryActive ? this.nodes.filter((node) => node.matched) : this.nodes, origin = this.queryPresence > 0.04 ? this.queryNode : { x: 0, y: 0 };
+    if (this.forceField && this.mapGroupingMode !== "links") this.applyRelationshipForces(0.1, queryActive);
     if (this.mapGroupingMode === "links" && !this.linkIdleAnchored) {
       for (const node of activeNodes) {
         node.layoutX = node.x;
@@ -75704,8 +75886,9 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
       const phase = stableMapAngle(node.id), speed = 12e-5 + phase / (Math.PI * 2) * 55e-6, orbit = 22e-4 + Math.max(0, Math.min(1, Number(node.fileScale || 0.35))) * 24e-4, angle = now * speed + phase, targetX2 = node.layoutX + Math.cos(angle) * orbit, targetY2 = node.layoutY + Math.sin(angle * 0.83 + phase) * orbit;
-      node.vx += (targetX2 - node.x) * 65e-4;
-      node.vy += (targetY2 - node.y) * 65e-4;
+      const anchor = this.forceField ? 7e-4 : 65e-4;
+      node.vx += (targetX2 - node.x) * anchor;
+      node.vy += (targetY2 - node.y) * anchor;
       node.vx *= 0.91;
       node.vy *= 0.91;
       node.x += node.vx;
@@ -77434,11 +77617,16 @@ var AtlasViewBuilderModal = class extends Modal2 {
     else this.renderAppearance();
   }
   changed(rerender = false) {
-    this.plugin.atlas.clear();
     if (rerender) this.renderEditor();
+    const weighted = Object.entries(this.draft.frame.relationships || {}).filter(([, weight]) => Number(weight) > 0), total = weighted.reduce((sum, [, weight]) => sum + Number(weight), 0), active = weighted.map(([id2, weight]) => `${TEXT_SIGNALS2[id2]?.label || id2} ${Math.round(Number(weight) / Math.max(1e-3, total) * 100)}%`);
+    this.formulaEl?.setText(active.length ? `Field = ${active.join(" + ")}` : "Choose at least one relationship.");
+    if (["relationships", "dynamics", "appearance"].includes(this.section) && this.previewMap?.setForceRecipe(this.draft.frame)) {
+      this.previewStatus?.setText(`${this.previewMap.nodes.length} notes \xB7 ${active.map((value) => value.replace(/ \d+%$/, "")).join(" + ")}`);
+      return;
+    }
     this.schedulePreview();
   }
-  schedulePreview(delay = 180) {
+  schedulePreview(delay = 90) {
     window.clearTimeout(this.previewTimer);
     this.previewStatus?.setText("Updating preview\u2026");
     this.previewTimer = window.setTimeout(() => this.updatePreview(), delay);
@@ -77458,7 +77646,7 @@ var AtlasViewBuilderModal = class extends Modal2 {
         const raw = await this.plugin.search.search(query, Math.min(100, scope.paths.length), 0.35, { semanticHighlights: false });
         results = groupSearchResults(raw.filter((result) => scope.paths.includes(result.file)), query, 80);
       }
-      const scene = await this.plugin.atlas.scene(state, results, { scope, fileScales: vaultFileScales(this.app) });
+      const scene = await this.plugin.atlas.scene(state, results, { scope, fileScales: vaultFileScales(this.app), preloadRelationships: true });
       if (version2 !== this.previewVersion) return;
       this.previewMap.setMapGroupingMode(scene.center.mapMode || atlasLens2(state.lens).mapMode);
       this.previewMap.setGraph(scene.center, scene.nodes, scene.edges, scene.roads);
@@ -77639,7 +77827,7 @@ var AtlasViewBuilderModal = class extends Modal2 {
       this.changed();
     }));
     const weighted = Object.entries(relationships).filter(([, weight]) => Number(weight) > 0), total = weighted.reduce((sum, [, weight]) => sum + Number(weight), 0), active = weighted.map(([id2, weight]) => `${TEXT_SIGNALS2[id2]?.label || id2} ${Math.round(Number(weight) / total * 100)}%`);
-    this.editorEl.createDiv({ cls: "gib-view-builder-formula", text: active.length ? `Distance = ${active.join(" + ")}` : "Choose at least one relationship." });
+    this.formulaEl = this.editorEl.createDiv({ cls: "gib-view-builder-formula", text: active.length ? `Field = ${active.join(" + ")}` : "Choose at least one relationship." });
   }
   renderDynamics() {
     var _a2;

@@ -10,11 +10,11 @@ The note-neighborhood pane offers the same lenses with the active note as its se
 
 When Arguments finds a confident alignment or tension, its result card shows the exact query-relevant passage pair used for that judgment and names the counterpart note. These are source excerpts, not generated explanations.
 
-The living map combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. These signals form one multi-relational distance model that is reduced into a shared layout. Hue represents semantic direction, while lightweight physics animates and gently relaxes the calculated geometry.
+The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. Every note remains a particle, and all note pairs participate across short rolling sweeps. Views change the mixture of measured relationships; they do not rerun a global projection or replace the vault with a fixed neighbor sample.
 
 Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the established flat topographic design. Devices without WebGL 2 automatically retain the Canvas renderer.
 
-The dedicated map view begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query enters the map while results load. Matching notes form a query-centered layout; nonmatches remain as subdued spatial context. A collapsible floating panel shows the matching source excerpts.
+The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Relevance controls each result's preferred radius, while residual note-to-note meaning lets conceptual directions emerge naturally. Nonmatches remain as subdued spatial context, and ranked excerpts appear in the native Atlas Navigator pane.
 
 Saved Atlas Views are built as a readable map formula:
 
@@ -33,7 +33,7 @@ The relationship field can use six measurements:
 - **Form** combines local language inference with document structure to distinguish journals, essays, conversations, reference notes, narratives, and plans.
 - **Links** makes authored wikilinks contribute directly to distance alongside any analytical measurements.
 
-The View builder includes local starting templates while keeping the five parts independently editable. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes. Hovering an analyzed map node shows its strongest quality and the source passage behind that judgment.
+The View builder includes local starting templates while keeping the five parts independently editable. Its preview uses the complete selected Territory. Relationship and Dynamics sliders remix cached measurements live; they do not rebuild the graph. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes. Hovering an analyzed map node shows its strongest quality and the source passage behind that judgment.
 
 ## Install with BRAT
 

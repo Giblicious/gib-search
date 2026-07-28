@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.43.0
+
+- Replaces repeated global Atlas projection with a live particle field driven directly by cached note-to-note qualities.
+- Evaluates every pair across short rolling sweeps so full-vault Views remain interactive without reducing the map to a permanent neighbor sample.
+- Makes query relevance a center spring while query-conditioned residual meaning organizes notes around it without fixed angular categories.
+- Lets Relationship field, Dynamics, and Cartography controls update the full live preview immediately instead of rebuilding the territory on every adjustment.
+- Warms the nonsemantic profiles used by saved Views after indexing and updates their content-fingerprinted cache only for notes whose content changes.
+- Removes the expensive multi-pass overlap solve from force-field scenes while retaining collision safety and a dedicated Links simulation.
+
 ## 0.42.0
 
 - Rebuilds the Atlas View editor around Territory, Reference frame, Relationship field, Dynamics, and Cartography, with a live preview throughout.
