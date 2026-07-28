@@ -17,19 +17,18 @@ const MODEL_PROFILES = {
 const MODEL_TWEAK_DEFAULTS = {
   bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 },
 };
-const MAP_TUNING_DEFAULTS = { contentWeight: .72, residualWeight: .18, semanticWeight: .06, entityWeight: .04, commonnessSuppression: .75, passageCoverage: .72, passageDiversity: .28, distanceContrast: 1, communitySensitivity: 1, communityMembership: .42, communityMinSize: 3, communityLabelSensitivity: .58, boundaryPadding: 1, boundaryRepulsionEnabled: false, boundaryRepulsion: .65, neighborAttraction: 0, collisionSpacing: 1, repulsion: 0, anchorStrength: 1, showTopography: true, terrainSpread: 1, terrainContrast: 1 };
+const MAP_TUNING_DEFAULTS = { commonnessSuppression: .75, passageCoverage: .72, passageDiversity: .28, communitySensitivity: 1, communityMembership: .42, communityMinSize: 4, communityLabelSensitivity: .58, neighborhoodStability: .68, neighborhoodSeparation: .06, neighborhoodCoverage: .58, neighborhoodSpread: 1, boundaryPadding: 1, boundaryRepulsionEnabled: false, boundaryRepulsion: .65, neighborAttraction: 0, collisionSpacing: 1, repulsion: 0, anchorStrength: 1, showTopography: true, terrainSpread: 1, terrainContrast: 1 };
 const MAP_TUNING_CONTROLS = [
-  { section: 'Meaning', key: 'contentWeight', label: 'Passage content', min: 0, max: 1, step: .01 },
-  { key: 'residualWeight', label: 'Vault-relative', min: 0, max: 1, step: .01 },
-  { key: 'semanticWeight', label: 'Whole-note', min: 0, max: 1, step: .01 },
-  { key: 'entityWeight', label: 'Named entities', min: 0, max: .5, step: .01 },
-  { key: 'commonnessSuppression', label: 'Common-pattern suppression', min: 0, max: 1, step: .01 },
+  { section: 'Meaning', key: 'commonnessSuppression', label: 'Common-pattern suppression', min: 0, max: 1, step: .01 },
   { key: 'passageCoverage', label: 'Topic coverage', min: 0, max: 1, step: .01 },
   { key: 'passageDiversity', label: 'Passage diversity', min: 0, max: 1, step: .01 },
-  { key: 'distanceContrast', label: 'Distance contrast', min: .5, max: 2, step: .05 },
-  { section: 'Communities', key: 'communitySensitivity', label: 'Community sensitivity', min: .5, max: 2, step: .05 },
+  { section: 'Neighborhoods', key: 'communitySensitivity', label: 'Broad sensitivity', min: .5, max: 2, step: .05 },
+  { key: 'neighborhoodStability', label: 'Split stability', min: .5, max: .9, step: .02 },
+  { key: 'neighborhoodSeparation', label: 'Split separation', min: 0, max: .2, step: .01 },
+  { key: 'neighborhoodCoverage', label: 'Required coverage', min: .4, max: .85, step: .01 },
+  { key: 'neighborhoodSpread', label: 'Local spread', min: .6, max: 1.6, step: .05 },
   { key: 'communityMembership', label: 'Membership threshold', min: .2, max: .8, step: .02 },
-  { key: 'communityMinSize', label: 'Minimum community size', min: 2, max: 10, step: 1 },
+  { key: 'communityMinSize', label: 'Minimum neighborhood size', min: 3, max: 12, step: 1 },
   { key: 'communityLabelSensitivity', label: 'Label confidence', min: .35, max: .85, step: .02 },
   { key: 'boundaryPadding', label: 'Boundary padding', min: .5, max: 2, step: .05 },
   { key: 'boundaryRepulsionEnabled', label: 'Repel outsiders', type: 'toggle' },
@@ -50,7 +49,7 @@ const SEARCH_LENSES = {
 function validSearchLens(value) { return value === 'concepts' ? 'relevance' : SEARCH_LENSES[value] ? value : 'relevance'; }
 function validMapGrouping(value) { return ['similarity', 'topics', 'links'].includes(value) ? value : 'similarity'; }
 function mapGroupingLabel(value) { return value === 'topics' ? 'Topics' : value === 'links' ? 'Links' : 'Similarity'; }
-function mapTuningNeedsLayout(key) { return ['contentWeight', 'residualWeight', 'semanticWeight', 'entityWeight', 'commonnessSuppression', 'passageCoverage', 'passageDiversity', 'distanceContrast', 'communitySensitivity', 'communityMinSize', 'communityLabelSensitivity', 'reset'].includes(key); }
+function mapTuningNeedsLayout(key) { return ['commonnessSuppression', 'passageCoverage', 'passageDiversity', 'communitySensitivity', 'neighborhoodStability', 'neighborhoodSeparation', 'neighborhoodCoverage', 'neighborhoodSpread', 'communityMinSize', 'communityLabelSensitivity', 'reset'].includes(key); }
 const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: 'relevance', mapGroupingMode: 'similarity', magicGraphEnabled: true, graphSemanticColors: true, generatedTopicLabels: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000, showWikilinks: true };
 function activeIndexDir(plugin) {
   return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
