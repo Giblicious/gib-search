@@ -70918,6 +70918,26 @@ function contentProfileSimilarity(first, second, coverageWeight = 0.72) {
   const selected = strongest.slice(0, 3), peak = selected.reduce((sum, item) => sum + item.score * item.weight, 0) / Math.max(1e-3, selected.reduce((sum, item) => sum + item.weight, 0)), blend = Math.max(0, Math.min(1, Number(coverageWeight)));
   return Math.max(-1, Math.min(1, coverage * blend + peak * (1 - blend)));
 }
+function locallyDistinctAffinityMatrix(scores) {
+  const count = scores.length, directed = Array.from({ length: count }, () => new Float64Array(count));
+  if (count < 2) return directed;
+  const neighborhood = Math.min(count - 1, Math.max(8, Math.round(Math.sqrt(count) * 1.5)));
+  for (let first = 0; first < count; first++) {
+    const ranked = [...scores[first]].filter((_2, second) => second !== first).sort((a2, b) => b - a2), local = ranked.slice(0, neighborhood), baseline = Number(local[Math.min(local.length - 1, Math.floor(local.length * 0.58))] || 0), peak = local.slice(0, Math.min(3, local.length)).reduce((sum, value) => sum + value, 0) / Math.max(1, Math.min(3, local.length)), scale = Math.max(0.025, peak - baseline);
+    for (let second = 0; second < count; second++) if (second !== first) {
+      const normalized = Math.max(0, Math.min(1, (scores[first][second] - baseline) / scale)), shaped = normalized * normalized * (3 - 2 * normalized);
+      directed[first][second] = shaped;
+    }
+  }
+  return Array.from({ length: count }, (_2, first) => Float64Array.from({ length: count }, (_3, second) => first === second ? 1 : Math.max(1e-3, Math.min(1, (scores[first][second] + 1) / 2 * 0.2 + Math.sqrt(directed[first][second] * directed[second][first]) * 0.8))));
+}
+function specificTermSimilarity(first, second) {
+  if (!first?.weights || !second?.weights) return 0;
+  const [small, large] = first.weights.size <= second.weights.size ? [first, second] : [second, first];
+  let evidence = 0;
+  for (const [term, weight] of small.weights) if (large.weights.has(term)) evidence += Math.min(weight, large.weights.get(term));
+  return Math.max(0, Math.min(1, 1 - Math.exp(-evidence / 11)));
+}
 function stripFrontmatter(content) {
   if (!content.startsWith("---")) return content;
   const end2 = content.indexOf("\n---", 3);
@@ -71137,6 +71157,7 @@ var init_mobile_runtime = __esm({
         this.starfieldCache = null;
         this.topicBasisCache = null;
         this.contentProfileCache = null;
+        this.termProfileCache = null;
         this.relationCache = /* @__PURE__ */ new Map();
         this.relationPipe = null;
         this.relationModelPromise = null;
@@ -71593,6 +71614,7 @@ var init_mobile_runtime = __esm({
         this.starfieldCache = null;
         this.topicBasisCache = null;
         this.contentProfileCache = null;
+        this.termProfileCache = null;
         await this.databasePut({ meta: this.meta, vectors: packed.buffer, highlightVectors: packedHighlights.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
         this.refreshLexical();
         this.refreshHighlightPhraseCache();
@@ -71823,6 +71845,7 @@ var init_mobile_runtime = __esm({
           this.starfieldCache = null;
           this.topicBasisCache = null;
           this.contentProfileCache = null;
+          this.termProfileCache = null;
           this.refreshLexical();
           this.enabled = true;
           this.cancelRequested = false;
@@ -72042,6 +72065,37 @@ var init_mobile_runtime = __esm({
         }
         return groups;
       }
+      specificTermProfiles(files = null) {
+        const signature = `${this.meta.length}:${this.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}`;
+        if (!this.termProfileCache || this.termProfileCache.signature !== signature) {
+          const counts = /* @__PURE__ */ new Map(), add = (file, source, multiplier = 1) => {
+            const values = counts.get(file) || /* @__PURE__ */ new Map();
+            for (const term of tokens(source)) {
+              if (STOP_WORDS.has(term) || GENERIC_CONCEPTS.has(term) || STRUCTURAL_TOPIC_LABELS.has(term) || VAGUE_LABEL_WORDS.has(term) || /^\d+$/.test(term)) continue;
+              values.set(term, (values.get(term) || 0) + multiplier);
+            }
+            counts.set(file, values);
+          };
+          for (const item of this.meta) {
+            add(item.file, item.text, 1);
+            add(item.file, item.heading, 2);
+          }
+          for (const file of counts.keys()) add(file, basename(file), 3);
+          const frequency = /* @__PURE__ */ new Map();
+          for (const values of counts.values()) for (const term of values.keys()) frequency.set(term, (frequency.get(term) || 0) + 1);
+          const total = Math.max(1, counts.size), profiles = /* @__PURE__ */ new Map();
+          for (const [file, values] of counts) {
+            const ranked = [...values].map(([term, count]) => {
+              const documentFrequency = frequency.get(term) || 1, idf = Math.log(1 + total / documentFrequency), weight = (1 + Math.log(Math.max(1, count))) * idf;
+              return { term, weight, documentFrequency };
+            }).filter((item) => item.documentFrequency / total <= 0.42).sort((a2, b) => b.weight - a2.weight).slice(0, 96), weights = new Map(ranked.map((item) => [item.term, item.weight]));
+            profiles.set(file, { weights });
+          }
+          this.termProfileCache = { signature, profiles };
+        }
+        const requested = files ? new Set(files) : null;
+        return requested ? new Map([...this.termProfileCache.profiles].filter(([file]) => requested.has(file))) : this.termProfileCache.profiles;
+      }
       structuralSpeakerLabels(files) {
         const requested = new Set(files || []), occurrences = /* @__PURE__ */ new Map(), record = (name, file) => {
           const key = cleanText(name).toLowerCase();
@@ -72241,12 +72295,21 @@ ${item.text || ""}`;
             secondWeight += weight * weight;
           }
           return shared / Math.max(1e-3, Math.sqrt(firstWeight * secondWeight));
-        };
+        }, tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {});
         const semanticScores = entries.map((entry) => dot(center, entry.vector)), low = Math.min(...semanticScores), high = Math.max(...semanticScores), spread = Math.max(1e-3, high - low), relevance = new Map(entries.map((entry, index3) => {
           const supplied = Number(values.find((node) => node.id === entry.id)?.relevance);
           return [entry.id, conditioned && !vaultCentered && Number.isFinite(supplied) ? Math.max(0, Math.min(1, supplied)) : (semanticScores[index3] - low) / spread];
-        })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length));
-        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", tuning = Object.assign({ contentWeight: 0.72, semanticWeight: 0.06, residualWeight: 0.18, entityWeight: 0.04, passageCoverage: 0.72, distanceContrast: 1 }, this.plugin.settings?.mapTuning || {}), lensWeights = { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, link: 0, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, link: 0, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, link: 0, relation: 0 } }[lens], topicalWeights = lens === "arguments" ? { content: 0, semantic: 0.1, residual: 0.14, entity: 0.04, angular: 0.04, community: 0.48, link: 0, relation: 0.2 } : { content: 0, semantic: 0.12, residual: 0.18, entity: 0.05, angular: 0.05, community: 0.6, link: 0, relation: 0 }, weights = vaultCentered ? topicMode ? { content: 0.27, semantic: 0.03, residual: 0.06, entity: 0.04, angular: 0, community: 0.6, link: 0, relation: 0 } : { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, link: 0, relation: 0 } : topicMode ? topicalWeights : lensWeights;
+        })), ids = conditioned ? ["__center__", ...entries.map((entry) => entry.id)] : entries.map((entry) => entry.id), offset2 = conditioned ? 1 : 0, distances = Array.from({ length: ids.length }, () => new Float64Array(ids.length)), termProfiles = vaultCentered ? this.specificTermProfiles(files) : null, rawContentScores = vaultCentered ? Array.from({ length: entries.length }, (_2, index3) => Float64Array.from({ length: entries.length }, (_3, other) => index3 === other ? 1 : 0)) : null;
+        if (vaultCentered) for (let first = 0; first < entries.length; first++) {
+          for (let second = first + 1; second < entries.length; second++) {
+            const semanticContent = contentProfileSimilarity(contentProfiles.get(entries[first].id), contentProfiles.get(entries[second].id), tuning.passageCoverage), lexicalEvidence = specificTermSimilarity(termProfiles.get(entries[first].id), termProfiles.get(entries[second].id)), score = Math.max(-1, Math.min(1, semanticContent + lexicalEvidence * 0.1));
+            rawContentScores[first][second] = score;
+            rawContentScores[second][first] = score;
+          }
+          if (first % 6 === 5) await yieldToUi();
+        }
+        const localContentAffinities = vaultCentered ? locallyDistinctAffinityMatrix(rawContentScores) : null;
+        const lens = options.magic === false ? "relevance" : ["relevance", "arguments", "context"].includes(options.lens) ? options.lens : "relevance", lensWeights = { relevance: { content: 0, semantic: 0.26, residual: 0.34, entity: 0.08, angular: 0.12, community: 0.2, link: 0, relation: 0 }, arguments: { content: 0, semantic: 0.22, residual: 0.24, entity: 0.06, angular: 0.04, community: 0.08, link: 0, relation: 0.36 }, context: { content: 0, semantic: 0.4, residual: 0.18, entity: 0.12, angular: 0.06, community: 0.24, link: 0, relation: 0 } }[lens], topicalWeights = lens === "arguments" ? { content: 0, semantic: 0.1, residual: 0.14, entity: 0.04, angular: 0.04, community: 0.48, link: 0, relation: 0.2 } : { content: 0, semantic: 0.12, residual: 0.18, entity: 0.05, angular: 0.05, community: 0.6, link: 0, relation: 0 }, weights = vaultCentered ? topicMode ? { content: 0.27, semantic: 0.03, residual: 0.06, entity: 0.04, angular: 0, community: 0.6, link: 0, relation: 0 } : { content: Math.max(0, Number(tuning.contentWeight)), semantic: Math.max(0, Number(tuning.semanticWeight)), residual: Math.max(0, Number(tuning.residualWeight)), entity: Math.max(0, Number(tuning.entityWeight)), angular: 0, community: 0, link: 0, relation: 0 } : topicMode ? topicalWeights : lensWeights;
         if (conditioned) for (let index3 = 1; index3 < ids.length; index3++) {
           const value = 0.06 + (1 - relevance.get(ids[index3])) * (lens === "relevance" ? 0.88 : 0.76);
           distances[0][index3] = value;
@@ -72254,7 +72317,7 @@ ${item.text || ""}`;
         }
         for (let first = 0; first < entries.length; first++) {
           for (let second = first + 1; second < entries.length; second++) {
-            const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), baseContent = vaultCentered ? Math.sqrt(Math.max(0, (1 - contentProfileSimilarity(contentProfiles.get(a2.id), contentProfiles.get(b.id), tuning.passageCoverage)) / 2)) : semantic, content = vaultCentered ? Math.pow(baseContent, Math.max(0.5, Math.min(2, Number(tuning.distanceContrast)))) : baseContent, residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? layoutTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.content * content ** 2 + weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
+            const a2 = entries[first], b = entries[second], semantic = Math.sqrt(Math.max(0, (1 - dot(a2.vector, b.vector)) / 2)), baseContent = vaultCentered ? Math.sqrt(Math.max(0, 1 - localContentAffinities[first][second])) : semantic, content = vaultCentered ? Math.pow(baseContent, Math.max(0.5, Math.min(2, Number(tuning.distanceContrast)))) : baseContent, residual = Math.sqrt(Math.max(0, (1 - dot(residuals.get(a2.id), residuals.get(b.id))) / 2)), entity2 = Math.sqrt(Math.max(0, 1 - entitySimilarity(a2.id, b.id))), angleSource = conditioned ? layoutTopics : topics, firstTopic = angleSource.get(a2.id), secondTopic = angleSource.get(b.id), angular = Math.abs(Math.atan2(Math.sin(firstTopic.topicAngle - secondTopic.topicAngle), Math.cos(firstTopic.topicAngle - secondTopic.topicAngle))) / Math.PI, firstNode = nodeById.get(a2.id), secondNode = nodeById.get(b.id), firstCommunity = firstNode?.facet ?? firstNode?.community, secondCommunity = secondNode?.facet ?? secondNode?.community, firstAffinities = firstNode?.conceptAffinities, secondAffinities = secondNode?.conceptAffinities, overlap = firstAffinities && secondAffinities ? Object.keys(firstAffinities).reduce((sum, key) => sum + Math.sqrt(Number(firstAffinities[key] || 0) * Number(secondAffinities[key] || 0)), 0) : null, community = overlap === null ? firstCommunity === void 0 || secondCommunity === void 0 || firstCommunity === secondCommunity ? 0 : 1 : Math.max(0, 1 - overlap), relation = relationships.get([a2.id, b.id].sort().join("\0")), relationDistance = relation?.type === "support" ? 0.08 + (1 - relation.confidence) * 0.2 : relation?.type === "contrast" ? 0.78 + relation.confidence * 0.18 : 0.46, weighted = weights.content * content ** 2 + weights.semantic * semantic ** 2 + weights.residual * residual ** 2 + weights.entity * entity2 ** 2 + weights.angular * angular ** 2 + weights.community * community ** 2 + weights.relation * (relation ? relationDistance ** 2 : 0.46 ** 2), weight = Object.values(weights).reduce((sum, value) => sum + value, 0), distance = Math.sqrt(weighted / Math.max(1e-3, weight)), row = first + offset2, column = second + offset2;
             distances[row][column] = distance;
             distances[column][row] = distance;
           }
@@ -72445,7 +72508,7 @@ ${item.text || ""}`;
         const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))], trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18;
         const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28, communitySensitivity: 1, communityMinSize: 3, communityLabelSensitivity: 0.58 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:${vaultMode ? "chunks" : "files"}:${Boolean(this.plugin.settings?.generatedTopicLabels)}:${tuning.passageCoverage}:${tuning.commonnessSuppression}:${tuning.passageDiversity}:${tuning.communitySensitivity}:${tuning.communityMinSize}:${tuning.communityLabelSensitivity}:${requested.join("\0")}`;
         if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
-          const vectors = this.fileVectors(requested), profiles = vaultMode ? this.vaultContentProfiles(requested) : null, entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
+          const vectors = this.fileVectors(requested), profiles = vaultMode ? this.vaultContentProfiles(requested) : null, termProfiles = vaultMode ? this.specificTermProfiles(requested) : null, entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
           for (const entities of entitySets2.values()) for (const entity2 of entities) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
           const entityAffinity = (first, second) => {
             const a2 = entitySets2.get(first) || /* @__PURE__ */ new Set(), b = entitySets2.get(second) || /* @__PURE__ */ new Set();
@@ -72461,16 +72524,21 @@ ${item.text || ""}`;
             }
             return shared / Math.max(1e-3, Math.sqrt(aWeight * bWeight));
           };
-          const neighbors = [];
+          const rawScores = Array.from({ length: entries2.length }, (_2, index3) => Float64Array.from({ length: entries2.length }, (_3, other) => index3 === other ? 1 : 0));
           for (let first = 0; first < entries2.length; first++) {
-            const entry = entries2[first], nearby = entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: vaultMode ? contentProfileSimilarity(profiles.get(entry.id), profiles.get(other.id), tuning.passageCoverage) : dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8);
-            neighbors.push(nearby);
+            for (let second = first + 1; second < entries2.length; second++) {
+              const semanticScore = vaultMode ? contentProfileSimilarity(profiles.get(entries2[first].id), profiles.get(entries2[second].id), tuning.passageCoverage) : dot(entries2[first].vector, entries2[second].vector), lexicalEvidence = vaultMode ? specificTermSimilarity(termProfiles.get(entries2[first].id), termProfiles.get(entries2[second].id)) : 0, score = Math.max(-1, Math.min(1, semanticScore + lexicalEvidence * 0.1));
+              rawScores[first][second] = score;
+              rawScores[second][first] = score;
+            }
             if (first % 6 === 5) await yieldToUi();
           }
-          const directed = neighbors.map((list4) => {
-            const floor = Number(list4.at(-1)?.score || 0), ceiling = Number(list4[0]?.score || 1), spread = Math.max(0.02, ceiling - floor);
-            return new Map(list4.map((item) => [item.index, { ...item, affinity: Math.max(1e-3, (item.score - floor) / spread) * 0.82 + item.entityScore * 0.18 }]));
-          }), edges2 = [], seen2 = /* @__PURE__ */ new Set(), incident = /* @__PURE__ */ new Set();
+          const distinctAffinities = locallyDistinctAffinityMatrix(rawScores), neighbors = [];
+          for (let first = 0; first < entries2.length; first++) {
+            const entry = entries2[first], nearby = entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: rawScores[first][second], distinctiveness: distinctAffinities[first][second], entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.distinctiveness + b.entityScore * 0.08 - a2.distinctiveness - a2.entityScore * 0.08).slice(0, 8);
+            neighbors.push(nearby);
+          }
+          const directed = neighbors.map((list4) => new Map(list4.map((item) => [item.index, { ...item, affinity: item.distinctiveness * 0.82 + item.entityScore * 0.18 }]))), edges2 = [], seen2 = /* @__PURE__ */ new Set(), incident = /* @__PURE__ */ new Set();
           const rawUniqueness = entries2.map((entry, index3) => ({ id: entry.id, value: 1 - neighbors[index3].slice(0, 5).reduce((sum, item) => sum + item.score, 0) / Math.max(1, Math.min(5, neighbors[index3].length)) })).sort((a2, b) => a2.value - b.value || a2.id.localeCompare(b.id)), uniqueness2 = new Map(rawUniqueness.map((item, index3) => [item.id, rawUniqueness.length > 1 ? index3 / (rawUniqueness.length - 1) : 0.5]));
           for (let first = 0; first < entries2.length; first++) for (const [second, relation] of directed[first]) {
             if (second <= first) continue;
