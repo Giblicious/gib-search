@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.40.0
+
+- Replaces the experimental Atlas View settings with a dedicated three-stage builder and live map preview.
+- Turns categorical Views into calibrated multi-anchor semantic fields, allowing notes to match several ideas and settle naturally between them.
+- Adds semantic, radial, and directly draggable manual arrangements for category gravity points.
+- Adds folder, tag, property, lens, and anchor scope controls alongside category descriptions, keywords, example notes, and individual gravity strength.
+- Adds controls for category color, file-size or uniform dots, density terrain, category regions, contrast, cohesion, and unclaimed notes.
+- Adds direct View editing from the Atlas toolbar and a compact saved-View manager in settings.
+
 ## 0.39.0
 
 - Adds saved Atlas Views with reusable folder, exclusion, tag, lens, and anchor settings.
