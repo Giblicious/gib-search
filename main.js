@@ -74417,6 +74417,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.userZoom = 1;
     this.panX = 0;
     this.panY = 0;
+    this.viewportInsets = { left: 0, right: 0, top: 0, bottom: 0 };
+    this.targetViewportInsets = { ...this.viewportInsets };
     this.pointers = /* @__PURE__ */ new Map();
     this.pendingQuery = false;
     this.ambientStartedAt = performance.now();
@@ -74827,10 +74829,20 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     control("plus", "Zoom in", () => this.zoomBy(1.25));
     this.canvas.setAttribute("title", "Drag empty space to pan \xB7 scroll to zoom \xB7 double-click empty space to fit");
   }
+  setViewportInsets(values = {}) {
+    for (const key of ["left", "right", "top", "bottom"]) this.targetViewportInsets[key] = Math.max(0, Number(values[key] || 0));
+    this.lastTerrainAt = 0;
+    this.lastCommunityAt = 0;
+    this.startSimulation(0.16);
+  }
+  viewportFrame(width, height) {
+    const left = Math.min(width * 0.46, this.viewportInsets.left), right = Math.min(width * 0.46, this.viewportInsets.right), top = Math.min(height * 0.4, this.viewportInsets.top), bottom = Math.min(height * 0.4, this.viewportInsets.bottom), availableWidth = Math.max(120, width - left - right), availableHeight = Math.max(120, height - top - bottom);
+    return { left, right, top, bottom, width: availableWidth, height: availableHeight, centerX: left + availableWidth / 2, centerY: top + availableHeight / 2 };
+  }
   setUserZoom(value, x = null, y = null) {
-    const rect = this.canvas.getBoundingClientRect(), previous = this.userZoom, next = Math.max(0.45, Math.min(4.5, Number(value) || 1));
+    const rect = this.canvas.getBoundingClientRect(), frame = this.viewportFrame(rect.width, rect.height), previous = this.userZoom, next = Math.max(0.45, Math.min(4.5, Number(value) || 1));
     if (!rect.width || !rect.height || Math.abs(next - previous) < 1e-4) return;
-    const relativeX = (x ?? rect.width / 2) - rect.width / 2, relativeY = (y ?? rect.height / 2) - rect.height / 2, factor = next / previous;
+    const relativeX = (x ?? frame.centerX) - frame.centerX, relativeY = (y ?? frame.centerY) - frame.centerY, factor = next / previous;
     this.panX = relativeX - (relativeX - this.panX) * factor;
     this.panY = relativeY - (relativeY - this.panY) * factor;
     this.userZoom = next;
@@ -75167,11 +75179,24 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const tick = (now) => {
       this.simulationFrame = null;
       if (!this.canvas.isConnected) return;
+      let framing = false;
+      for (const key of ["left", "right", "top", "bottom"]) {
+        const delta = this.targetViewportInsets[key] - this.viewportInsets[key];
+        if (Math.abs(delta) > 0.25) {
+          this.viewportInsets[key] += delta * 0.14;
+          framing = true;
+        } else this.viewportInsets[key] = this.targetViewportInsets[key];
+      }
+      if (framing) {
+        this.lastTerrainAt = 0;
+        this.lastCommunityAt = 0;
+      }
       const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches, activePhysics = this.alpha > 0.012 || this.dragging || this.pendingQuery;
       if (!reducedMotion) {
         if (activePhysics) this.physicsStep(Math.max(this.alpha, 0.025));
         else this.idlePhysicsStep(now);
       } else {
+        this.viewportInsets = { ...this.targetViewportInsets };
         this.queryPresence = this.targetQueryPresence;
         this.cameraZoom = this.hasQuery ? 1.35 : 1;
         this.queryNode.x = this.queryNode.layoutX;
@@ -75203,8 +75228,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     return { x: originX + dx * cosine - dy * sine, y: originY + dx * sine + dy * cosine };
   }
   baseCoordinates(node, width, height) {
-    const point = node.isQuery ? { x: Number(node.x), y: Number(node.y) } : this.ambientPosition(node.x, node.y, false, node.id), scale = Math.max(20, Math.min(width, height) / 2 - 68) * this.cameraZoom * this.userZoom;
-    return [width / 2 + (point.x - this.cameraX) * scale + this.panX, height / 2 + (point.y - this.cameraY) * scale + this.panY];
+    const point = node.isQuery ? { x: Number(node.x), y: Number(node.y) } : this.ambientPosition(node.x, node.y, false, node.id), frame = this.viewportFrame(width, height), scale = Math.max(20, Math.min(frame.width, frame.height) / 2 - 68) * this.cameraZoom * this.userZoom;
+    return [frame.centerX + (point.x - this.cameraX) * scale + this.panX, frame.centerY + (point.y - this.cameraY) * scale + this.panY];
   }
   coordinates(node, width, height) {
     return this.baseCoordinates(node, width, height);
@@ -75718,10 +75743,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     } else this.panning = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
   }
   pointerMove(event) {
-    const rect = this.canvas.getBoundingClientRect();
+    const rect = this.canvas.getBoundingClientRect(), frame = this.viewportFrame(rect.width, rect.height);
     if (this.pointers.has(event.pointerId)) this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (this.pinch && this.pointers.size > 1) {
-      const points = [...this.pointers.values()].slice(0, 2), distance = Math.max(1, Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y)), centerX = (points[0].x + points[1].x) / 2, centerY = (points[0].y + points[1].y) / 2, next = Math.max(0.45, Math.min(4.5, this.pinch.zoom * distance / this.pinch.distance)), factor = next / this.pinch.zoom, startX = this.pinch.centerX - rect.left - rect.width / 2, startY = this.pinch.centerY - rect.top - rect.height / 2, currentX = centerX - rect.left - rect.width / 2, currentY = centerY - rect.top - rect.height / 2;
+      const points = [...this.pointers.values()].slice(0, 2), distance = Math.max(1, Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y)), centerX = (points[0].x + points[1].x) / 2, centerY = (points[0].y + points[1].y) / 2, next = Math.max(0.45, Math.min(4.5, this.pinch.zoom * distance / this.pinch.distance)), factor = next / this.pinch.zoom, startX = this.pinch.centerX - rect.left - frame.centerX, startY = this.pinch.centerY - rect.top - frame.centerY, currentX = centerX - rect.left - frame.centerX, currentY = centerY - rect.top - frame.centerY;
       this.userZoom = next;
       this.panX = currentX - (startX - this.pinch.panX) * factor;
       this.panY = currentY - (startY - this.pinch.panY) * factor;
@@ -75743,7 +75768,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     if (this.dragging && this.draggingPointer === event.pointerId) {
       if (this.nodeDragOrigin && Math.hypot(event.clientX - this.nodeDragOrigin.x, event.clientY - this.nodeDragOrigin.y) > 3) this.suppressClick = true;
-      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom * this.userZoom, viewX = (event.clientX - rect.left - rect.width / 2 - this.panX) / scale + this.cameraX, viewY = (event.clientY - rect.top - rect.height / 2 - this.panY) / scale + this.cameraY, point = this.dragging.isQuery ? { x: viewX, y: viewY } : this.ambientPosition(viewX, viewY, true, this.dragging.id);
+      const scale = Math.max(20, Math.min(frame.width, frame.height) / 2 - 68) * this.cameraZoom * this.userZoom, viewX = (event.clientX - rect.left - frame.centerX - this.panX) / scale + this.cameraX, viewY = (event.clientY - rect.top - frame.centerY - this.panY) / scale + this.cameraY, point = this.dragging.isQuery ? { x: viewX, y: viewY } : this.ambientPosition(viewX, viewY, true, this.dragging.id);
       this.dragging.x = point.x;
       this.dragging.y = point.y;
       this.dragging.vx = this.dragging.vy = 0;
@@ -76422,6 +76447,7 @@ var GraphView = class extends ItemView {
     this.loadVersion = 0;
     this.previewVersion = 0;
     this.previewFilePath = null;
+    this.resultsVisible = false;
     this.results = [];
     this.baseNodes = [];
     this.baseEdges = [];
@@ -76474,13 +76500,13 @@ var GraphView = class extends ItemView {
         this.hoverResult(file);
         this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), hover: file });
       },
-      onSelect: (file) => {
-        if (file) this.showPreview(file);
-        else this.closePreview();
-        this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), selection: file, hover: null });
-      },
+      onSelect: (file) => this.selectResult(file, true),
       onOpen: (file) => this.openFile(file)
     });
+    this.panelResizeObserver = new ResizeObserver(() => this.updateMapInsets());
+    this.panelResizeObserver.observe(this.contentEl);
+    this.panelResizeObserver.observe(this.resultsPanel);
+    this.panelResizeObserver.observe(this.previewPanel);
     this.input.addEventListener("input", () => this.handleQuery(this.input.value));
     this.input.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
@@ -76546,14 +76572,14 @@ var GraphView = class extends ItemView {
     this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), selection: null, hover: null });
     if (query.length < 3) {
       this.results = [];
-      this.resultsPanel.hide();
+      this.setResultsVisible(false);
       this.closePreview();
       if (this.baseScene) this.map.setGraph(this.baseScene.center, this.baseScene.nodes, this.baseScene.edges, this.baseScene.roads);
       else this.loadVault();
       return;
     }
     this.map.beginQuery(query, true);
-    this.resultsPanel.show();
+    this.setResultsVisible(true);
     if (!this.results.length) {
       this.resultList.empty();
       this.resultList.createDiv({ cls: "gib-graph-results-empty", text: "Searching\u2026" });
@@ -76595,11 +76621,22 @@ var GraphView = class extends ItemView {
       return;
     }
     for (const result of this.results) {
-      const item = this.resultList.createDiv({ cls: "gib-graph-result", attr: { tabindex: "0" } });
+      const item = this.resultList.createDiv({ cls: "gib-graph-result", attr: { tabindex: "0", "aria-label": `${result.file}. Select to preview; press Enter to open.` } });
       item.dataset.gibFile = result.file;
+      item.toggleClass("is-selected", result.file === this.previewFilePath);
       item.addEventListener("pointerenter", () => this.map.setHover(result.file));
       item.addEventListener("pointerleave", () => this.map.setHover(null));
-      item.addEventListener("click", () => this.openFile(result.file));
+      item.addEventListener("click", () => this.selectResult(result.file));
+      item.addEventListener("dblclick", () => this.openFile(result.file));
+      item.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          this.openFile(result.file);
+        } else if (event.key === " ") {
+          event.preventDefault();
+          this.selectResult(result.file);
+        }
+      });
       const pathParts = result.file.replace(/\.md$/i, "").split("/"), fileName = pathParts.pop() || result.file;
       const meta = item.createDiv({ cls: "gib-semantic-result-meta" }), folder = meta.createDiv({ cls: "gib-semantic-result-folder" });
       (pathParts.length ? pathParts : ["Vault"]).forEach((part, index3) => {
@@ -76622,7 +76659,7 @@ var GraphView = class extends ItemView {
         renderHighlighted(preview, snippet.text, this.query, snippet.semanticHighlights);
       }
     }
-    this.resultsPanel.show();
+    this.setResultsVisible(true);
   }
   hoverResult(file) {
     for (const item2 of this.resultList.querySelectorAll(".is-map-hovered")) item2.removeClass("is-map-hovered");
@@ -76635,6 +76672,32 @@ var GraphView = class extends ItemView {
     const item = [...this.resultList.querySelectorAll(".gib-graph-result")].find((value) => value.dataset.gibFile === file);
     item?.scrollIntoView({ block: "nearest" });
   }
+  setResultsVisible(value) {
+    this.resultsVisible = Boolean(value);
+    this.resultsPanel.toggle(this.resultsVisible);
+    this.contentEl.toggleClass("has-results-sheet", this.resultsVisible);
+    window.setTimeout(() => this.updateMapInsets(), 0);
+  }
+  updateMapInsets() {
+    if (!this.map || !this.contentEl.isConnected) return;
+    const narrow = this.contentEl.clientWidth <= 760;
+    if (narrow) {
+      const panel = this.previewFilePath ? this.previewPanel : this.resultsVisible ? this.resultsPanel : null, bottom = panel ? Math.min(this.contentEl.clientHeight * 0.48, panel.getBoundingClientRect().height) : 0;
+      this.map.setViewportInsets({ left: 0, right: 0, top: 0, bottom });
+      return;
+    }
+    const left = this.resultsVisible ? this.resultsPanel.getBoundingClientRect().width : 0, right = this.previewFilePath ? this.previewPanel.getBoundingClientRect().width : 0;
+    this.map.setViewportInsets({ left, right, top: 0, bottom: 0 });
+  }
+  selectResult(filePath, fromMap = false) {
+    for (const item of this.resultList.querySelectorAll(".gib-graph-result")) item.toggleClass("is-selected", item.dataset.gibFile === filePath);
+    if (!fromMap) this.map.setSelected(filePath || null);
+    if (filePath) {
+      this.focusResult(filePath);
+      this.showPreview(filePath);
+    } else this.closePreview(false);
+    this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), selection: filePath || null, hover: null });
+  }
   async showPreview(filePath) {
     const file = this.app.vault.getAbstractFileByPath(filePath);
     if (!(file instanceof TFile)) return;
@@ -76646,7 +76709,7 @@ var GraphView = class extends ItemView {
     this.previewBody.createDiv({ cls: "gib-graph-preview-loading", text: "Loading note\u2026" });
     this.previewPanel.show();
     this.contentEl.addClass("is-preview-open");
-    window.setTimeout(() => this.map?.draw(), 0);
+    window.setTimeout(() => this.updateMapInsets(), 0);
     try {
       const source = await this.app.vault.cachedRead(file);
       if (version2 !== this.previewVersion || this.previewFilePath !== file.path) return;
@@ -76659,12 +76722,17 @@ var GraphView = class extends ItemView {
       }
     }
   }
-  closePreview() {
+  closePreview(clearSelection = true) {
     this.previewVersion++;
     this.previewFilePath = null;
     this.previewPanel.hide();
     this.contentEl.removeClass("is-preview-open");
-    window.setTimeout(() => this.map?.draw(), 0);
+    if (clearSelection) {
+      this.map?.setSelected(null);
+      for (const item of this.resultList.querySelectorAll(".is-selected")) item.removeClass("is-selected");
+      this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), selection: null, hover: null });
+    }
+    window.setTimeout(() => this.updateMapInsets(), 0);
   }
   async openFile(filePath) {
     const file = this.app.vault.getAbstractFileByPath(filePath);
@@ -76676,6 +76744,7 @@ var GraphView = class extends ItemView {
     window.clearTimeout(this.searchTimer);
     window.clearTimeout(this.tuneTimer);
     this.graphCacheOff?.();
+    this.panelResizeObserver?.disconnect();
     this.map?.destroy();
   }
 };
