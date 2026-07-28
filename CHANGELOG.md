@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.42.1
+
+- Makes the Atlas View preview use a stable, representative subset while the saved View continues to use its complete territory.
+- Serializes preview work and discards superseded updates so slider changes cannot launch overlapping graph projections.
+- Reuses scene and file-scale caches while editing instead of globally clearing completed Atlas work on every adjustment.
+- Restricts guided-frame calibration and local text analysis to the visible preview sample, with explicit progress and sample-size status.
+
 ## 0.42.0
 
 - Rebuilds the Atlas View editor around Territory, Reference frame, Relationship field, Dynamics, and Cartography, with a live preview throughout.

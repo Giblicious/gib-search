@@ -33,7 +33,7 @@ The relationship field can use six measurements:
 - **Form** combines local language inference with document structure to distinguish journals, essays, conversations, reference notes, narratives, and plans.
 - **Links** makes authored wikilinks contribute directly to distance alongside any analytical measurements.
 
-The View builder includes local starting templates while keeping the five parts independently editable. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes. Hovering an analyzed map node shows its strongest quality and the source passage behind that judgment.
+The View builder includes local starting templates while keeping the five parts independently editable. Its live preview uses a stable representative sample so adjustments remain responsive; saved Views still use their complete territory. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes. Hovering an analyzed map node shows its strongest quality and the source passage behind that judgment.
 
 ## Install with BRAT
 

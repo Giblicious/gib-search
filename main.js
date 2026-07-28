@@ -73677,10 +73677,10 @@ var init_atlas_engine = __esm({
           if (state.frame?.appearance?.terrain === "intensity") node.terrainValue = node.relationshipIntensity;
         }
       }
-      async applyGuidedFrame(state, nodes, layout) {
+      async applyGuidedFrame(state, nodes, layout, calibrationFiles = null) {
         const categories = state.frame?.mode === "guided" ? state.frame.categories || [] : [];
         if (categories.length < 2 || !nodes.length) return { layout, categories: [] };
-        const signal = validTextSignal(state.frame.signal), signature = stableSignature(JSON.stringify(state.frame)), scopePaths = this.resolveScope(state).paths, allFileVectors = this.plugin.search.fileVectors(), fileVectors = this.plugin.search.fileVectors(nodes.map((node) => node.id)), categoryVectors = await Promise.all(categories.map(async (category) => {
+        const signal = validTextSignal(state.frame.signal), signature = stableSignature(JSON.stringify(state.frame)), scopePaths = Array.isArray(calibrationFiles) ? calibrationFiles : this.resolveScope(state).paths, allFileVectors = this.plugin.search.fileVectors(), fileVectors = this.plugin.search.fileVectors(nodes.map((node) => node.id)), categoryVectors = await Promise.all(categories.map(async (category) => {
           const keywords = category.keywords?.length ? ` Keywords: ${category.keywords.join(", ")}.` : "", described = await this.plugin.search.queryVector(`${category.name}. ${category.description || `Writing primarily concerned with ${category.name}.`}${keywords}`), examples = signal === "semantic" ? (category.examples || []).map((path2) => allFileVectors.get(path2)?.vector).filter(Boolean) : [];
           if (!examples.length) return described;
           const prototype = Float32Array.from(described, (value) => value * 0.68);
@@ -73771,7 +73771,7 @@ var init_atlas_engine = __esm({
       async vaultScene(state, scope, options = {}) {
         const graph = await this.plugin.search.semanticStarfield("", scope.paths), scales = options.fileScales || fileScales(this.plugin.app), definition = atlasLens(state.lens), nodes = graph.nodes.map((node) => ({ ...node, matched: false, generation: 1, relevance: 0.5, fileScale: scales.get(node.id) ?? 0.35, facet: node.community, conceptAffinities: node.topicAffinities })), roads = manualLinks(this.plugin.app, scope.paths), field = await this.prepareRelationshipField(state, nodes.map((node) => node.id), roads);
         this.applyRelationshipPresentation(state, nodes, field);
-        const naturalLayout = await this.plugin.search.multiRelationalLayout("", nodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: definition.analysis, vaultCenter: true, mapMode: definition.mapMode, relationshipField: field }), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout;
+        const naturalLayout = await this.plugin.search.multiRelationalLayout("", nodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: definition.analysis, vaultCenter: true, mapMode: definition.mapMode, relationshipField: field }), guided = await this.applyGuidedFrame(state, nodes, naturalLayout, scope.paths), layout = guided.layout;
         for (const node of nodes) {
           const target = layout.get(node.id);
           if (target) {
@@ -73794,7 +73794,7 @@ var init_atlas_engine = __esm({
           return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: result ? 0.08 + rankedRelevance * 0.92 : expandedRelevance, fileScale: scales.get(node.id) ?? 0.35, facet: subtopic?.facet ?? result?.facet ?? node.community, community, communityMembership: definition.mapMode === "topics" ? membership : node.communityMembership, communityLabel: definition.mapMode === "topics" ? subtopic?.label || "" : node.communityLabel, communityFallbackLabel: definition.mapMode === "topics" ? subtopic?.fallbackLabel || "" : node.communityFallbackLabel, communityLabelConfidence: definition.mapMode === "topics" ? Number(subtopic?.confidence || 0) : node.communityLabelConfidence, conceptAffinities: subtopic?.affinities || result?.conceptAffinities || node.topicAffinities, topicAffinities: definition.mapMode === "topics" && subtopic ? subtopic.affinities : node.topicAffinities, contextScore: result?.contextScore };
         }), roads = manualLinks(this.plugin.app, nodes.map((node) => node.id)), field = await this.prepareRelationshipField(state, nodes.map((node) => node.id), roads);
         this.applyRelationshipPresentation(state, nodes, field);
-        const naturalLayout = await this.plugin.search.multiRelationalLayout(query, nodes, definition.analysis === "arguments" ? relationships : /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: definition.analysis, mapMode: definition.mapMode, relationshipField: field }), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout;
+        const naturalLayout = await this.plugin.search.multiRelationalLayout(query, nodes, definition.analysis === "arguments" ? relationships : /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: definition.analysis, mapMode: definition.mapMode, relationshipField: field }), guided = await this.applyGuidedFrame(state, nodes, naturalLayout, scope.paths), layout = guided.layout;
         for (const node of nodes) {
           const target = layout.get(node.id);
           if (target) {
@@ -73825,7 +73825,7 @@ var init_atlas_engine = __esm({
         nodes = nodes.map((node) => ({ ...node, relevance: (Number(node.score || 0) - low) / spread, matched: true, generation: 1, fileScale: scales.get(node.id) ?? 0.35 }));
         const roads = manualLinks(this.plugin.app, [filePath, ...nodes.map((node) => node.id)]), field = await this.prepareRelationshipField(state, nodes.map((node) => node.id), roads);
         this.applyRelationshipPresentation(state, nodes, field);
-        const naturalLayout = await this.plugin.search.multiRelationalLayout(basename2(filePath), nodes, relationships, { lens: definition.analysis, magic: this.plugin.settings.magicGraphEnabled, mapMode: definition.mapMode, centerFile: filePath, relationshipField: field }), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout;
+        const naturalLayout = await this.plugin.search.multiRelationalLayout(basename2(filePath), nodes, relationships, { lens: definition.analysis, magic: this.plugin.settings.magicGraphEnabled, mapMode: definition.mapMode, centerFile: filePath, relationshipField: field }), guided = await this.applyGuidedFrame(state, nodes, naturalLayout, scope.paths), layout = guided.layout;
         for (const node of nodes) {
           const target = layout.get(node.id);
           if (target) {
@@ -77372,9 +77372,14 @@ var AtlasViewBuilderModal = class extends Modal2 {
     this.onSave = options.onSave;
     this.section = this.draft.frame?.mode === "guided" ? "frame" : "scope";
     this.previewVersion = 0;
+    this.previewBusy = false;
+    this.previewQueued = false;
+    this.previewClosed = false;
     this.makeHome = this.isNew || plugin6.settings.atlasHomeViewId === view.id;
   }
   onOpen() {
+    this.previewClosed = false;
+    this.previewFileScales = vaultFileScales(this.app);
     this.modalEl.addClass("gib-view-builder-modal");
     this.contentEl.empty();
     const header = this.contentEl.createDiv({ cls: "gib-view-builder-header" }), heading = header.createDiv();
@@ -77386,7 +77391,8 @@ var AtlasViewBuilderModal = class extends Modal2 {
     const preview = shell.createDiv({ cls: "gib-view-builder-preview" });
     this.previewStatus = preview.createDiv({ cls: "gib-view-builder-preview-status", text: "Preparing live preview\u2026" });
     this.analysisOff = this.plugin.search.onChange(() => {
-      if (this.plugin.search.analysisMessage && this.draft.frame?.signal !== "semantic") this.previewStatus?.setText(this.plugin.search.analysisMessage);
+      const analyticalField = Object.entries(this.draft.frame?.relationships || {}).some(([signal, weight]) => !["semantic", "links"].includes(signal) && Number(weight) > 0), analyticalFrame = this.draft.frame?.mode === "guided" && !["semantic", "links"].includes(this.draft.frame?.signal);
+      if (this.plugin.search.analysisMessage && (analyticalField || analyticalFrame)) this.previewStatus?.setText(this.plugin.search.analysisMessage);
     });
     this.previewHost = preview.createDiv({ cls: "gib-view-builder-preview-map" });
     this.previewMap = new LivingSemanticMapCanvas(this.previewHost, this.app, { title: "View preview", minimalChrome: true, preserveBackground: false, mapGroupingMode: "similarity", showLinks: false, manualLinkInfluence: false, semanticColors: true, tuning: this.plugin.settings.mapTuning, onCategoryMove: (categoryId, position) => {
@@ -77434,20 +77440,54 @@ var AtlasViewBuilderModal = class extends Modal2 {
     else this.renderAppearance();
   }
   changed(rerender = false) {
-    this.plugin.atlas.clear();
     if (rerender) this.renderEditor();
     this.schedulePreview();
   }
-  schedulePreview(delay = 180) {
+  schedulePreview(delay = 120) {
+    this.previewVersion++;
     window.clearTimeout(this.previewTimer);
     this.previewStatus?.setText("Updating preview\u2026");
-    this.previewTimer = window.setTimeout(() => this.updatePreview(), delay);
+    this.previewTimer = window.setTimeout(() => this.flushPreview(), delay);
+  }
+  async flushPreview() {
+    if (this.previewBusy) {
+      this.previewQueued = true;
+      return;
+    }
+    this.previewBusy = true;
+    try {
+      do {
+        this.previewQueued = false;
+        await this.updatePreview();
+      } while (this.previewQueued && !this.previewClosed);
+    } finally {
+      this.previewBusy = false;
+    }
+  }
+  previewScope(scope, results = []) {
+    const maximum = this.plugin.isMobile ? 30 : 48, totalCount = scope.paths.length;
+    if (totalCount <= maximum) return { ...scope, totalCount, sampled: false };
+    const ordered = scope.files.slice().sort((first, second) => first.path.localeCompare(second.path)), byPath = new Map(ordered.map((file) => [file.path, file])), selected = /* @__PURE__ */ new Map(), add = (path2) => {
+      const file = byPath.get(path2);
+      if (file && selected.size < maximum) selected.set(path2, file);
+    };
+    for (const result of results) add(result.file);
+    const byFolder = /* @__PURE__ */ new Map();
+    for (const file of ordered) {
+      const folder = file.path.includes("/") ? file.path.split("/")[0] : "";
+      if (!byFolder.has(folder)) byFolder.set(folder, file.path);
+    }
+    for (const path2 of byFolder.values()) add(path2);
+    const remaining = ordered.filter((file) => !selected.has(file.path)), slots = maximum - selected.size;
+    for (let index3 = 0; index3 < slots && remaining.length; index3++) add(remaining[Math.round(index3 * (remaining.length - 1) / Math.max(1, slots - 1))].path);
+    const files = [...selected.values()], paths = files.map((file) => file.path);
+    return { files, paths, signature: `${scope.signature}:preview:${paths.join("\0")}`, totalCount, sampled: true };
   }
   async updatePreview() {
-    const version2 = ++this.previewVersion;
+    const version2 = this.previewVersion;
     try {
-      const state = this.plugin.atlas.state({ view: this.draft }), scope = this.plugin.atlas.resolveScope(state);
-      if (!scope.paths.length) {
+      const state = this.plugin.atlas.state({ view: this.draft }), fullScope = this.plugin.atlas.resolveScope(state);
+      if (!fullScope.paths.length) {
         this.previewStatus.setText("No notes match this territory");
         this.previewMap.setGraph({ label: this.draft.name, hasQuery: false, resultCount: 0 }, [], [], []);
         return;
@@ -77455,17 +77495,19 @@ var AtlasViewBuilderModal = class extends Modal2 {
       let results = [];
       const query = state.anchor?.type === "query" ? String(state.anchor.value || "").trim() : "";
       if (query.length >= 2) {
-        const raw = await this.plugin.search.search(query, Math.min(100, scope.paths.length), 0.35, { semanticHighlights: false });
-        results = groupSearchResults(raw.filter((result) => scope.paths.includes(result.file)), query, 80);
+        const allowed = new Set(fullScope.paths), raw = await this.plugin.search.search(query, Math.min(100, fullScope.paths.length), 0.35, { semanticHighlights: false });
+        results = groupSearchResults(raw.filter((result) => allowed.has(result.file)), query, 80);
       }
-      const scene = await this.plugin.atlas.scene(state, results, { scope, fileScales: vaultFileScales(this.app) });
-      if (version2 !== this.previewVersion) return;
+      const scope = this.previewScope(fullScope, results), visible = new Set(scope.paths);
+      results = results.filter((result) => visible.has(result.file));
+      const scene = await this.plugin.atlas.scene(state, results, { scope, fileScales: this.previewFileScales });
+      if (version2 !== this.previewVersion || this.previewClosed) return;
       this.previewMap.setMapGroupingMode(scene.center.mapMode || atlasLens2(state.lens).mapMode);
       this.previewMap.setGraph(scene.center, scene.nodes, scene.edges, scene.roads);
-      const active = Object.entries(state.frame.relationships || {}).filter(([, weight]) => Number(weight) > 0).map(([id2]) => TEXT_SIGNALS2[id2]?.label || id2);
-      this.previewStatus.setText(`${scene.nodes.length} notes \xB7 ${active.join(" + ")}${state.frame.mode === "guided" ? ` \xB7 ${state.frame.categories.length} beacons` : ""}`);
+      const active = Object.entries(state.frame.relationships || {}).filter(([, weight]) => Number(weight) > 0).map(([id2]) => TEXT_SIGNALS2[id2]?.label || id2), count = scope.sampled ? `${scene.nodes.length} of ${scope.totalCount} notes` : `${scene.nodes.length} notes`;
+      this.previewStatus.setText(`${count} \xB7 ${active.join(" + ")}${state.frame.mode === "guided" ? ` \xB7 ${state.frame.categories.length} beacons` : ""}`);
     } catch (error) {
-      if (version2 === this.previewVersion) this.previewStatus.setText(error.message);
+      if (version2 === this.previewVersion && !this.previewClosed) this.previewStatus.setText(error.message);
     }
   }
   renderScope() {
@@ -77725,6 +77767,8 @@ var AtlasViewBuilderModal = class extends Modal2 {
     this.close();
   }
   onClose() {
+    this.previewClosed = true;
+    this.previewQueued = false;
     window.clearTimeout(this.previewTimer);
     this.previewVersion++;
     this.analysisOff?.();
