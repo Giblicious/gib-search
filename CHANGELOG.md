@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.36.1
+
+- Integrates the dedicated Atlas results and note-preview regions into the landscape instead of presenting them as floating glass cards.
+- Removes enclosing borders, rounded containers, shadows, and backdrop blur from both regions.
+- Uses quiet rules and directional canvas-colored fades to preserve readability while allowing the graph to flow naturally beneath their edges.
+- Softens result hover treatment and spacing so text, nodes, and terrain feel drawn on one continuous surface.
+
 ## 0.36.0
 
 - Replaces the old note-neighborhood widget with an adaptive Atlas Companion in Obsidian's native right sidebar.
