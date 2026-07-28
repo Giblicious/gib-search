@@ -10,7 +10,9 @@ The note-neighborhood pane offers the same lenses with the active note as its se
 
 When Arguments finds a confident alignment or tension, its result card shows the exact query-relevant passage pair used for that judgment and names the counterpart note. These are source excerpts, not generated explanations.
 
-The living map combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. These signals form one multi-relational distance model that is reduced into a query-conditioned 2D layout. Hue represents semantic direction, while lightweight physics animates and gently relaxes the calculated geometry.
+The living map combines a stable topic compass, semantic communities, shared entities, query-conditioned relationships, and local natural-language inference. These signals form one multi-relational distance model that is reduced into a shared layout. Hue represents semantic direction, while lightweight physics animates and gently relaxes the calculated geometry.
+
+Map terrain and nodes are GPU-accelerated with WebGL 2. The same graph can morph seamlessly between a flat 2D map and an isometric 2.5D terrain without changing note placement, selection, or search state. Devices without WebGL 2 automatically retain the flat Canvas renderer.
 
 The dedicated map view begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query enters the map while results load. Matching notes form a query-centered layout; nonmatches remain as subdued spatial context. A collapsible floating panel shows the matching source excerpts.
 
