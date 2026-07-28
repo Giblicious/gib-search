@@ -70418,8 +70418,8 @@ function isTemporalConceptLabel(source) {
   return !value || /(?:^|\D)(?:19|20)\d{2}(?:\D|$)/.test(value) || /\b\d{1,4}[-/.]\d{1,2}(?:[-/.]\d{1,4})?\b/.test(value) || words.some((word) => TEMPORAL_LABEL_WORDS.has(word)) || words.length > 0 && words.every((word) => /^\d+(?:st|nd|rd|th)?$/.test(word));
 }
 function isStructuralConceptLabel(source) {
-  const words = cleanText(source).toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
-  return !words.length || words.some((word) => STRUCTURAL_TOPIC_LABELS.has(word) || /^(?:yyyy|yy|mm|dd)$/.test(word)) || words.length <= 2 && VAGUE_LABEL_WORDS.has(words[0]) || words.every((word) => STOP_WORDS.has(word) || GENERIC_CONCEPTS.has(word) || VAGUE_LABEL_WORDS.has(word));
+  const value = cleanText(source).toLowerCase(), words = value.match(/[\p{L}\p{N}]+/gu) || [];
+  return !words.length || /['’]s$/.test(value) || words.some((word) => STRUCTURAL_TOPIC_LABELS.has(word) || /^(?:yyyy|yy|mm|dd)$/.test(word)) || words.length <= 2 && VAGUE_LABEL_WORDS.has(words[0]) || words.every((word) => STOP_WORDS.has(word) || GENERIC_CONCEPTS.has(word) || VAGUE_LABEL_WORDS.has(word));
 }
 function cleanGeneratedTopicLabel(source) {
   const value = cleanText(source).replace(/^(?:the )?(?:shared |main )?(?:topic|subject|label|answer)(?: is)?\s*[:\-–—]?\s*/i, "").replace(/^["'“”‘’]+|["'“”‘’.,;:!?]+$/g, "").replace(/\s+/g, " ").trim(), words = value.match(/[\p{L}\p{N}'’&-]+/gu) || [], normalized = words.map((word) => word.toLowerCase());
@@ -72042,6 +72042,23 @@ var init_mobile_runtime = __esm({
         }
         return groups;
       }
+      structuralSpeakerLabels(files) {
+        const requested = new Set(files || []), occurrences = /* @__PURE__ */ new Map(), record = (name, file) => {
+          const key = cleanText(name).toLowerCase();
+          if (key.length < 2 || key.length > 40) return;
+          const values = occurrences.get(key) || /* @__PURE__ */ new Set();
+          values.add(file);
+          occurrences.set(key, values);
+        };
+        for (const item of this.meta) {
+          if (!requested.has(item.file)) continue;
+          const source = `${item.heading || ""}
+${item.text || ""}`;
+          for (const match2 of source.matchAll(/(?:^|\n|>)\s*([\p{L}][\p{L}\p{N} .'-]{1,39})\s*:\s+/gmu)) record(match2[1], item.file);
+          for (const match2 of source.matchAll(/(?:^|>)\s*([\p{L}][\p{L}\p{N} .'-]{1,39})\s+[—–-]\s*(?:19|20)\d{2}/gmu)) record(match2[1], item.file);
+        }
+        return new Set([...occurrences].filter(([, values]) => values.size >= Math.min(2, Math.max(1, requested.size))).map(([key]) => key));
+      }
       topicBasis() {
         const signature = `${this.meta.length}:${this.vectors.length}:${this.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}`;
         if (this.topicBasisCache?.signature === signature) return this.topicBasisCache;
@@ -72108,7 +72125,12 @@ var init_mobile_runtime = __esm({
           group.push(entry.id);
           groups.set(id2, group);
         }
-        const candidateSets = this.indexedConceptCandidates(queryVector, ordered, query), semanticCentroids = /* @__PURE__ */ new Map(), centroids = /* @__PURE__ */ new Map();
+        const candidateSets = this.indexedConceptCandidates(queryVector, ordered, query), speakerLabels = this.structuralSpeakerLabels(ordered), globalFiles = /* @__PURE__ */ new Map(), semanticCentroids = /* @__PURE__ */ new Map(), centroids = /* @__PURE__ */ new Map();
+        for (const [file, candidates] of candidateSets) for (const key of candidates.keys()) {
+          const filesForCandidate = globalFiles.get(key) || /* @__PURE__ */ new Set();
+          filesForCandidate.add(file);
+          globalFiles.set(key, filesForCandidate);
+        }
         for (const [community, members] of groups) {
           const conceptual = new Float32Array(DIMENSION), semantic = new Float32Array(DIMENSION);
           for (const file of members) {
@@ -72139,10 +72161,10 @@ var init_mobile_runtime = __esm({
             candidates.set(key, value);
           }
           const centroid = semanticCentroids.get(community), otherCentroids = [...semanticCentroids].filter(([id2]) => id2 !== community).map(([, vector]) => vector), ranked = [...candidates.values()].map((candidate) => {
-            const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), memberCoverage = members.reduce((sum, file) => sum + Math.max(0, Math.min(1, (dotHighlight(vectors.get(file).vector, candidate.vector) + 1) / 2)), 0) / Math.max(1, members.length), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.5)), grounded = Math.sqrt(candidate.files.size / Math.max(1, members.length)), quality = Math.min(1, candidate.quality / 0.18), score = candidate.novelty * (centrality * 0.42 + memberCoverage * 0.25 + distinction * 0.2 + grounded * 0.08 + quality * 0.05);
+            const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), memberCoverage = members.reduce((sum, file) => sum + Math.max(0, Math.min(1, (dotHighlight(vectors.get(file).vector, candidate.vector) + 1) / 2)), 0) / Math.max(1, members.length), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.5)), grounded = Math.sqrt(candidate.files.size / Math.max(1, members.length)), quality = Math.min(1, candidate.quality / 0.18), vaultCoverage = (globalFiles.get(candidate.key)?.size || candidate.files.size) / Math.max(2, ordered.length), rarity = Math.max(0, 1 - Math.log1p(vaultCoverage * 16) / Math.log(17)), score = candidate.novelty * (centrality * 0.35 + memberCoverage * 0.22 + distinction * 0.18 + grounded * 0.1 + rarity * 0.1 + quality * 0.05);
             return { ...candidate, score, centrality, memberCoverage, distinction };
-          }).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase)), best = ranked[0], runnerUp = ranked[1], margin = Number(best?.score || 0) - Number(runnerUp?.score || 0), supported = Number(best?.files?.size || 0) >= Math.min(2, members.length), confidence = best && supported && best.score >= 0.56 && (margin >= 0.018 || best.files.size > 1) ? Math.max(0, Math.min(1, (best.score - 0.46) * 1.7 + margin * 2 + Math.min(0.14, best.files.size / members.length * 0.14))) : 0, fallbackLabel = best && supported && best.score >= 0.42 && !isTemporalConceptLabel(best.phrase) && String(best.phrase).split(/\s+/).length <= 4 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
-          labels.set(community, { label: confidence >= 0.44 ? fallbackLabel : "", fallbackLabel, confidence });
+          }).filter((candidate) => !speakerLabels.has(candidate.key) && !isTemporalConceptLabel(candidate.phrase) && !isStructuralConceptLabel(candidate.phrase)).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase)), best = ranked[0], runnerUp = ranked[1], margin = Number(best?.score || 0) - Number(runnerUp?.score || 0), supported = Number(best?.files?.size || 0) >= Math.min(2, members.length) || Number(best?.centrality || 0) >= 0.82 && Number(best?.memberCoverage || 0) >= 0.76, confidence = best && supported && best.score >= 0.5 && (margin >= 8e-3 || best.files.size > 1 || best.memberCoverage >= 0.79) ? Math.max(0, Math.min(1, (best.score - 0.4) * 1.8 + margin * 2 + Math.min(0.14, best.files.size / members.length * 0.14))) : 0, fallbackLabel = best && supported && best.score >= 0.42 && String(best.phrase).split(/\s+/).length <= 5 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
+          labels.set(community, { label: confidence >= 0.4 ? fallbackLabel : "", fallbackLabel, confidence });
         }
         return new Map(entries.map((entry) => {
           const scored = [...centroids].map(([facet2, centroid]) => ({ facet: facet2, score: Math.max(1e-3, (dot(entry.vector, centroid) + 1) / 2) ** 5 })), total = scored.reduce((sum, item) => sum + item.score, 0) || 1, affinities = Object.fromEntries(scored.map((item) => [item.facet, item.score / total])), orderedScores = scored.map((item) => ({ ...item, affinity: item.score / total })).sort((a2, b) => b.affinity - a2.affinity), facet = orderedScores[0]?.facet ?? communities.get(entry.id) ?? 0, margin = Number(orderedScores[0]?.affinity || 0) - Number(orderedScores[1]?.affinity || 0), label = labels.get(facet) || { label: "", fallbackLabel: "", confidence: 0 }, confidence = Math.min(label.confidence, 0.3 + Number(orderedScores[0]?.affinity || 0) * 0.45 + margin * 0.55);
@@ -72344,7 +72366,7 @@ var init_mobile_runtime = __esm({
             globalFiles.set(key, files);
           }
         }
-        const labels = /* @__PURE__ */ new Map(), rankedByCommunity = /* @__PURE__ */ new Map(), threshold = Math.max(0.35, Math.min(0.85, Number(sensitivity) || 0.58)), totalFiles = Math.max(2, requested.size), minimum = Math.max(2, Number(minimumSize) || 3);
+        const labels = /* @__PURE__ */ new Map(), rankedByCommunity = /* @__PURE__ */ new Map(), speakerLabels = this.structuralSpeakerLabels([...requested]), threshold = Math.max(0.35, Math.min(0.85, Number(sensitivity) || 0.58)), totalFiles = Math.max(2, requested.size), minimum = Math.max(2, Number(minimumSize) || 3);
         for (const [id2, members] of groups) {
           if (members.length < minimum) {
             labels.set(id2, { label: "", fallbackLabel: "", confidence: 0 });
@@ -72360,7 +72382,7 @@ var init_mobile_runtime = __esm({
           const otherCentroids = [...centroids].filter(([other]) => other !== id2).map(([, vector]) => vector), ranked = [...candidates.values()].map((candidate) => {
             const centrality = Math.max(0, Math.min(1, (dotHighlight(centroid, candidate.vector) + 1) / 2)), other = otherCentroids.length ? Math.max(...otherCentroids.map((vector) => (dotHighlight(vector, candidate.vector) + 1) / 2)) : centrality - 0.08, distinction = Math.max(0, Math.min(1, 0.5 + (centrality - other) * 2.4)), coverage = Math.min(1, candidate.files.size / members.length), quality = Math.min(1, Number(candidate.quality || 0) / 0.18), vaultCoverage = (globalFiles.get(candidate.key)?.size || candidate.files.size) / totalFiles, rarity = Math.max(0, 1 - Math.log1p(vaultCoverage * 24) / Math.log(25)), score = centrality * 0.38 + distinction * 0.22 + coverage * 0.16 + rarity * 0.16 + quality * 0.08;
             return { ...candidate, centrality, distinction, coverage, rarity, score };
-          }).map((candidate) => ({ ...candidate, score: candidate.score * (0.55 + Math.max(0, Math.min(1, Number(candidate.novelty || 0))) * 0.45) })).filter((candidate) => candidate.files.size >= Math.min(2, members.length) && !isTemporalConceptLabel(candidate.phrase) && !isStructuralConceptLabel(candidate.phrase)).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase));
+          }).map((candidate) => ({ ...candidate, score: candidate.score * (0.55 + Math.max(0, Math.min(1, Number(candidate.novelty || 0))) * 0.45) })).filter((candidate) => candidate.files.size >= Math.min(2, members.length) && !speakerLabels.has(candidate.key) && !isTemporalConceptLabel(candidate.phrase) && !isStructuralConceptLabel(candidate.phrase)).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase));
           rankedByCommunity.set(id2, ranked.slice(0, 8));
           const best = ranked[0], margin = Number(best?.score || 0) - Number(ranked[1]?.score || 0), confidence = best ? Math.max(0, Math.min(1, best.score * 0.84 + margin * 1.6)) : 0, fallbackLabel = best && best.score >= 0.44 && String(best.phrase).split(/\s+/).length <= 5 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
           labels.set(id2, { label: confidence >= threshold ? fallbackLabel : "", fallbackLabel, confidence });
@@ -74356,8 +74378,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     const groups = [...grouped].filter(([, values]) => values.length >= minimum).map(([id2, values]) => {
       const weightedHue = values.filter((value) => Number.isFinite(value.node.topicHue)), hueX = weightedHue.reduce((sum, value) => sum + Math.cos(value.node.topicHue * Math.PI / 180), 0), hueY = weightedHue.reduce((sum, value) => sum + Math.sin(value.node.topicHue * Math.PI / 180), 0);
-      return { id: id2, values, label: values.find((value) => value.node.communityLabel)?.node.communityLabel || values.find((value) => value.node.communityFallbackLabel)?.node.communityFallbackLabel || this.communityFallbackLabel(values), confidence: Math.max(...values.map((value) => Number(value.node.communityLabelConfidence || 0))), naturalHue: weightedHue.length ? (Math.atan2(hueY, hueX) * 180 / Math.PI + 360) % 360 : stableMapAngle(id2) * 180 / Math.PI };
-    }).sort((first, second) => first.naturalHue - second.naturalHue || String(first.id).localeCompare(String(second.id)));
+      return { id: id2, values, label: values.find((value) => value.node.communityLabel)?.node.communityLabel || values.find((value) => value.node.communityFallbackLabel)?.node.communityFallbackLabel || "", confidence: Math.max(...values.map((value) => Number(value.node.communityLabelConfidence || 0))), naturalHue: weightedHue.length ? (Math.atan2(hueY, hueX) * 180 / Math.PI + 360) % 360 : stableMapAngle(id2) * 180 / Math.PI };
+    }).filter((group) => group.label).sort((first, second) => first.naturalHue - second.naturalHue || String(first.id).localeCompare(String(second.id)));
     const count = groups.length, step = count > 1 ? 360 / count : 0, offset2 = count > 1 ? (() => {
       const x = groups.reduce((sum, group, index3) => sum + Math.cos((group.naturalHue - index3 * step) * Math.PI / 180), 0), y = groups.reduce((sum, group, index3) => sum + Math.sin((group.naturalHue - index3 * step) * Math.PI / 180), 0);
       return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
@@ -74371,19 +74393,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       }
     });
     return groups;
-  }
-  communityFallbackLabel(values) {
-    const entities = /* @__PURE__ */ new Map(), ignored = /^(?:note|notes|journal|entry|entries|study|thought|thoughts|idea|ideas|topic|topics|today|tomorrow|yesterday)$/i, temporal = /(?:^|\D)(?:19|20)\d{2}(?:\D|$)|\b\d{1,4}[-/.]\d{1,2}(?:[-/.]\d{1,4})?\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
-    for (const value of values) for (const entity3 of value.node.entities || []) {
-      const text = String(entity3 || "").trim();
-      if (text.length < 3 || ignored.test(text) || temporal.test(text)) continue;
-      const key = text.toLocaleLowerCase();
-      const item = entities.get(key) || { text, files: /* @__PURE__ */ new Set() };
-      item.files.add(value.node.id);
-      entities.set(key, item);
-    }
-    const entity2 = [...entities.values()].filter((item) => item.files.size >= Math.min(2, values.length)).sort((first, second) => second.files.size - first.files.size || first.text.length - second.text.length || first.text.localeCompare(second.text))[0];
-    return entity2 ? entity2.text.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "Mixed Topic";
   }
   communitySpine(points) {
     if (points.length < 2) return [];
@@ -74477,7 +74486,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
           communityContext.stroke();
           communityContext.restore();
           const weight = region.reduce((sum, value) => sum + Math.max(0.01, Number(value.node.communityMembership || 0)), 0), x = region.reduce((sum, value) => sum + value.x * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight, y = region.reduce((sum, value) => sum + value.y * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight;
-          labels.push({ x, y, text: group.label || "Mixed Topic", color, confidence: group.confidence });
+          labels.push({ x, y, text: group.label, color, confidence: group.confidence });
         }
       }
       communityContext.globalAlpha = 1;
