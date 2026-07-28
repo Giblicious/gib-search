@@ -73218,7 +73218,7 @@ var SemanticMapWebGLRenderer = class {
     this.gl = gl2;
     this.terrainProgram = this.program(`#version 300 es
       in vec2 a_uv; uniform sampler2D u_height; uniform float u_projection; out vec2 v_uv;
-      void main(){ float height=texture(u_height,a_uv).r; vec2 flat=vec2(a_uv.x*2.0-1.0,1.0-a_uv.y*2.0); vec2 iso=vec2((flat.x+flat.y*.18)*.86,(flat.y*.78+height*.24)*.88); gl_Position=vec4(mix(flat,iso,u_projection),0.0,1.0); v_uv=a_uv; }`, `#version 300 es
+      void main(){ float height=texture(u_height,a_uv).r; vec2 plane=vec2(a_uv.x*2.0-1.0,1.0-a_uv.y*2.0); vec2 iso=vec2((plane.x+plane.y*.18)*.86,(plane.y*.78+height*.24)*.88); gl_Position=vec4(mix(plane,iso,u_projection),0.0,1.0); v_uv=a_uv; }`, `#version 300 es
       precision mediump float; in vec2 v_uv; uniform sampler2D u_color; out vec4 outColor;
       void main(){ outColor=texture(u_color,v_uv); }`);
     this.pointProgram = this.program(`#version 300 es
@@ -73369,11 +73369,14 @@ function ensureMapWebGL(map2) {
   map2.colorCache = /* @__PURE__ */ new Map();
   try {
     map2.webglRenderer = new SemanticMapWebGLRenderer(map2.webglCanvas);
-  } catch {
+  } catch (error) {
     map2.webglRenderer = null;
+    map2.webglError = error?.message || "WebGL 2 initialization failed";
     map2.webglCanvas.hide();
     map2.mapProjection = "flat";
     map2.projectionMix = map2.projectionFrom = map2.projectionTarget = 0;
+    map2.statusEl.textContent = "Canvas fallback";
+    map2.statusEl.setAttribute("title", map2.webglError);
   }
   if (map2.webglRenderer) map2.webglCanvas.addEventListener("webglcontextlost", (event) => {
     event.preventDefault();
@@ -73391,7 +73394,7 @@ function ensureMapWebGL(map2) {
     const button = map2.projectionControl.createEl("button", { text: label, attr: { type: "button", title, "aria-label": title } });
     if (value === "isometric" && !map2.webglRenderer) {
       button.disabled = true;
-      button.title = "2.5D requires WebGL 2";
+      button.title = map2.webglError || "2.5D requires WebGL 2";
     }
     button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", (event) => {
