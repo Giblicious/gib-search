@@ -72112,7 +72112,7 @@ var init_mobile_runtime = __esm({
           result.semanticHighlights = choose("body", options.maxPhrases);
           if (++resultIndex % 3 === 0) {
             await yieldToUi();
-            if (this.livePending) throw staleSearchError();
+            if (options._liveGeneration !== void 0 && options._liveGeneration !== this.liveGeneration) throw staleSearchError();
           }
         }
       }
@@ -72140,9 +72140,18 @@ var init_mobile_runtime = __esm({
       searchLive(query, topK, minScore, options = {}) {
         return new Promise((resolve, reject) => {
           if (this.livePending) this.livePending.reject(staleSearchError());
-          this.livePending = { query, topK, minScore, options, resolve, reject };
+          const generation = Number(this.liveGeneration || 0) + 1;
+          this.liveGeneration = generation;
+          this.livePending = { query, topK, minScore, options, generation, resolve, reject };
           this.pumpLiveSearch();
         });
+      }
+      cancelLiveSearch() {
+        this.liveGeneration = Number(this.liveGeneration || 0) + 1;
+        if (this.livePending) {
+          this.livePending.reject(staleSearchError());
+          this.livePending = null;
+        }
       }
       async pumpLiveSearch() {
         if (this.liveRunning || !this.livePending) return;
@@ -72150,8 +72159,8 @@ var init_mobile_runtime = __esm({
         this.livePending = null;
         this.liveRunning = true;
         try {
-          const results = await this.search(request.query, request.topK, request.minScore, request.options);
-          if (this.livePending) request.reject(staleSearchError());
+          const results = await this.search(request.query, request.topK, request.minScore, { ...request.options, _liveGeneration: request.generation });
+          if (this.livePending || request.generation !== this.liveGeneration) request.reject(staleSearchError());
           else request.resolve(results);
         } catch (error) {
           request.reject(error);
@@ -72174,7 +72183,7 @@ var init_mobile_runtime = __esm({
         for (let i3 = 0; i3 < this.vectors.length; i3++) {
           if (i3 % yieldStride === yieldStride - 1) {
             await yieldToUi();
-            if (this.livePending) throw staleSearchError();
+            if (options._liveGeneration !== void 0 && options._liveGeneration !== this.liveGeneration) throw staleSearchError();
           }
           if (options.file && this.meta[i3].file !== options.file || requestedFileSet && !requestedFileSet.has(this.meta[i3].file)) continue;
           const semantic = dotPacked(queryVector, this.packedVectors, i3 * DIMENSION);
@@ -74657,8 +74666,15 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.setUserZoom(this.userZoom * factor, event.clientX - rect.left, event.clientY - rect.top);
   }
   setGraph(center, values, edges = [], roads = []) {
-    this.lastTerrainAt = 0;
-    this.lastCommunityAt = 0;
+    const transition = center?.transition || "full", smoothQueryTransition = Boolean(center?.hasQuery && this.hasQuery && (transition === "provisional" || transition === "refine"));
+    if (smoothQueryTransition) {
+      const now = performance.now();
+      this.lastTerrainAt = Math.max(Number(this.lastTerrainAt || 0), now - 34);
+      this.lastCommunityAt = Math.max(Number(this.lastCommunityAt || 0), now - 34);
+    } else {
+      this.lastTerrainAt = 0;
+      this.lastCommunityAt = 0;
+    }
     const previous = this.byId || /* @__PURE__ */ new Map(), previousQuery = this.queryNode, hasQuery = Boolean(center?.hasQuery), semanticScores = values.map((value) => Number(value.semanticScore || 0)), low = semanticScores.length ? Math.min(...semanticScores) : 0, high = semanticScores.length ? Math.max(...semanticScores) : 1, spread = Math.max(1e-3, high - low);
     this.center = center;
     this.edges = edges;
@@ -74679,6 +74695,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }).filter((edge) => edge.strength > 8e-3);
     this.relationships = new Map(this.activeEdges.map((edge) => [mapEdgeKey(edge.source, edge.target), edge]));
     this.pendingQuery = false;
+    this.pendingQueryHasResults = false;
     this.byId = new Map(this.nodes.map((node) => [node.id, node]));
     const validRoadEndpoint = (id2) => this.byId.has(id2) || id2 === center?.id, nextRoads = roads.filter((road) => validRoadEndpoint(road.source) && validRoadEndpoint(road.target)), introduced = /* @__PURE__ */ new Map(), roadDegrees = /* @__PURE__ */ new Map();
     nextRoads.forEach((road) => {
@@ -74695,30 +74712,33 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.hovered = this.byId.has(this.hovered) || this.hovered === "__query__" ? this.hovered : null;
     const activeCount = this.nodes.filter((node) => node.matched).length;
     this.statusEl.textContent = hasQuery ? `${Number(center.resultCount || 0)} results${activeCount > Number(center.resultCount || 0) ? ` \xB7 ${activeCount} shown` : ""}` : `${this.nodes.length} notes`;
-    this.startSimulation(previous.size ? 0.82 : 1);
+    const transitionHeat = transition === "provisional" ? 0.38 : transition === "refine" ? 0.46 : previous.size ? 0.82 : 1;
+    this.startSimulation(transitionHeat);
     this.updateDetail();
   }
   beginQuery(label, restart = false) {
     if (!this.queryNode || this.hasQuery && !restart) return;
-    const entering = !this.hasQuery;
+    const entering = !this.hasQuery, retainingResults = !entering && this.nodes.some((node) => node.matched);
     this.hasQuery = true;
     this.pendingQuery = true;
-    this.center = { ...this.center || {}, label, hasQuery: true, resultCount: 0 };
+    this.pendingQueryHasResults = retainingResults;
+    this.center = { ...this.center || {}, label, hasQuery: true, resultCount: retainingResults ? Number(this.center?.resultCount || 0) : 0 };
     this.queryNode.label = label;
     if (entering) {
       const centerX = this.nodes.reduce((sum, node) => sum + node.x, 0) / Math.max(1, this.nodes.length), centerY = this.nodes.reduce((sum, node) => sum + node.y, 0) / Math.max(1, this.nodes.length);
       this.queryNode.x = centerX;
       this.queryNode.y = centerY;
+      this.queryNode.vx = this.queryNode.vy = 0;
     }
-    this.queryNode.vx = this.queryNode.vy = 0;
     this.targetQueryPresence = 1;
     for (const node of this.nodes) {
-      node.matched = false;
-      node.targetVisibility = 0.3 + node.fileScale * 0.28;
-      node.targetBlur = this.options.preserveBackground ? 0.2 : 0;
-      node.targetAccent = 0;
+      if (entering) node.matched = false;
+      const active = retainingResults && node.matched;
+      node.targetVisibility = active ? Math.max(0.46, Number(node.visibility || 0) * 0.9) : this.options.preserveBackground ? 0.08 + node.fileScale * 0.12 : 0.04;
+      node.targetBlur = this.options.preserveBackground && !active ? 1 : active ? 0.08 : 0;
+      node.targetAccent = active ? Number(node.targetAccent || 0) * 0.72 : 0;
     }
-    this.startSimulation(0.86);
+    this.startSimulation(entering ? 0.62 : 0.24);
   }
   beginScope(files) {
     const active = new Set(files || []);
@@ -74906,7 +74926,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       body.x += body.vx;
       body.y += body.vy;
     }
-    const cameraBodies = this.hasQuery ? this.pendingQuery ? this.nodes : [query, ...foreground] : this.nodes, followGraph = linkMode || this.hasQuery, targetX = followGraph && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.x, 0) / cameraBodies.length : 0, targetY = followGraph && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.y, 0) / cameraBodies.length : 0, extent = followGraph && cameraBodies.length ? Math.max(0.16, ...cameraBodies.map((body) => Math.hypot(body.x - targetX, body.y - targetY))) : 0.8, targetZoom = linkMode ? Math.max(0.48, Math.min(1.45, 0.72 / extent)) : this.hasQuery && !this.pendingQuery ? Math.max(1.12, Math.min(2.15, 0.7 / extent)) : 1;
+    const keepQueryFraming = this.hasQuery && (!this.pendingQuery || this.pendingQueryHasResults), cameraBodies = this.hasQuery ? keepQueryFraming ? [query, ...foreground] : this.nodes : this.nodes, followGraph = linkMode || this.hasQuery, targetX = followGraph && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.x, 0) / cameraBodies.length : 0, targetY = followGraph && cameraBodies.length ? cameraBodies.reduce((sum, body) => sum + body.y, 0) / cameraBodies.length : 0, extent = followGraph && cameraBodies.length ? Math.max(0.16, ...cameraBodies.map((body) => Math.hypot(body.x - targetX, body.y - targetY))) : 0.8, targetZoom = linkMode ? Math.max(0.48, Math.min(1.45, 0.72 / extent)) : keepQueryFraming ? Math.max(1.12, Math.min(2.15, 0.7 / extent)) : 1;
     this.cameraX += (targetX - this.cameraX) * 0.055;
     this.cameraY += (targetY - this.cameraY) * 0.055;
     this.cameraZoom += (targetZoom - this.cameraZoom) * 0.05;
@@ -76371,11 +76391,11 @@ var GraphView = class extends ItemView {
     }
   }
   handleQuery(value) {
-    const query = String(value || "").trim();
+    const query = String(value || "").trim(), version2 = ++this.searchVersion;
     this.query = query;
     window.clearTimeout(this.searchTimer);
+    this.plugin.search.cancelLiveSearch?.();
     if (query.length < 3) {
-      this.searchVersion++;
       this.results = [];
       this.resultsPanel.hide();
       this.reopenButton.hide();
@@ -76391,24 +76411,26 @@ var GraphView = class extends ItemView {
     this.map.setTitle(`Searching \u201C${query}\u201D\u2026`);
     this.resultsPanel.toggle(!this.resultsCollapsed);
     this.reopenButton.toggle(this.resultsCollapsed);
-    this.resultList.empty();
-    this.resultList.createDiv({ cls: "gib-graph-results-empty", text: "Searching\u2026" });
-    this.resultStatus.textContent = "";
-    this.searchTimer = window.setTimeout(() => this.runSearch(query), 75);
+    if (!this.results.length) {
+      this.resultList.empty();
+      this.resultList.createDiv({ cls: "gib-graph-results-empty", text: "Searching\u2026" });
+      this.resultStatus.textContent = "";
+    }
+    this.searchTimer = window.setTimeout(() => this.runSearch(query, false, version2), 130);
   }
-  async runSearch(query, immediate = false) {
+  async runSearch(query, immediate = false, requestedVersion = null) {
     if (String(query).trim().length < 3) return;
-    const version2 = ++this.searchVersion, tweaks = activeTweaks(this.plugin), limit = Math.max(30, tweaks.topK);
+    const version2 = requestedVersion ?? ++this.searchVersion, tweaks = activeTweaks(this.plugin), limit = Math.max(30, tweaks.topK);
     try {
       const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), raw = await runSearch(query, Math.min(240, limit * 5), tweaks.minScore, { scoreWindow: tweaks.scoreWindow, folderPathBoost: this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 20, files: this.activeScope()?.files });
       if (version2 !== this.searchVersion || query !== this.query) return;
-      const results = groupSearchResults(raw, query, limit), resultScores = results.map((result) => Number(result.score || 0)), low = resultScores.length ? Math.min(...resultScores) : 0, high = resultScores.length ? Math.max(...resultScores) : 1, spread = Math.max(1e-3, high - low), provisionalByFile = new Map(results.map((result) => [result.file, result]));
+      const results = groupSearchResults(raw, query, limit), resultScores = results.map((result) => Number(result.score || 0)), low = resultScores.length ? Math.min(...resultScores) : 0, high = resultScores.length ? Math.max(...resultScores) : 1, spread = Math.max(1e-3, high - low), provisionalByFile = new Map(results.map((result) => [result.file, result])), currentPositions = new Map(this.map.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
       this.results = results;
       this.renderResults();
       this.map.setTitle(`Mapping ${results.length} results\u2026`);
-      this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, this.baseNodes.map((base) => {
-        const result = provisionalByFile.get(base.id);
-        return result ? { ...base, matched: true, generation: 1, relevance: 0.08 + (Number(result.score || 0) - low) / spread * 0.92 } : { ...base, matched: false, relevance: 0 };
+      this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length, transition: "provisional" }, this.baseNodes.map((base) => {
+        const result = provisionalByFile.get(base.id), current = currentPositions.get(base.id), positioned = current ? { layoutX: current.x, layoutY: current.y } : {};
+        return result ? { ...base, ...positioned, matched: true, generation: 1, relevance: 0.08 + (Number(result.score || 0) - low) / spread * 0.92 } : { ...base, ...positioned, matched: false, relevance: 0 };
       }), this.baseEdges, this.baseRoads);
       await new Promise((resolve) => requestAnimationFrame(resolve));
       const model5 = await buildQueryMapModel(this.plugin, query, results, { lens: "relevance", generations: this.mapGenerations, mapMode: this.mapGroupingMode, fileScales: new Map(this.baseNodes.map((node) => [node.id, node.fileScale])) });
@@ -76416,7 +76438,7 @@ var GraphView = class extends ItemView {
       const queryById = new Map(model5.nodes.map((node) => [node.id, node])), merged = this.baseNodes.map((base) => queryById.get(base.id) || { ...base, matched: false, relevance: 0 });
       this.map.setTitle(`${results.length} results \xB7 ${mapGroupingLabel(this.mapGroupingMode)}`);
       const edgeKeys = new Set(model5.edges.map((edge) => mapEdgeKey(edge.source, edge.target))), backgroundEdges = this.baseEdges.filter((edge) => !edgeKeys.has(mapEdgeKey(edge.source, edge.target)));
-      this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, merged, [...model5.edges, ...backgroundEdges], model5.roads);
+      this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length, transition: "refine" }, merged, [...model5.edges, ...backgroundEdges], model5.roads);
     } catch (error) {
       if (version2 === this.searchVersion) {
         this.resultList.empty();
