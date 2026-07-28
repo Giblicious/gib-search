@@ -16,6 +16,16 @@ Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the esta
 
 The dedicated map view begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query enters the map while results load. Matching notes form a query-centered layout; nonmatches remain as subdued spatial context. A collapsible floating panel shows the matching source excerpts.
 
+Saved Atlas Views can organize the same notes through five different analysis signals:
+
+- **Meaning** maps what the writing is about using semantic embeddings.
+- **Emotion** reads feelings expressed by the writer rather than matching emotional keywords as topics.
+- **Purpose** distinguishes questioning, explaining, reflecting, persuading, comparing, planning, and summarizing.
+- **Position** compares passages directly with a reference claim and separates support, opposition, questioning, uncertainty, and neutral reporting.
+- **Form** combines local language inference with document structure to distinguish journals, essays, conversations, reference notes, narratives, and plans.
+
+The View builder includes editable local templates for these signals. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes. Hovering a classified map node shows its strongest quality and the source passage behind that judgment.
+
 ## Install with BRAT
 
 1. Install and enable **BRAT** in Obsidian.
@@ -32,7 +42,7 @@ Each device builds its own local index. The first index can take several minutes
 - Notes, queries, embeddings, and indexes remain on the local device.
 - Inference runs directly inside Obsidian using the bundled WebAssembly engine.
 - BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached.
-- If relationship intelligence is enabled, MobileBERT MNLI is downloaded the first time the Arguments lens needs it. It runs locally and its judgments are cached on the device.
+- MobileBERT MNLI is downloaded the first time Arguments or a nonsemantic analytical View needs it. It runs locally and its judgments and text profiles are cached on the device.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 
@@ -40,7 +50,7 @@ On desktop, the model, index, and diagnostic logs are stored inside the Gib Sear
 
 ## Model
 
-Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. Optional support/contrast classification uses a quantized **MobileBERT MNLI** model only on a bounded set of visible graph connections.
+Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. A quantized **MobileBERT MNLI** model handles passage-level relationship, emotion, purpose, position, and form judgments. Form analysis also uses local document structure. Work is bounded and cached so ordinary search and indexing do not wait for analytical Views.
 
 ## Commands
 

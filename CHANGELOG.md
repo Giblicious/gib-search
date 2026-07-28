@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.41.0
+
+- Adds distinct Meaning, Emotion, Purpose, Position, and Form signals to the Atlas View builder.
+- Keeps meaning on BGE embeddings while using local passage-level inference for expressed emotion, writing purpose, and position toward a claim.
+- Combines inference with document structure for more reliable writing-form classification.
+- Adds a required reference claim and direct entailment/contradiction analysis to Position Views.
+- Caches content-fingerprinted text profiles, checkpoints bounded analysis batches, and reports analysis progress without slowing ordinary search or indexing.
+- Grounds map classifications in representative source passages shown on hover.
+- Removes the misleading embedding-only emotion, writing-mode, and project-state presets and their stale controls.
+
 ## 0.40.0
 
 - Replaces the experimental Atlas View settings with a dedicated three-stage builder and live map preview.
