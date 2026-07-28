@@ -509,7 +509,7 @@ export class MobileSearchRuntime {
         chosen.push(item); if (chosen.length === maximum) break;
       } return chosen.map(({ phrase, confidence }) => ({ phrase, score: confidence })); };
       result.filenameHighlights = choose('filename', 2); result.headingHighlights = choose('heading', 2); result.semanticHighlights = choose('body', options.maxPhrases);
-      if (++resultIndex % 3 === 0) { await yieldToUi(); if (this.livePending) throw staleSearchError(); }
+      if (++resultIndex % 3 === 0) { await yieldToUi(); if (options._liveGeneration !== undefined && options._liveGeneration !== this.liveGeneration) throw staleSearchError(); }
     }
   }
   cacheResult(cache, key, value, maximum) { cache.delete(key); cache.set(key, value); while (cache.size > maximum) cache.delete(cache.keys().next().value); return value; }
@@ -521,12 +521,13 @@ export class MobileSearchRuntime {
   searchLive(query, topK, minScore, options = {}) {
     return new Promise((resolve, reject) => {
       if (this.livePending) this.livePending.reject(staleSearchError());
-      this.livePending = { query, topK, minScore, options, resolve, reject }; this.pumpLiveSearch();
+      const generation = Number(this.liveGeneration || 0) + 1; this.liveGeneration = generation; this.livePending = { query, topK, minScore, options, generation, resolve, reject }; this.pumpLiveSearch();
     });
   }
+  cancelLiveSearch() { this.liveGeneration = Number(this.liveGeneration || 0) + 1; if (this.livePending) { this.livePending.reject(staleSearchError()); this.livePending = null; } }
   async pumpLiveSearch() {
     if (this.liveRunning || !this.livePending) return; const request = this.livePending; this.livePending = null; this.liveRunning = true;
-    try { const results = await this.search(request.query, request.topK, request.minScore, request.options); if (this.livePending) request.reject(staleSearchError()); else request.resolve(results); }
+    try { const results = await this.search(request.query, request.topK, request.minScore, { ...request.options, _liveGeneration: request.generation }); if (this.livePending || request.generation !== this.liveGeneration) request.reject(staleSearchError()); else request.resolve(results); }
     catch (error) { request.reject(error); }
     finally { this.liveRunning = false; if (this.livePending) this.pumpLiveSearch(); }
   }
@@ -536,7 +537,7 @@ export class MobileSearchRuntime {
     const cached = this.resultCache.get(cacheKey); if (cached) { this.cacheResult(this.resultCache, cacheKey, cached, 80); return cached; }
     const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery); const queryTokens = [...new Set(tokens(`${query} ${correctedQuery}`))], queryEntities = new Set(extractGraphEntities(`${query} ${correctedQuery}`).map(value => value.toLowerCase())), yieldStride = this.isMobile ? 192 : 1024; const scores = [];
     for (let i = 0; i < this.vectors.length; i++) {
-      if (i % yieldStride === yieldStride - 1) { await yieldToUi(); if (this.livePending) throw staleSearchError(); } if (options.file && this.meta[i].file !== options.file || requestedFileSet && !requestedFileSet.has(this.meta[i].file)) continue; const semantic = dotPacked(queryVector, this.packedVectors, i * DIMENSION); if (semantic < minScore) continue;
+      if (i % yieldStride === yieldStride - 1) { await yieldToUi(); if (options._liveGeneration !== undefined && options._liveGeneration !== this.liveGeneration) throw staleSearchError(); } if (options.file && this.meta[i].file !== options.file || requestedFileSet && !requestedFileSet.has(this.meta[i].file)) continue; const semantic = dotPacked(queryVector, this.packedVectors, i * DIMENSION); if (semantic < minScore) continue;
       const filenameBoost = lexicalCoverage(queryTokens, this.lexical[i].filename) * .05; const folderPathBoost = (options.folderPathBoost || 0) * lexicalCoverage(queryTokens, this.lexical[i].folder), passageEntities = new Set((this.meta[i].entities || []).map(value => String(value).toLowerCase())), entityBoost = queryEntities.size ? [...queryEntities].filter(entity => passageEntities.has(entity)).length / queryEntities.size * .025 : 0;
       scores.push({ index: i, score: semantic, rankingScore: semantic + filenameBoost + folderPathBoost + entityBoost, filenameBoost, folderPathBoost, entityBoost });
     }
