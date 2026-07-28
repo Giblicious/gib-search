@@ -73215,6 +73215,17 @@ var init_atlas_engine = __esm({
       constructor(plugin6) {
         this.plugin = plugin6;
         this.sceneCache = /* @__PURE__ */ new Map();
+        this.context = { surface: "note", state: null, selection: null, hover: null };
+        this.contextListeners = /* @__PURE__ */ new Set();
+      }
+      publishContext(next = {}) {
+        this.context = { ...this.context, ...next };
+        for (const listener of this.contextListeners) listener(this.context);
+      }
+      subscribeContext(listener) {
+        this.contextListeners.add(listener);
+        listener(this.context);
+        return () => this.contextListeners.delete(listener);
       }
       views() {
         const configured = Array.isArray(this.plugin.settings?.atlasViews) ? this.plugin.settings.atlasViews : [], views = configured.length ? configured : [DEFAULT_ATLAS_VIEW];
@@ -76222,77 +76233,172 @@ var NeighborhoodView = class extends ItemView {
     this.pinned = false;
     this.loadVersion = 0;
     this.lens = validSearchLens(plugin6.settings.defaultSearchLens);
+    this.atlasMode = false;
+    this.inheritedState = null;
   }
   getViewType() {
     return NEIGHBORHOOD_VIEW;
   }
   getDisplayText() {
-    return "Note neighborhood";
+    return "Atlas Companion";
   }
   getIcon() {
-    return "orbit";
+    return "compass";
   }
   async onOpen() {
     this.contentEl.empty();
     this.contentEl.addClass("gib-neighborhood-view");
     const toolbar = this.contentEl.createDiv({ cls: "gib-neighborhood-toolbar" });
     const heading = toolbar.createDiv({ cls: "gib-neighborhood-heading" });
-    heading.createDiv({ cls: "gib-neighborhood-kicker", text: "Gib Search" });
-    this.noteTitle = heading.createDiv({ cls: "gib-neighborhood-note", text: "Note neighborhood" });
-    this.lensSelect = toolbar.createEl("select", { cls: "dropdown gib-neighborhood-lens", attr: { "aria-label": "Local note lens", title: "Local note lens" } });
+    heading.createDiv({ cls: "gib-neighborhood-kicker", text: "Atlas Companion" });
+    this.noteTitle = heading.createDiv({ cls: "gib-neighborhood-note", text: "Follow the active note" });
+    this.lensSelect = toolbar.createEl("select", { cls: "dropdown gib-neighborhood-lens", attr: { "aria-label": "Companion lens", title: "Relationship lens" } });
     for (const [value, lens] of Object.entries(SEARCH_LENSES)) this.lensSelect.createEl("option", { text: lens.label, attr: { value } });
     this.lensSelect.value = this.lens;
     this.lensSelect.addEventListener("change", () => {
       this.lens = validSearchLens(this.lensSelect.value);
-      if (this.filePath) this.centerOn(this.filePath);
+      if (this.filePath) this.centerOn(this.filePath, this.pinned, this.inheritedState);
     });
-    this.pinButton = toolbar.createEl("button", { cls: "gib-neighborhood-pin", attr: { type: "button", "aria-label": "Pin current note", title: "Pin current note" } });
+    this.pinButton = toolbar.createEl("button", { cls: "gib-neighborhood-pin", attr: { type: "button", "aria-label": "Pin companion", title: "Pin current context" } });
     setIcon(this.pinButton, "pin");
     this.pinButton.addEventListener("click", () => {
       this.pinned = !this.pinned;
-      this.pinButton.toggleClass("is-active", this.pinned);
-      this.pinButton.setAttribute("aria-pressed", String(this.pinned));
-      this.pinButton.setAttribute("title", this.pinned ? "Follow active note" : "Pin current note");
+      this.updatePin();
+      if (!this.pinned) this.syncWorkspace();
     });
-    const mapHost = this.contentEl.createDiv({ cls: "gib-neighborhood-map" });
-    this.map = new LivingSemanticMapCanvas(mapHost, this.app, { title: "Closest notes", showLinks: this.plugin.settings.showWikilinks, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, onShowLinks: async (value) => {
-      this.plugin.settings.showWikilinks = value;
-      await this.plugin.save();
-    }, onManualLinkInfluence: async (value) => {
-      this.plugin.settings.graphManualLinkInfluence = value;
-      await this.plugin.save();
-    }, onSelect: (file) => this.openFile(file), onOpen: (file) => this.openFile(file) });
+    this.body = this.contentEl.createDiv({ cls: "gib-companion-body" });
+    const mapHost = this.body.createDiv({ cls: "gib-neighborhood-map" });
+    this.splitter = this.body.createDiv({ cls: "gib-companion-splitter", attr: { role: "separator", "aria-label": "Resize visual and list views", "aria-orientation": "horizontal" } });
+    const listSection = this.body.createDiv({ cls: "gib-companion-list-section" }), listHeader = listSection.createDiv({ cls: "gib-companion-list-header" });
+    listHeader.createSpan({ text: "Related notes" });
+    this.listStatus = listHeader.createSpan({ cls: "gib-companion-list-status" });
+    this.list = listSection.createDiv({ cls: "gib-companion-list" });
+    this.map = new LivingSemanticMapCanvas(mapHost, this.app, { title: "Local Atlas", minimalChrome: true, showLinks: this.plugin.settings.showWikilinks, manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence, semanticColors: this.plugin.settings.graphSemanticColors, tuning: this.plugin.settings.mapTuning, onHover: (file) => this.highlightList(file), onSelect: (file) => {
+      if (file) this.openFile(file);
+    }, onOpen: (file) => this.openFile(file) });
+    this.setupSplitter(mapHost);
     this.fileOpenRef = this.app.workspace.on("file-open", (file) => {
-      if (!this.pinned && file instanceof TFile) this.centerOn(file.path);
+      if (!this.pinned && file instanceof TFile && this.app.workspace.activeLeaf?.view?.getViewType?.() !== GRAPH_VIEW) this.followNote(file.path);
     });
-    const active = this.app.workspace.getActiveFile();
-    if (active) await this.centerOn(active.path);
-    else this.empty("Open a note to see its semantic neighborhood");
+    this.activeLeafRef = this.app.workspace.on("active-leaf-change", (leaf) => {
+      if (leaf !== this.leaf) this.syncWorkspace(leaf);
+    });
+    this.contextOff = this.plugin.atlas.subscribeContext((context) => {
+      if (!this.pinned && context.surface === "atlas") this.followAtlas(context);
+    });
+    this.syncWorkspace();
   }
-  async centerOn(filePath, pin = this.pinned) {
+  setupSplitter(mapHost) {
+    this.splitter.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      const startY = event.clientY, startHeight = mapHost.getBoundingClientRect().height, total = this.body.getBoundingClientRect().height;
+      this.splitter.setPointerCapture?.(event.pointerId);
+      const move = (value) => {
+        const height = Math.max(150, Math.min(total - 150, startHeight + value.clientY - startY));
+        mapHost.style.flexBasis = `${height}px`;
+      };
+      const stop = (value) => {
+        this.splitter.releasePointerCapture?.(value.pointerId);
+        this.splitter.removeEventListener("pointermove", move);
+        this.splitter.removeEventListener("pointerup", stop);
+        this.splitter.removeEventListener("pointercancel", stop);
+      };
+      this.splitter.addEventListener("pointermove", move);
+      this.splitter.addEventListener("pointerup", stop);
+      this.splitter.addEventListener("pointercancel", stop);
+    });
+  }
+  updatePin() {
+    this.pinButton?.toggleClass("is-active", this.pinned);
+    this.pinButton?.setAttribute("aria-pressed", String(this.pinned));
+    this.pinButton?.setAttribute("title", this.pinned ? "Unpin and follow workspace context" : "Pin current context");
+  }
+  syncWorkspace(leaf = this.app.workspace.activeLeaf) {
+    if (this.pinned || leaf === this.leaf) return;
+    const active = leaf?.view;
+    if (active?.getViewType?.() === GRAPH_VIEW) {
+      this.followAtlas(this.plugin.atlas.context);
+      return;
+    }
+    const file = this.app.workspace.getActiveFile();
+    if (file instanceof TFile) this.followNote(file.path);
+    else this.empty("Open a note or select one in the Atlas");
+  }
+  followNote(filePath) {
+    this.atlasMode = false;
+    this.inheritedState = null;
+    this.lensSelect.disabled = false;
+    this.centerOn(filePath, false, null);
+  }
+  followAtlas(context) {
+    this.atlasMode = true;
+    this.inheritedState = context.state || this.plugin.atlas.state();
+    this.lens = validSearchLens(this.inheritedState.lens);
+    this.lensSelect.value = this.lens;
+    this.lensSelect.disabled = true;
+    const target = context.hover || context.selection;
+    window.clearTimeout(this.contextTimer);
+    if (!target) {
+      this.empty("Select a note or region in the Atlas");
+      return;
+    }
+    this.contextTimer = window.setTimeout(() => this.centerOn(target, false, this.inheritedState), context.hover ? 70 : 0);
+  }
+  async centerOn(filePath, pin = this.pinned, inheritedState = this.inheritedState) {
     const file = this.app.vault.getAbstractFileByPath(filePath);
     if (!(file instanceof TFile)) return;
     this.filePath = file.path;
-    this.pinned = Boolean(pin);
-    this.pinButton?.toggleClass("is-active", this.pinned);
-    this.pinButton?.setAttribute("aria-pressed", String(this.pinned));
-    this.pinButton?.setAttribute("title", this.pinned ? "Follow active note" : "Pin current note");
+    if (pin) this.pinned = true;
+    this.updatePin();
     this.noteTitle.textContent = file.basename;
-    const version2 = ++this.loadVersion;
+    const version2 = ++this.loadVersion, base = inheritedState || this.plugin.atlas.state(), state = this.plugin.atlas.state({ viewId: base.viewId, anchor: { type: "note", value: file.path }, lens: inheritedState ? base.lens : this.lens, scale: "neighborhood" });
     try {
-      const state = this.plugin.atlas.state({ anchor: { type: "note", value: file.path }, lens: this.lens, scale: "neighborhood" }), scene = await this.plugin.atlas.scene(state);
+      const scene = await this.plugin.atlas.scene(state);
       if (version2 !== this.loadVersion) return;
-      this.map.setMapGroupingMode(atlasLens2(this.lens).mapMode);
-      this.map.setTitle(`${SEARCH_LENSES[this.lens].label} \xB7 ${file.basename}`);
+      this.map.setMapGroupingMode(atlasLens2(state.lens).mapMode);
       this.map.setGraph(scene.center, scene.nodes, scene.edges, scene.roads);
       this.map.setIntelligenceStatus("");
+      this.renderList(scene);
     } catch (error) {
       if (version2 === this.loadVersion) this.empty(error.message);
     }
   }
+  renderList(scene) {
+    const nodes = [...scene.nodes].sort((first, second) => Number(second.score ?? second.relevance ?? 0) - Number(first.score ?? first.relevance ?? 0));
+    this.list.empty();
+    this.listStatus.textContent = String(nodes.length);
+    for (const node of nodes) {
+      const row = this.list.createDiv({ cls: "gib-companion-result", attr: { tabindex: "0" } });
+      row.dataset.gibFile = node.id;
+      row.addEventListener("pointerenter", () => this.map.setHover(node.id));
+      row.addEventListener("pointerleave", () => this.map.setHover(null));
+      row.addEventListener("click", () => this.openFile(node.id));
+      const icon = row.createSpan({ cls: "gib-companion-result-icon" });
+      setIcon(icon, "sticky-note");
+      const text = row.createDiv({ cls: "gib-companion-result-text" });
+      text.createDiv({ cls: "gib-companion-result-title", text: node.label || node.id.split("/").pop().replace(/\.md$/i, "") });
+      text.createDiv({ cls: "gib-companion-result-path", text: node.id.includes("/") ? node.id.slice(0, node.id.lastIndexOf("/")) : "Vault" });
+      const score = Number(node.score ?? node.semanticScore);
+      if (Number.isFinite(score)) row.createSpan({ cls: "gib-companion-result-score", text: `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%` });
+    }
+  }
+  highlightList(file) {
+    for (const row2 of this.list.querySelectorAll(".is-map-hovered")) row2.removeClass("is-map-hovered");
+    if (!file) return;
+    const row = [...this.list.querySelectorAll(".gib-companion-result")].find((item) => item.dataset.gibFile === file);
+    row?.addClass("is-map-hovered");
+    row?.scrollIntoView({ block: "nearest" });
+  }
   empty(message) {
-    this.map?.setTitle(message);
-    this.map?.setGraph({ label: "Note" }, [], []);
+    this.loadVersion++;
+    this.filePath = null;
+    this.noteTitle.textContent = message;
+    this.map?.setGraph({ label: "Companion", hasQuery: false, resultCount: 0 }, [], [], []);
+    if (this.list) {
+      this.list.empty();
+      this.list.createDiv({ cls: "gib-companion-empty", text: message });
+    }
+    if (this.listStatus) this.listStatus.textContent = "";
   }
   async openFile(filePath) {
     const file = this.app.vault.getAbstractFileByPath(filePath);
@@ -76300,7 +76406,10 @@ var NeighborhoodView = class extends ItemView {
   }
   async onClose() {
     this.loadVersion++;
+    window.clearTimeout(this.contextTimer);
     if (this.fileOpenRef) this.app.workspace.offref(this.fileOpenRef);
+    if (this.activeLeafRef) this.app.workspace.offref(this.activeLeafRef);
+    this.contextOff?.();
     this.map?.destroy();
   }
 };
@@ -76361,8 +76470,15 @@ var GraphView = class extends ItemView {
       manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence,
       semanticColors: this.plugin.settings.graphSemanticColors,
       tuning: this.plugin.settings.mapTuning,
-      onHover: (file) => this.hoverResult(file),
-      onSelect: (file) => file ? this.showPreview(file) : this.closePreview(),
+      onHover: (file) => {
+        this.hoverResult(file);
+        this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), hover: file });
+      },
+      onSelect: (file) => {
+        if (file) this.showPreview(file);
+        else this.closePreview();
+        this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), selection: file, hover: null });
+      },
       onOpen: (file) => this.openFile(file)
     });
     this.input.addEventListener("input", () => this.handleQuery(this.input.value));
@@ -76382,6 +76498,10 @@ var GraphView = class extends ItemView {
     this.input.disabled = false;
     this.input.placeholder = "Search the vault by meaning\u2026";
     this.input.focus();
+    this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), selection: null, hover: null });
+  }
+  currentAtlasState() {
+    return this.query.length >= 3 ? this.plugin.atlas.state({ viewId: this.atlasState.viewId, anchor: { type: "query", value: this.query }, lens: this.atlasState.lens, scale: this.atlasState.scale }) : this.atlasState;
   }
   indexableFiles() {
     return this.atlasScope.files;
@@ -76423,6 +76543,7 @@ var GraphView = class extends ItemView {
     this.query = query;
     window.clearTimeout(this.searchTimer);
     this.plugin.search.cancelLiveSearch?.();
+    this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), selection: null, hover: null });
     if (query.length < 3) {
       this.results = [];
       this.resultsPanel.hide();
@@ -76871,7 +76992,7 @@ module.exports = class GibSearch extends Plugin {
     this.registerView(NEIGHBORHOOD_VIEW, (leaf) => new NeighborhoodView(leaf, this));
     this.addRibbonIcon("search", "Gib Search", () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: "semantic-search", name: "Semantic search", callback: () => new SemanticSearchModal(this.app, this).open() });
-    this.addCommand({ id: "note-neighborhood", name: "Open note neighborhood", callback: () => this.openNeighborhood(this.app.workspace.getActiveFile()?.path) });
+    this.addCommand({ id: "note-neighborhood", name: "Open Atlas Companion", callback: () => this.openNeighborhood(this.app.workspace.getActiveFile()?.path) });
     this.addCommand({ id: "semantic-graph", name: "Open Gib Search Atlas", callback: () => this.openGraph() });
     this.addSettingTab(new SearchSettings(this.app, this));
     this.logDiagnostic(`Gib Search ${this.manifest.version} loaded on ${this.isMobile ? "mobile" : process.platform}`);

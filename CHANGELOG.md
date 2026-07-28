@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.36.0
+
+- Replaces the old note-neighborhood widget with an adaptive Atlas Companion in Obsidian's native right sidebar.
+- Splits the Companion into a resizable visual neighborhood above and a ranked relationship list below.
+- Follows the active editor note automatically and supports pinning a context in place.
+- Turns the Companion into a semantic loupe while the main Atlas is active, following hover temporarily and locking to selected notes.
+- Inherits the main Atlas View, scope, and lens instead of producing an independent interpretation.
+- Shares hover state between the visual neighborhood and relationship list.
+
 ## 0.35.0
 
 - Introduces a canonical Atlas state built from a saved View, declarative scope, active anchor, lens, and semantic scale.

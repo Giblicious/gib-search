@@ -44,7 +44,10 @@ function cloneScene(scene) {
 }
 
 export class AtlasEngine {
-  constructor(plugin) { this.plugin = plugin; this.sceneCache = new Map(); }
+  constructor(plugin) { this.plugin = plugin; this.sceneCache = new Map(); this.context = { surface: 'note', state: null, selection: null, hover: null }; this.contextListeners = new Set(); }
+
+  publishContext(next = {}) { this.context = { ...this.context, ...next }; for (const listener of this.contextListeners) listener(this.context); }
+  subscribeContext(listener) { this.contextListeners.add(listener); listener(this.context); return () => this.contextListeners.delete(listener); }
 
   views() {
     const configured = Array.isArray(this.plugin.settings?.atlasViews) ? this.plugin.settings.atlasViews : [], views = configured.length ? configured : [DEFAULT_ATLAS_VIEW];
