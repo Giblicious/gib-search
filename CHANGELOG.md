@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.38.0
+
+- Reimagines the Atlas as a clean center workspace instead of a graph surrounded by internal panels.
+- Moves ranked search navigation into a native Obsidian left-sidebar Atlas Navigator and keeps semantic note context in the native right-sidebar Companion.
+- Opens the Atlas workspace with both native companions available while preserving their normal Obsidian collapse behavior.
+- Adds progressive semantic zoom from vault to region, neighborhood, and note scales.
+- Introduces stable community landmarks, map-scale label disclosure, and quieter background notes so the vault reads as geography instead of a uniform dot cloud.
+- Reduces community boundaries, manual links, and regional labels until they become useful through focus or zoom.
+
 ## 0.37.0
 
 - Rebuilds the dedicated Atlas as one continuous sheet with quiet results and note-annotation margins instead of layered overlays.
