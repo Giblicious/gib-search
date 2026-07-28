@@ -70991,7 +70991,7 @@ function staleSearchError() {
   return error;
 }
 function yieldToUi() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return typeof requestAnimationFrame === "function" && typeof document !== "undefined" && !document.hidden ? new Promise((resolve) => requestAnimationFrame(() => resolve())) : new Promise((resolve) => setTimeout(resolve, 0));
 }
 function sampleEvenly(items, maximum) {
   if (items.length <= maximum) return items;
@@ -71195,7 +71195,7 @@ function buildHighlightCandidates(file, chunk) {
     return true;
   });
 }
-var MODEL_ID, RELATION_MODEL_ID, TOPIC_LABEL_MODEL_ID, DIMENSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, STRUCTURAL_TOPIC_LABELS, VAGUE_LABEL_WORDS, IRREGULAR_LEMMAS, MobileSearchRuntime;
+var MODEL_ID, RELATION_MODEL_ID, TOPIC_LABEL_MODEL_ID, DIMENSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, GRAPH_EVIDENCE_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, STRUCTURAL_TOPIC_LABELS, VAGUE_LABEL_WORDS, IRREGULAR_LEMMAS, MobileSearchRuntime;
 var init_mobile_runtime = __esm({
   "src/mobile-runtime.js"() {
     init_transformers_web();
@@ -71206,6 +71206,7 @@ var init_mobile_runtime = __esm({
     DIMENSION = 384;
     HIGHLIGHT_INDEX_VERSION = 1;
     GRAPH_METADATA_VERSION = 1;
+    GRAPH_EVIDENCE_VERSION = 3;
     QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
     INDEXABLE = /* @__PURE__ */ new Set(["md", "txt", "markdown"]);
     STOP_WORDS = /* @__PURE__ */ new Set(["a", "about", "an", "and", "are", "as", "at", "be", "because", "been", "being", "between", "but", "by", "can", "could", "do", "does", "for", "from", "had", "has", "have", "how", "i", "in", "into", "is", "it", "its", "may", "might", "more", "my", "not", "of", "on", "or", "our", "out", "over", "she", "so", "than", "that", "the", "their", "them", "then", "they", "this", "those", "through", "to", "under", "up", "vs", "was", "we", "were", "what", "when", "where", "which", "while", "who", "with", "without", "would", "you", "your"]);
@@ -71235,6 +71236,10 @@ var init_mobile_runtime = __esm({
         this.contentProfileCache = null;
         this.graphEvidenceCache = null;
         this.graphEvidencePromise = null;
+        this.graphEvidencePromiseSignature = "";
+        this.graphEvidenceGeneration = 0;
+        this.graphWarmPromise = null;
+        this.graphWarmSignature = "";
         this.relationCache = /* @__PURE__ */ new Map();
         this.relationPipe = null;
         this.relationModelPromise = null;
@@ -71258,6 +71263,7 @@ var init_mobile_runtime = __esm({
         this.indexRun = null;
         this.indexAgain = false;
         this.indexForce = false;
+        this.indexStable = false;
         this.startedAt = Date.now();
         this.phaseStartedAt = this.startedAt;
         this.processedFiles = 0;
@@ -71400,14 +71406,16 @@ var init_mobile_runtime = __esm({
             });
           } else stored = await this.plugin.desktopIndexStore?.getGraphEvidence?.();
           if (!stored?.files?.length || !stored.scores || !stored.entities) return;
-          const count = stored.files.length, scores = new Float32Array(stored.scores), entities = new Float32Array(stored.entities);
-          if (scores.length !== count * count || entities.length !== count * count) return;
-          this.graphEvidenceCache = { ...stored, scores, entities, fileIndex: new Map(stored.files.map((file, index3) => [file, index3])) };
+          const count = stored.files.length, scores = new Float32Array(stored.scores), entities = new Float32Array(stored.entities), descriptor = this.graphEvidenceSignature(stored.tuning || {});
+          if (stored.version !== GRAPH_EVIDENCE_VERSION || stored.signature !== descriptor.signature || scores.length !== count * count || entities.length !== count * count || count !== descriptor.files.length || !stored.files.every((file, index3) => file === descriptor.files[index3])) return;
+          const rootNodes = stored.rootGraph?.graph?.nodes || [], rootComplete = !stored.rootGraph || rootNodes.length === count && new Set(rootNodes.map((node) => node.id)).size === count && rootNodes.every((node) => stored.files.includes(node.id));
+          this.graphEvidenceCache = { ...stored, rootGraph: rootComplete ? stored.rootGraph : null, scores, entities, fileIndex: new Map(stored.files.map((file, index3) => [file, index3])) };
         } catch {
           this.graphEvidenceCache = null;
         }
       }
       async saveGraphEvidenceCache(cache2) {
+        if (!this.indexStable) return;
         const value = { version: cache2.version, signature: cache2.signature, files: cache2.files, fingerprints: cache2.fingerprints, tuning: cache2.tuning, builtAt: cache2.builtAt, rootTopology: cache2.rootTopology || null, rootGraph: cache2.rootGraph || null, scores: cache2.scores.buffer.slice(cache2.scores.byteOffset, cache2.scores.byteOffset + cache2.scores.byteLength), entities: cache2.entities.buffer.slice(cache2.entities.byteOffset, cache2.entities.byteOffset + cache2.entities.byteLength) }, write = async () => {
           if (this.isMobile) {
             const database = await this.openDatabase();
@@ -71427,7 +71435,11 @@ var init_mobile_runtime = __esm({
         this.starfieldCaches.clear();
       }
       invalidateGraphEvidence() {
+        this.graphEvidenceGeneration++;
         this.graphEvidencePromise = null;
+        this.graphEvidencePromiseSignature = "";
+        this.graphWarmPromise = null;
+        this.graphWarmSignature = "";
         this.contentProfileCache = null;
         this.clearStarfieldCaches();
       }
@@ -71736,9 +71748,8 @@ var init_mobile_runtime = __esm({
         this.queryCache.clear();
         this.resultCache.clear();
         this.conceptFacetCache.clear();
-        this.clearStarfieldCaches();
+        this.invalidateGraphEvidence();
         this.topicBasisCache = null;
-        this.contentProfileCache = null;
         await this.databasePut({ meta: this.meta, vectors: packed.buffer, highlightVectors: packedHighlights.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
         this.refreshLexical();
         this.refreshHighlightPhraseCache();
@@ -71798,6 +71809,7 @@ var init_mobile_runtime = __esm({
         return groups.map((candidates) => candidates.map((candidate) => this.highlightPhraseVectors.get(candidate.phrase.trim().toLowerCase())));
       }
       async performIndexUpdate(force = false) {
+        this.indexStable = false;
         this.setState("indexing", "Checking the semantic index\u2026");
         const files = this.files();
         this.vaultFiles = files.length;
@@ -71844,6 +71856,7 @@ var init_mobile_runtime = __esm({
           this.processedFiles = files.length;
           this.lastSuccessfulIndexAt = Date.now();
           if (metadataChanged) await this.saveIndex();
+          this.indexStable = true;
           this.setState("ready", `Ready (${files.length} files, ${this.meta.length} passages)`);
           return;
         }
@@ -71909,6 +71922,7 @@ var init_mobile_runtime = __esm({
         this.staleFiles = 0;
         this.currentFile = "";
         this.processedFiles = files.length;
+        this.indexStable = true;
         this.setState("ready", `Ready (${files.length} files, ${this.meta.length} passages)`);
       }
       start() {
@@ -71967,11 +71981,9 @@ var init_mobile_runtime = __esm({
           this.queryCache.clear();
           this.resultCache.clear();
           this.conceptFacetCache.clear();
-          this.clearStarfieldCaches();
           this.graphEvidenceCache = null;
-          this.graphEvidencePromise = null;
+          this.invalidateGraphEvidence();
           this.topicBasisCache = null;
-          this.contentProfileCache = null;
           this.refreshLexical();
           this.enabled = true;
           this.cancelRequested = false;
@@ -72723,16 +72735,16 @@ ${item.text || ""}`;
         return copy2;
       }
       graphEvidenceSignature(tuning) {
-        const files = [...new Set(this.meta.map((item) => item.file))].sort(), fingerprints = files.map((file) => this.fileFingerprint(file)), evidenceTuning = { commonnessSuppression: Number(tuning.commonnessSuppression ?? 0.75), passageCoverage: Number(tuning.passageCoverage ?? 0.72), passageDiversity: Number(tuning.passageDiversity ?? 0.28) }, signature = contentFingerprint(`graph-evidence-v2
+        const files = [...new Set(this.meta.map((item) => item.file))].sort(), fingerprints = files.map((file) => this.fileFingerprint(file)), evidenceTuning = { commonnessSuppression: Number(tuning.commonnessSuppression ?? 0.75), passageCoverage: Number(tuning.passageCoverage ?? 0.72), passageDiversity: Number(tuning.passageDiversity ?? 0.28) }, signature = contentFingerprint(`graph-evidence-v${GRAPH_EVIDENCE_VERSION}
 ${JSON.stringify(evidenceTuning)}
 ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
         return { files, fingerprints, tuning: evidenceTuning, signature };
       }
       async vaultGraphEvidence(tuning) {
         const descriptor = this.graphEvidenceSignature(tuning), cached = this.graphEvidenceCache;
-        if (cached?.version === 2 && cached.signature === descriptor.signature && cached.scores.length === descriptor.files.length ** 2 && cached.files.every((file, index3) => file === descriptor.files[index3])) return cached;
-        if (this.graphEvidencePromise) return this.graphEvidencePromise;
-        this.graphEvidencePromise = (async () => {
+        if (cached?.version === GRAPH_EVIDENCE_VERSION && cached.signature === descriptor.signature && cached.scores.length === descriptor.files.length ** 2 && cached.files.every((file, index3) => file === descriptor.files[index3])) return cached;
+        if (this.graphEvidencePromise && this.graphEvidencePromiseSignature === descriptor.signature) return this.graphEvidencePromise;
+        const generation = ++this.graphEvidenceGeneration, pending = (async () => {
           const files = descriptor.files, count = files.length, profiles = this.vaultContentProfiles(files), entitySets = this.fileEntities(files), entityFrequency = /* @__PURE__ */ new Map();
           for (const entities2 of entitySets.values()) for (const entity2 of entities2) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
           const entityAffinity = (first, second) => {
@@ -72761,31 +72773,51 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
             }
             if (first % 5 === 4) await yieldToUi();
           }
-          const value = { version: 2, ...descriptor, builtAt: Date.now(), scores, entities, fileIndex: new Map(files.map((file, index3) => [file, index3])) };
-          this.graphEvidenceCache = value;
-          await this.saveGraphEvidenceCache(value);
+          const value = { version: GRAPH_EVIDENCE_VERSION, ...descriptor, builtAt: Date.now(), scores, entities, fileIndex: new Map(files.map((file, index3) => [file, index3])) };
+          if (generation === this.graphEvidenceGeneration && descriptor.signature === this.graphEvidenceSignature(tuning).signature) {
+            this.graphEvidenceCache = value;
+            await this.saveGraphEvidenceCache(value);
+          }
           return value;
         })();
+        this.graphEvidencePromise = pending;
+        this.graphEvidencePromiseSignature = descriptor.signature;
         try {
-          return await this.graphEvidencePromise;
+          return await pending;
         } finally {
-          this.graphEvidencePromise = null;
+          if (this.graphEvidencePromise === pending) {
+            this.graphEvidencePromise = null;
+            this.graphEvidencePromiseSignature = "";
+          }
         }
       }
       warmGraphEvidence() {
-        if (!this.meta.length || this.graphWarmPromise) return this.graphWarmPromise;
-        const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28 }, this.plugin.settings?.mapTuning || {});
-        this.graphWarmPromise = (async () => {
+        if (!this.meta.length) return null;
+        const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28 }, this.plugin.settings?.mapTuning || {}), signature = this.graphEvidenceSignature(tuning).signature;
+        if (this.graphWarmPromise && this.graphWarmSignature === signature) return this.graphWarmPromise;
+        const pending = (async () => {
           const evidence = await this.vaultGraphEvidence(tuning);
+          if (evidence.signature !== this.graphEvidenceSignature(tuning).signature) return;
           if (!evidence.rootGraph) await this.semanticStarfield("", evidence.files);
+          if (evidence.signature !== this.graphEvidenceSignature(tuning).signature) return;
           for (const listener of this.graphCacheListeners) listener();
         })().catch((error) => this.plugin.logDiagnostic?.(`Graph cache preparation failed: ${error?.message || error}`)).finally(() => {
-          this.graphWarmPromise = null;
+          if (this.graphWarmPromise === pending) {
+            this.graphWarmPromise = null;
+            this.graphWarmSignature = "";
+          }
         });
-        return this.graphWarmPromise;
+        this.graphWarmPromise = pending;
+        this.graphWarmSignature = signature;
+        return pending;
       }
       async semanticStarfield(query, files = null, focusFiles = []) {
-        const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))], trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18;
+        let requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))];
+        const trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18;
+        if (vaultMode) {
+          const indexed = new Set(this.meta.map((item) => item.file));
+          requested = requested.filter((file) => indexed.has(file)).sort();
+        }
         const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28, communitySensitivity: 1, communityMinSize: 3, communityLabelSensitivity: 0.58, neighborhoodStability: 0.68, neighborhoodSeparation: 0.06, neighborhoodCoverage: 0.58, neighborhoodSpread: 1 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:hierarchy-v1:${vaultMode ? "chunks" : "files"}:${Boolean(this.plugin.settings?.generatedTopicLabels)}:${tuning.passageCoverage}:${tuning.commonnessSuppression}:${tuning.passageDiversity}:${tuning.communitySensitivity}:${tuning.communityMinSize}:${tuning.communityLabelSensitivity}:${tuning.neighborhoodStability}:${tuning.neighborhoodSeparation}:${tuning.neighborhoodCoverage}:${tuning.neighborhoodSpread}:${requested.join("\0")}`;
         if (vaultMode && this.graphEvidenceCache?.rootGraph) {
           const descriptor = this.graphEvidenceSignature(tuning), cache2 = this.graphEvidenceCache, sameFiles = requested.length === cache2.files.length && requested.every((file) => cache2.fileIndex.has(file)), currentEvidence = descriptor.signature === cache2.signature;
@@ -72823,9 +72855,9 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
             }
             return shared / Math.max(1e-3, Math.sqrt(aWeight * bWeight));
           };
-          const exactRoot = evidence && entries2.length === evidence.files.length && entries2.every((entry) => evidence.fileIndex.has(entry.id));
+          const exactRoot = evidence && entries2.length === evidence.files.length && entries2.every((entry) => evidence.fileIndex.has(entry.id)), currentRoot = exactRoot && evidence === this.graphEvidenceCache && evidence.signature === this.graphEvidenceSignature(tuning).signature;
           let edges2, uniqueness2;
-          if (exactRoot && evidence.rootTopology) {
+          if (currentRoot && evidence.rootTopology) {
             edges2 = evidence.rootTopology.edges.map((edge) => ({ ...edge }));
             uniqueness2 = new Map(evidence.rootTopology.uniqueness);
           } else {
@@ -72870,7 +72902,7 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
               if (first % 8 === 7) await yieldToUi();
             }
             edges2 = builtEdges;
-            if (exactRoot) {
+            if (currentRoot) {
               evidence.rootTopology = { edges: edges2.map((edge) => ({ ...edge })), uniqueness: [...uniqueness2] };
               this.saveGraphEvidenceCache(evidence).catch((error) => this.plugin.logDiagnostic?.(`Graph topology save failed: ${error?.message || error}`));
             }
@@ -72910,7 +72942,7 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
           return { community, parentCommunity, parentCommunitySize: Number(parentCommunitySizes?.get(parentCommunity) || 1), parentCommunityLabel: parentLabel.label || "", parentCommunityFallbackLabel: parentLabel.fallbackLabel || "", parentCommunityLabelConfidence: Number(parentLabel.confidence || 0), neighborhoodDepth: community === parentCommunity ? 1 : 2, neighborhoodTemperature: Number(parentAnalysis?.temperature || 0), neighborhoodStability: Number(parentAnalysis?.stability || 0), topicAffinities: affinities, communityMembership: Number(affinities[community] || 0), communitySize: Number(communitySizes.get(community) || 1), communityLabel: communityLabels.get(community)?.label || "", communityFallbackLabel: communityLabels.get(community)?.fallbackLabel || "", communityLabelConfidence: Number(communityLabels.get(community)?.confidence || 0) };
         };
         if (!trimmed) {
-          const topics2 = topicCoordinates(entries, basis.center, basis.axes), graph = { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, uniqueness: uniqueness.get(entry.id) ?? 0.5, ...communityFields(entry), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics2.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) }, evidence = this.graphEvidenceCache, fullVault = vaultMode && evidence && requested.length === evidence.files.length && requested.every((file) => evidence.fileIndex.has(file));
+          const topics2 = topicCoordinates(entries, basis.center, basis.axes), graph = { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, uniqueness: uniqueness.get(entry.id) ?? 0.5, ...communityFields(entry), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics2.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) }, evidence = this.graphEvidenceCache, fullVault = vaultMode && evidence && evidence.signature === this.graphEvidenceSignature(tuning).signature && requested.length === evidence.files.length && requested.every((file) => evidence.fileIndex.has(file));
           if (fullVault) {
             evidence.rootGraph = { signature, graph };
             this.saveGraphEvidenceCache(evidence).catch((error) => this.plugin.logDiagnostic?.(`Graph snapshot save failed: ${error?.message || error}`));
@@ -74529,7 +74561,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64), backgroundVisibility = 0.08 + fileScale * 0.12, promoted = Boolean(hasQuery && matched && old && !old.matched), captureX = promoted ? layoutX - Number(old.x || 0) : 0, captureY = promoted ? layoutY - Number(old.y || 0) : 0;
       return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : preserveBackground ? backgroundVisibility : 0 : targetVisibility, blur: old?.blur ?? 0, targetBlur: hasQuery && !matched && preserveBackground ? 1 : 0, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, capture: promoted ? 1 : Number(old?.capture || 0), layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: promoted ? Number(old.vx || 0) * 0.12 + captureX * 0.018 : old?.vx || 0, vy: promoted ? Number(old.vy || 0) * 0.12 + captureY * 0.018 : old?.vy || 0 };
     });
-    this.resolveLayoutOverlaps(this.nodes, hasQuery);
+    this.resolveLayoutOverlaps(hasQuery ? this.nodes.filter((node) => node.matched) : this.nodes, hasQuery);
     const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
     this.activeEdges = edges.map((edge) => {
       const weight = Number(edge.affinity ?? edge.score ?? overallLow), overall = (weight - overallLow) / overallSpread, residual = Math.max(-1, Math.min(1, Number(edge.residualScore || 0))), sourceCommunity = communityById.get(edge.source), targetCommunity = communityById.get(edge.target), crossCommunity = sourceCommunity !== void 0 && targetCommunity !== void 0 && sourceCommunity !== targetCommunity, baseStrength = edge.bridge ? 0.1 : overall * (0.62 + Math.max(0, residual) * 0.48), strength = crossCommunity ? baseStrength * 0.08 : baseStrength;
@@ -74624,7 +74656,9 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       query.vx += (query.layoutX - query.x) * strength;
       query.vy += (query.layoutY - query.y) * strength;
     }
-    this.applyCollisionForces(this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes, alpha2);
+    const collisionBodies = preserveBackground && this.hasQuery ? this.queryPresence > 0.04 ? [query, ...foreground] : foreground : this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes;
+    this.applyCollisionForces(collisionBodies, alpha2);
+    if (preserveBackground && this.hasQuery && (this.backgroundCollisionFrame = (Number(this.backgroundCollisionFrame || 0) + 1) % 6) === 0) this.applyCollisionForces(this.nodes.filter((node) => !node.matched), alpha2 * 0.2);
     if (linkMode) this.applyLinkGraphForces(linkNodes, alpha2);
     const relaxationNodes = linkMode ? [] : this.hasQuery ? foreground : Number(tuning.repulsion || 0) > 0 ? activeNodes : [];
     for (let first = 0; first < relaxationNodes.length; first++) for (let second = first + 1; second < relaxationNodes.length; second++) {
@@ -74907,7 +74941,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       addMass(centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
       anchors.push(center);
     }
-    if (!vaultTerrain) this.suppressEmptySummits(values, columns, rows, step, anchors, sigma);
+    if (!vaultTerrain && !this.pendingQuery) this.suppressEmptySummits(values, columns, rows, step, anchors, sigma);
     return { values, columns, rows, step, maximum: Math.max(1e-3, ...values) };
   }
   suppressEmptySummits(values, columns, rows, step, anchors, sigma) {
@@ -74948,7 +74982,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   paintDensityTerrain(ctx, width, height, colors2) {
     if (this.tuning?.showTopography === false) return;
-    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refreshInterval = this.pendingQuery ? 120 : this.ambientDrawing ? 180 : 48, refresh = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height) || this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= refreshInterval;
+    const now = performance.now(), colorKey = `${colors2.normal}|${colors2.muted}`, refreshInterval = this.ambientDrawing ? 180 : 48, dimensionsChanged = !this.terrainCanvas || this.terrainCanvas.width !== Math.ceil(width) || this.terrainCanvas.height !== Math.ceil(height), refresh = dimensionsChanged || !this.pendingQuery && (this.terrainColorKey !== colorKey || now - Number(this.lastTerrainAt || 0) >= refreshInterval);
     if (refresh) {
       const field = this.semanticDensityField(width, height), maximum = Math.max(0, ...field.values), vaultTerrain = !this.hasQuery && !this.pendingQuery, terrainRange = vaultTerrain ? 0.92 : 3;
       this.lastTerrainField = field;
@@ -76200,11 +76234,19 @@ var GraphView = class extends ItemView {
           const angle = stableMapAngle(file.path), radius = 0.035 + Math.sqrt((index3 + 0.5) / count) * 0.16;
           return { id: file.path, label: file.basename, matched: false, generation: 1, relevance: 0.5, uniqueness: 0.5, fileScale: scales.get(file.path) ?? 0.35, layoutX: Math.cos(angle) * radius, layoutY: Math.sin(angle) * radius };
         });
+        this.baseNodes = seeds;
+        this.baseEdges = [];
+        this.baseRoads = [];
         this.map.setTitle(`Finding places for ${files.length} notes\u2026`);
         this.map.setGraph({ label: "Search", hasQuery: false, resultCount: 0 }, seeds, [], []);
       }
       const graph = await this.plugin.search.semanticStarfield("", paths);
       if (version2 !== this.loadVersion || this.query.length >= 3) return;
+      if (this.plugin.search.phase === "indexing" && graph.nodes.length < paths.length) {
+        const done = Number(this.plugin.search.processedFiles || graph.nodes.length), total = Number(this.plugin.search.totalFiles || paths.length);
+        this.map.setTitle(`Indexing ${done}/${total} notes \xB7 temporary placement`);
+        return;
+      }
       let nodes = graph.nodes.map((node) => ({ ...node, matched: false, generation: 1, relevance: 0.5, fileScale: scales.get(node.id) ?? 0.35, facet: node.community, conceptAffinities: node.topicAffinities }));
       const layout = await this.plugin.search.multiRelationalLayout("", nodes, /* @__PURE__ */ new Map(), { magic: this.plugin.settings.magicGraphEnabled, lens: "relevance", vaultCenter: true, mapMode: this.mapGroupingMode });
       if (version2 !== this.loadVersion || this.query.length >= 3) return;
@@ -76246,7 +76288,6 @@ var GraphView = class extends ItemView {
   }
   async runSearch(query, immediate = false) {
     if (String(query).trim().length < 3) return;
-    if (!immediate) this.map.beginQuery(query, true);
     const version2 = ++this.searchVersion, tweaks = activeTweaks(this.plugin), limit = Math.max(30, tweaks.topK);
     try {
       const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), raw = await runSearch(query, Math.min(240, limit * 5), tweaks.minScore, { scoreWindow: tweaks.scoreWindow, folderPathBoost: this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 20, files: this.activeScope()?.files });
