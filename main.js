@@ -72666,13 +72666,16 @@ function validSearchLens(value) {
 function validMapGrouping(value) {
   return ["similarity", "topics", "links"].includes(value) ? value : "similarity";
 }
+function validMapProjection(value) {
+  return value === "isometric" ? "isometric" : "flat";
+}
 function mapGroupingLabel(value) {
   return value === "topics" ? "Topics" : value === "links" ? "Links" : "Similarity";
 }
 function mapTuningNeedsLayout(key) {
   return ["contentWeight", "residualWeight", "semanticWeight", "entityWeight", "commonnessSuppression", "passageCoverage", "passageDiversity", "distanceContrast", "communitySensitivity", "communityMinSize", "communityLabelSensitivity", "reset"].includes(key);
 }
-var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", mapGroupingMode: "similarity", magicGraphEnabled: true, graphSemanticColors: true, generatedTopicLabels: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
+var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", mapGroupingMode: "similarity", mapProjection: "flat", magicGraphEnabled: true, graphSemanticColors: true, generatedTopicLabels: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
 function activeIndexDir(plugin6) {
   return path.join(plugin6.pluginDir, "embeddings", MODEL_PROFILES.bge.indexFolder);
 }
@@ -73207,6 +73210,242 @@ async function buildQueryMapModel(plugin6, query, results, options = {}) {
     throw error;
   }
 }
+var SemanticMapWebGLRenderer = class {
+  constructor(canvas) {
+    this.canvas = canvas;
+    const gl2 = canvas.getContext("webgl2", { alpha: true, antialias: true, premultipliedAlpha: true, powerPreference: "high-performance" });
+    if (!gl2) throw new Error("WebGL 2 is unavailable");
+    this.gl = gl2;
+    this.terrainProgram = this.program(`#version 300 es
+      in vec2 a_uv; uniform sampler2D u_height; uniform float u_projection; out vec2 v_uv;
+      void main(){ float height=texture(u_height,a_uv).r; vec2 flat=vec2(a_uv.x*2.0-1.0,1.0-a_uv.y*2.0); vec2 iso=vec2((flat.x+flat.y*.18)*.86,(flat.y*.78+height*.24)*.88); gl_Position=vec4(mix(flat,iso,u_projection),0.0,1.0); v_uv=a_uv; }`, `#version 300 es
+      precision mediump float; in vec2 v_uv; uniform sampler2D u_color; out vec4 outColor;
+      void main(){ outColor=texture(u_color,v_uv); }`);
+    this.pointProgram = this.program(`#version 300 es
+      in vec2 a_position; in float a_size; in vec4 a_color; out vec4 v_color;
+      void main(){ gl_Position=vec4(a_position,0.0,1.0); gl_PointSize=a_size; v_color=a_color; }`, `#version 300 es
+      precision mediump float; in vec4 v_color; out vec4 outColor;
+      void main(){ float distance=length(gl_PointCoord-vec2(.5)); float edge=1.0-smoothstep(.38,.5,distance); if(edge<=0.0) discard; outColor=vec4(v_color.rgb,v_color.a*edge); }`);
+    this.terrainVao = gl2.createVertexArray();
+    this.terrainBuffer = gl2.createBuffer();
+    this.indexBuffer = gl2.createBuffer();
+    this.pointVao = gl2.createVertexArray();
+    this.pointBuffer = gl2.createBuffer();
+    this.colorTexture = this.texture();
+    this.heightTexture = this.texture();
+    this.textureKey = "";
+    this.heightKey = "";
+    this.buildTerrainMesh(56);
+    gl2.bindVertexArray(this.pointVao);
+    gl2.bindBuffer(gl2.ARRAY_BUFFER, this.pointBuffer);
+    const stride = 7 * 4, position = gl2.getAttribLocation(this.pointProgram, "a_position"), size = gl2.getAttribLocation(this.pointProgram, "a_size"), color = gl2.getAttribLocation(this.pointProgram, "a_color");
+    gl2.enableVertexAttribArray(position);
+    gl2.vertexAttribPointer(position, 2, gl2.FLOAT, false, stride, 0);
+    gl2.enableVertexAttribArray(size);
+    gl2.vertexAttribPointer(size, 1, gl2.FLOAT, false, stride, 8);
+    gl2.enableVertexAttribArray(color);
+    gl2.vertexAttribPointer(color, 4, gl2.FLOAT, false, stride, 12);
+    gl2.bindVertexArray(null);
+  }
+  shader(type, source) {
+    const gl2 = this.gl, shader = gl2.createShader(type);
+    gl2.shaderSource(shader, source);
+    gl2.compileShader(shader);
+    if (!gl2.getShaderParameter(shader, gl2.COMPILE_STATUS)) throw new Error(gl2.getShaderInfoLog(shader) || "WebGL shader compilation failed");
+    return shader;
+  }
+  program(vertex, fragment) {
+    const gl2 = this.gl, program = gl2.createProgram();
+    gl2.attachShader(program, this.shader(gl2.VERTEX_SHADER, vertex));
+    gl2.attachShader(program, this.shader(gl2.FRAGMENT_SHADER, fragment));
+    gl2.linkProgram(program);
+    if (!gl2.getProgramParameter(program, gl2.LINK_STATUS)) throw new Error(gl2.getProgramInfoLog(program) || "WebGL program linking failed");
+    return program;
+  }
+  texture() {
+    const gl2 = this.gl, texture = gl2.createTexture();
+    gl2.bindTexture(gl2.TEXTURE_2D, texture);
+    gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_MIN_FILTER, gl2.LINEAR);
+    gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_MAG_FILTER, gl2.LINEAR);
+    gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_WRAP_S, gl2.CLAMP_TO_EDGE);
+    gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_WRAP_T, gl2.CLAMP_TO_EDGE);
+    return texture;
+  }
+  buildTerrainMesh(divisions) {
+    const gl2 = this.gl, vertices = [], indices = [];
+    for (let row = 0; row <= divisions; row++) for (let column = 0; column <= divisions; column++) vertices.push(column / divisions, row / divisions);
+    for (let row = 0; row < divisions; row++) for (let column = 0; column < divisions; column++) {
+      const first = row * (divisions + 1) + column, second = first + divisions + 1;
+      indices.push(first, second, first + 1, first + 1, second, second + 1);
+    }
+    this.indexCount = indices.length;
+    gl2.bindVertexArray(this.terrainVao);
+    gl2.bindBuffer(gl2.ARRAY_BUFFER, this.terrainBuffer);
+    gl2.bufferData(gl2.ARRAY_BUFFER, new Float32Array(vertices), gl2.STATIC_DRAW);
+    const uv = gl2.getAttribLocation(this.terrainProgram, "a_uv");
+    gl2.enableVertexAttribArray(uv);
+    gl2.vertexAttribPointer(uv, 2, gl2.FLOAT, false, 0, 0);
+    gl2.bindBuffer(gl2.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+    gl2.bufferData(gl2.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl2.STATIC_DRAW);
+    gl2.bindVertexArray(null);
+  }
+  resize(width, height, dpr) {
+    const pixelWidth = Math.max(1, Math.round(width * dpr)), pixelHeight = Math.max(1, Math.round(height * dpr));
+    if (this.canvas.width !== pixelWidth) this.canvas.width = pixelWidth;
+    if (this.canvas.height !== pixelHeight) this.canvas.height = pixelHeight;
+    this.gl.viewport(0, 0, pixelWidth, pixelHeight);
+  }
+  uploadTerrain(layer, field, textureKey, heightKey) {
+    const gl2 = this.gl;
+    if (textureKey !== this.textureKey) {
+      gl2.bindTexture(gl2.TEXTURE_2D, this.colorTexture);
+      gl2.pixelStorei(gl2.UNPACK_FLIP_Y_WEBGL, false);
+      gl2.texImage2D(gl2.TEXTURE_2D, 0, gl2.RGBA, gl2.RGBA, gl2.UNSIGNED_BYTE, layer);
+      this.textureKey = textureKey;
+    }
+    if (heightKey !== this.heightKey) {
+      const maximum = Math.max(1e-3, Number(field.maximum || 0)), pixels = new Uint8Array(field.values.length * 4);
+      for (let index3 = 0; index3 < field.values.length; index3++) {
+        const value = Math.round(Math.max(0, Math.min(1, field.values[index3] / maximum)) * 255), offset2 = index3 * 4;
+        pixels[offset2] = pixels[offset2 + 1] = pixels[offset2 + 2] = value;
+        pixels[offset2 + 3] = 255;
+      }
+      gl2.bindTexture(gl2.TEXTURE_2D, this.heightTexture);
+      gl2.texImage2D(gl2.TEXTURE_2D, 0, gl2.RGBA, field.columns, field.rows, 0, gl2.RGBA, gl2.UNSIGNED_BYTE, pixels);
+      this.heightKey = heightKey;
+    }
+  }
+  render(layer, field, points, projection, textureKey, heightKey, width, height, dpr) {
+    const gl2 = this.gl;
+    this.resize(width, height, dpr);
+    this.uploadTerrain(layer, field, textureKey, heightKey);
+    gl2.clearColor(0, 0, 0, 0);
+    gl2.clear(gl2.COLOR_BUFFER_BIT);
+    gl2.enable(gl2.BLEND);
+    gl2.blendFunc(gl2.SRC_ALPHA, gl2.ONE_MINUS_SRC_ALPHA);
+    gl2.useProgram(this.terrainProgram);
+    gl2.activeTexture(gl2.TEXTURE0);
+    gl2.bindTexture(gl2.TEXTURE_2D, this.colorTexture);
+    gl2.uniform1i(gl2.getUniformLocation(this.terrainProgram, "u_color"), 0);
+    gl2.activeTexture(gl2.TEXTURE1);
+    gl2.bindTexture(gl2.TEXTURE_2D, this.heightTexture);
+    gl2.uniform1i(gl2.getUniformLocation(this.terrainProgram, "u_height"), 1);
+    gl2.uniform1f(gl2.getUniformLocation(this.terrainProgram, "u_projection"), projection);
+    gl2.bindVertexArray(this.terrainVao);
+    gl2.drawElements(gl2.TRIANGLES, this.indexCount, gl2.UNSIGNED_SHORT, 0);
+    if (points.length) {
+      const data = new Float32Array(points.length * 7);
+      points.forEach((point, index3) => data.set([point.x / width * 2 - 1, 1 - point.y / height * 2, point.size * dpr, ...point.color], index3 * 7));
+      gl2.useProgram(this.pointProgram);
+      gl2.bindVertexArray(this.pointVao);
+      gl2.bindBuffer(gl2.ARRAY_BUFFER, this.pointBuffer);
+      gl2.bufferData(gl2.ARRAY_BUFFER, data, gl2.DYNAMIC_DRAW);
+      gl2.drawArrays(gl2.POINTS, 0, points.length);
+    }
+    gl2.bindVertexArray(null);
+  }
+  destroy() {
+    const gl2 = this.gl;
+    gl2.deleteBuffer(this.terrainBuffer);
+    gl2.deleteBuffer(this.indexBuffer);
+    gl2.deleteBuffer(this.pointBuffer);
+    gl2.deleteTexture(this.colorTexture);
+    gl2.deleteTexture(this.heightTexture);
+    gl2.deleteVertexArray(this.terrainVao);
+    gl2.deleteVertexArray(this.pointVao);
+    gl2.deleteProgram(this.terrainProgram);
+    gl2.deleteProgram(this.pointProgram);
+  }
+};
+function ensureMapWebGL(map2) {
+  if (map2.webglInitialized) return;
+  map2.webglInitialized = true;
+  map2.mapProjection = validMapProjection(map2.options.mapProjection);
+  map2.projectionMix = map2.mapProjection === "isometric" ? 1 : 0;
+  map2.projectionFrom = map2.projectionMix;
+  map2.projectionTarget = map2.projectionMix;
+  map2.projectionStartedAt = 0;
+  map2.gpuLayerCanvas = document.createElement("canvas");
+  map2.colorCache = /* @__PURE__ */ new Map();
+  try {
+    map2.webglRenderer = new SemanticMapWebGLRenderer(map2.webglCanvas);
+  } catch {
+    map2.webglRenderer = null;
+    map2.webglCanvas.hide();
+    map2.mapProjection = "flat";
+    map2.projectionMix = map2.projectionFrom = map2.projectionTarget = 0;
+  }
+  if (map2.webglRenderer) map2.webglCanvas.addEventListener("webglcontextlost", (event) => {
+    event.preventDefault();
+    map2.webglRenderer = null;
+    map2.webglCanvas.hide();
+    map2.mapProjection = "flat";
+    map2.projectionMix = map2.projectionFrom = map2.projectionTarget = 0;
+    updateProjectionControl(map2);
+    map2.draw();
+  }, { once: true });
+  if (!map2.options.onProjection) return;
+  map2.projectionControl = map2.headingEl.createDiv({ cls: "gib-search-map-projection", attr: { "aria-label": "Map perspective" } });
+  map2.headingEl.insertBefore(map2.projectionControl, map2.statusEl);
+  for (const [value, label, title] of [["flat", "2D", "Flat map"], ["isometric", "2.5D", "Isometric terrain"]]) {
+    const button = map2.projectionControl.createEl("button", { text: label, attr: { type: "button", title, "aria-label": title } });
+    if (value === "isometric" && !map2.webglRenderer) {
+      button.disabled = true;
+      button.title = "2.5D requires WebGL 2";
+    }
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setMapProjection(map2, value, true);
+      map2.options.onProjection(map2.mapProjection);
+    });
+  }
+  updateProjectionControl(map2);
+}
+function updateProjectionControl(map2) {
+  const buttons = [...map2.projectionControl?.querySelectorAll("button") || []];
+  buttons.forEach((button, index3) => {
+    const active = index3 === 1 === (map2.mapProjection === "isometric");
+    button.toggleClass("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+function setMapProjection(map2, value, animate = true) {
+  ensureMapWebGL(map2);
+  const next = map2.webglRenderer ? validMapProjection(value) : "flat", target = next === "isometric" ? 1 : 0;
+  map2.mapProjection = next;
+  map2.projectionFrom = map2.projectionMix;
+  map2.projectionTarget = target;
+  map2.projectionStartedAt = animate && !matchMedia("(prefers-reduced-motion: reduce)").matches ? performance.now() : 0;
+  if (!map2.projectionStartedAt) map2.projectionMix = target;
+  updateProjectionControl(map2);
+  map2.draw();
+}
+function updateProjectionAnimation(map2) {
+  if (!map2.projectionStartedAt) return false;
+  const progress = Math.min(1, (performance.now() - map2.projectionStartedAt) / 340), eased = progress < 0.5 ? 4 * progress ** 3 : 1 - (-2 * progress + 2) ** 3 / 2;
+  map2.projectionMix = map2.projectionFrom + (map2.projectionTarget - map2.projectionFrom) * eased;
+  if (progress >= 1) map2.projectionStartedAt = 0;
+  else requestAnimationFrame(() => map2.draw());
+  return progress < 1;
+}
+function mapColorRgba(map2, value, alpha2 = 1) {
+  const key = String(value || ""), cached = map2.colorCache?.get(key);
+  if (cached) return [cached[0], cached[1], cached[2], alpha2];
+  if (!map2.colorSampler) {
+    map2.colorSampler = document.createElement("canvas");
+    map2.colorSampler.width = map2.colorSampler.height = 1;
+  }
+  const context = map2.colorSampler.getContext("2d");
+  context.clearRect(0, 0, 1, 1);
+  context.fillStyle = "#000";
+  context.fillStyle = key;
+  context.fillRect(0, 0, 1, 1);
+  const pixel = context.getImageData(0, 0, 1, 1).data, color = [pixel[0] / 255, pixel[1] / 255, pixel[2] / 255];
+  map2.colorCache?.set(key, color);
+  return [...color, alpha2];
+}
 var SemanticMapCanvas = class {
   constructor(host, app, options = {}) {
     this.host = host;
@@ -73224,6 +73463,7 @@ var SemanticMapCanvas = class {
     this.titleEl = heading.createSpan({ cls: "gib-search-map-title", text: options.title || "Semantic map" });
     this.statusEl = heading.createSpan({ cls: "gib-search-map-status" });
     this.stage = host.createDiv({ cls: "gib-search-map-stage" });
+    this.webglCanvas = this.stage.createEl("canvas", { cls: "gib-search-map-gl" });
     this.canvas = this.stage.createEl("canvas", { cls: "gib-search-map-canvas" });
     this.detail = host.createDiv({ cls: "gib-search-map-detail" });
     this.detailText = this.detail.createDiv({ cls: "gib-search-map-detail-text" });
@@ -74226,13 +74466,40 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const originX = this.queryPresence > 0.04 ? Number(this.queryNode.x) : 0, originY = this.queryPresence > 0.04 ? Number(this.queryNode.y) : 0, angle = this.ambientAngle(id2) * (inverse ? -1 : 1), dx = Number(x) - originX, dy = Number(y) - originY, cosine = Math.cos(angle), sine = Math.sin(angle);
     return { x: originX + dx * cosine - dy * sine, y: originY + dx * sine + dy * cosine };
   }
-  coordinates(node, width, height) {
+  baseCoordinates(node, width, height) {
     const point = node.isQuery ? { x: Number(node.x), y: Number(node.y) } : this.ambientPosition(node.x, node.y, false, node.id), scale = Math.max(20, Math.min(width, height) / 2 - 68) * this.cameraZoom * this.userZoom;
     return [width / 2 + (point.x - this.cameraX) * scale + this.panX, height / 2 + (point.y - this.cameraY) * scale + this.panY];
   }
+  heightAt(x, y) {
+    const field = this.lastTerrainField;
+    if (this.tuning?.showTopography === false || !field?.values?.length) return 0;
+    const column = Math.max(0, Math.min(field.columns - 1, x / field.step)), row = Math.max(0, Math.min(field.rows - 1, y / field.step)), left = Math.floor(column), top = Math.floor(row), right = Math.min(field.columns - 1, left + 1), bottom = Math.min(field.rows - 1, top + 1), tx = column - left, ty = row - top, first = field.values[top * field.columns + left] * (1 - tx) + field.values[top * field.columns + right] * tx, second = field.values[bottom * field.columns + left] * (1 - tx) + field.values[bottom * field.columns + right] * tx, maximum = Math.max(1e-3, Number(field.maximum || 0));
+    return Math.max(0, Math.min(1, (first * (1 - ty) + second * ty) / maximum));
+  }
+  projectScreen(x, y, width, height) {
+    const mix = Number(this.projectionMix || 0);
+    if (mix <= 1e-3) return [x, y];
+    const flatX = x / width * 2 - 1, flatY = 1 - y / height * 2, elevation = this.heightAt(x, y), isoX = (flatX + flatY * 0.18) * 0.86, isoY = (flatY * 0.78 + elevation * 0.24) * 0.88, projectedX = flatX + (isoX - flatX) * mix, projectedY = flatY + (isoY - flatY) * mix;
+    return [(projectedX + 1) * width / 2, (1 - projectedY) * height / 2];
+  }
+  unprojectScreen(x, y, width, height) {
+    const mix = Number(this.projectionMix || 0);
+    if (mix <= 1e-3) return [x, y];
+    const screenX = x / width * 2 - 1, screenY = 1 - y / height * 2, horizontal = 1 - mix + mix * 0.86, shear = mix * 0.86 * 0.18, vertical = 1 - mix + mix * 0.88 * 0.78;
+    let flatX = screenX, flatY = screenY;
+    for (let iteration = 0; iteration < 3; iteration++) {
+      const sampleX = (flatX + 1) * width / 2, sampleY = (1 - flatY) * height / 2, lift = mix * 0.88 * 0.24 * this.heightAt(sampleX, sampleY);
+      flatY = (screenY - lift) / Math.max(1e-3, vertical);
+      flatX = (screenX - shear * flatY) / Math.max(1e-3, horizontal);
+    }
+    return [(flatX + 1) * width / 2, (1 - flatY) * height / 2];
+  }
+  coordinates(node, width, height) {
+    return this.projectScreen(...this.baseCoordinates(node, width, height), width, height);
+  }
   semanticDensityField(width, height) {
     const tuning = this.tuning || MAP_TUNING_DEFAULTS, step = 5, columns = Math.max(2, Math.ceil(width / step) + 1), rows = Math.max(2, Math.ceil(height / step) + 1), values = new Float32Array(columns * rows), heightWeights = new Float32Array(values.length), heightTotals = new Float32Array(values.length), visible = this.nodes.filter((node) => node.visibility > 0.04 && (!this.hasQuery || this.pendingQuery || node.matched)), points = new Map(visible.map((node) => {
-      const [x, y] = this.coordinates(node, width, height);
+      const [x, y] = this.baseCoordinates(node, width, height);
       return [node.id, { node, x, y }];
     })), vaultTerrain = !this.hasQuery && !this.pendingQuery, zoom = Math.max(0.35, this.cameraZoom * this.userZoom), vaultDensityScale = this.hasQuery ? 1 : Math.max(0.48, Math.min(1, Math.sqrt(48 / Math.max(1, visible.length)))), sigma = Math.max(this.hasQuery ? 9 : 11, 27 * zoom * vaultDensityScale) * (vaultTerrain ? Number(tuning.terrainSpread || 1) : 1), anchors = [...points.values()].map((point) => ({ x: point.x, y: point.y })), gaussian = (ratio) => this.gaussianLookup[Math.max(0, Math.min(1024, Math.round(ratio / 9 * 1024)))];
     const addMass = (x, y, radius, amplitude) => {
@@ -74275,14 +74542,14 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }).slice(0, 28), ridgeRadius = sigma * 0.58;
     for (const edge of ridges) addRidge(points.get(edge.source), points.get(edge.target), ridgeRadius, 0.12 + Math.min(1, edge.strength) * 0.2);
     if (this.hasQuery && this.queryPresence > 0.04) {
-      const [centerX, centerY] = this.coordinates(this.queryNode, width, height), center = { x: centerX, y: centerY }, directResults = [...points.values()].filter(({ node }) => node.matched && node.generation === 1).sort((first, second) => second.node.relevance - first.node.relevance).slice(0, 5);
+      const [centerX, centerY] = this.baseCoordinates(this.queryNode, width, height), center = { x: centerX, y: centerY }, directResults = [...points.values()].filter(({ node }) => node.matched && node.generation === 1).sort((first, second) => second.node.relevance - first.node.relevance).slice(0, 5);
       for (const target of directResults) addRidge(center, target, sigma * 0.46, this.queryPresence * target.node.visibility * (0.07 + Math.max(0, Math.min(1, target.node.relevance)) * 0.11));
       const supportMaximum = Math.max(0, ...values);
       addMass(centerX, centerY, sigma * 0.56, (supportMaximum * 1.18 + 0.42) * this.queryPresence);
       anchors.push(center);
     }
     if (!vaultTerrain) this.suppressEmptySummits(values, columns, rows, step, anchors, sigma);
-    return { values, columns, rows, step };
+    return { values, columns, rows, step, maximum: Math.max(1e-3, ...values) };
   }
   suppressEmptySummits(values, columns, rows, step, anchors, sigma) {
     if (anchors.length < 2) return;
@@ -74372,7 +74639,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const tuning = this.tuning || MAP_TUNING_DEFAULTS, threshold = this.hasQuery ? 0.01 : Number(tuning.communityMembership || 0.42), minimum = Math.max(2, Number(tuning.communityMinSize || 3)), visible = this.nodes.filter((node) => node.visibility > 0.08 && (!this.hasQuery || this.pendingQuery || node.matched) && Number(node.communityMembership || 0) >= threshold), grouped = /* @__PURE__ */ new Map();
     for (const node of visible) {
       const values = grouped.get(node.community) || [];
-      const [x, y] = this.coordinates(node, width, height);
+      const [x, y] = this.baseCoordinates(node, width, height);
       values.push({ node, x, y });
       grouped.set(node.community, values);
     }
@@ -74496,17 +74763,18 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     if (this.communityCanvas) ctx.drawImage(this.communityCanvas, 0, 0, this.communityCanvas.width, this.communityCanvas.height, 0, 0, width, height);
   }
-  drawCommunityLabels(ctx, colors2) {
+  drawCommunityLabels(ctx, colors2, mapWidth, mapHeight) {
     for (const label of this.communityLabelsForDraw || []) {
+      const [x, y] = this.projectScreen(label.x, label.y, mapWidth, mapHeight);
       ctx.font = "600 9px -apple-system, BlinkMacSystemFont, sans-serif";
       const text = String(label.text).toUpperCase(), width = ctx.measureText(text).width;
       ctx.globalAlpha = 0.88;
       ctx.fillStyle = colors2.background;
-      ctx.fillRect(label.x - width / 2 - 5, label.y - 8, width + 10, 15);
+      ctx.fillRect(x - width / 2 - 5, y - 8, width + 10, 15);
       ctx.globalAlpha = 0.72;
       ctx.fillStyle = label.color;
       ctx.textAlign = "center";
-      ctx.fillText(text, label.x, label.y + 3);
+      ctx.fillText(text, x, y + 3);
     }
     ctx.globalAlpha = 1;
     ctx.textAlign = "left";
@@ -74585,6 +74853,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
   }
   draw() {
+    ensureMapWebGL(this);
+    updateProjectionAnimation(this);
     const rect = this.canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const dpr = window.devicePixelRatio || 1, pixelWidth = Math.round(rect.width * dpr), pixelHeight = Math.round(rect.height * dpr);
@@ -74593,29 +74863,50 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const ctx = this.canvas.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    const colors2 = this.colors(), focused = this.hovered || this.selected, queryFocused = focused === "__query__", labelNodes = /* @__PURE__ */ new Set();
+    const colors2 = this.colors(), focused = this.hovered || this.selected, queryFocused = focused === "__query__", labelNodes = /* @__PURE__ */ new Set(), layer = this.gpuLayerCanvas;
+    if (layer.width !== Math.ceil(rect.width)) layer.width = Math.ceil(rect.width);
+    if (layer.height !== Math.ceil(rect.height)) layer.height = Math.ceil(rect.height);
+    const layerContext = layer.getContext("2d");
+    layerContext.clearRect(0, 0, layer.width, layer.height);
     this.hit = [];
-    this.paintDensityTerrain(ctx, rect.width, rect.height, colors2);
-    this.paintTopicCommunities(ctx, rect.width, rect.height, colors2);
-    this.paintSweepLinks(ctx, rect.width, rect.height, colors2);
+    this.paintDensityTerrain(layerContext, rect.width, rect.height, colors2);
+    this.paintTopicCommunities(layerContext, rect.width, rect.height, colors2);
+    if (this.webglRenderer) {
+      const projection = this.projectionMix;
+      this.projectionMix = 0;
+      this.paintSweepLinks(layerContext, rect.width, rect.height, colors2);
+      this.projectionMix = projection;
+    } else {
+      ctx.drawImage(layer, 0, 0, rect.width, rect.height);
+      this.paintSweepLinks(ctx, rect.width, rect.height, colors2);
+    }
     if (focused && !queryFocused) labelNodes.add(focused);
-    const labels = [], ordered = this.hasQuery && !this.pendingQuery ? [...this.nodes.filter((node) => !node.matched), ...this.nodes.filter((node) => node.matched)] : this.nodes;
+    const labels = [], gpuPoints = [], ordered = this.hasQuery && !this.pendingQuery ? [...this.nodes.filter((node) => !node.matched), ...this.nodes.filter((node) => node.matched)] : this.nodes;
     for (const node of ordered) {
       if (node.visibility < 0.012) continue;
-      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, relationship = focused && !queryFocused ? this.relationships.get(mapEdgeKey(node.id, focused)) : null, related = Number(relationship?.overall || 0), generationScale = node.generation === 1 ? 1 : node.generation === 2 ? 0.86 : 0.74, radius = Math.max(1.1, (2 + node.fileScale * 4.4 + (active ? 1.5 : 0)) * generationScale), focusAlpha = !focused ? 1 : active ? 1 : queryFocused ? 0.38 + node.relevance * 0.62 : 0.18 + related * 0.76, opacity = Math.max(0.01, node.visibility * focusAlpha), blur = Math.max(0, Math.min(1, Number(node.blur || 0))), hue = this.mapGroupingMode === "topics" && Number.isFinite(node.displayTopicHue) ? node.displayTopicHue : node.topicHue, lightness = this.mapGroupingMode === "topics" && Number.isFinite(node.displayTopicLightness) ? node.displayTopicLightness : 64, semanticColor = this.options.semanticColors !== false && Number.isFinite(hue) ? `hsl(${hue} 58% ${lightness}%)` : colors2.normal;
-      ctx.fillStyle = node.matched || !this.hasQuery || this.pendingQuery ? semanticColor : colors2.faint;
-      if (blur > 0.04) {
-        ctx.globalAlpha = opacity * blur * 0.22;
+      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, relationship = focused && !queryFocused ? this.relationships.get(mapEdgeKey(node.id, focused)) : null, related = Number(relationship?.overall || 0), generationScale = node.generation === 1 ? 1 : node.generation === 2 ? 0.86 : 0.74, radius = Math.max(1.1, (2 + node.fileScale * 4.4 + (active ? 1.5 : 0)) * generationScale), focusAlpha = !focused ? 1 : active ? 1 : queryFocused ? 0.38 + node.relevance * 0.62 : 0.18 + related * 0.76, opacity = Math.max(0.01, node.visibility * focusAlpha), blur = Math.max(0, Math.min(1, Number(node.blur || 0))), hue = this.mapGroupingMode === "topics" && Number.isFinite(node.displayTopicHue) ? node.displayTopicHue : node.topicHue, lightness = this.mapGroupingMode === "topics" && Number.isFinite(node.displayTopicLightness) ? node.displayTopicLightness : 64, semanticColor = node.matched || !this.hasQuery || this.pendingQuery ? this.options.semanticColors !== false && Number.isFinite(hue) ? `hsl(${hue} 58% ${lightness}%)` : colors2.normal : colors2.faint, alpha2 = opacity * (1 - blur * 0.28);
+      if (this.webglRenderer) {
+        if (blur > 0.04) gpuPoints.push({ x, y, size: (radius + 2.2 * blur) * 2, color: mapColorRgba(this, semanticColor, opacity * blur * 0.22) });
+        gpuPoints.push({ x, y, size: radius * 2, color: mapColorRgba(this, semanticColor, alpha2) });
+      } else {
+        ctx.fillStyle = semanticColor;
+        if (blur > 0.04) {
+          ctx.globalAlpha = opacity * blur * 0.22;
+          ctx.beginPath();
+          ctx.arc(x, y, radius + 2.2 * blur, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = alpha2;
         ctx.beginPath();
-        ctx.arc(x, y, radius + 2.2 * blur, 0, Math.PI * 2);
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.globalAlpha = opacity * (1 - blur * 0.28);
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fill();
       if (labelNodes.has(node.id) && (node.matched || !this.hasQuery || this.pendingQuery)) labels.push({ node, x, y, radius, active, opacity });
       if (node.matched || !this.hasQuery || this.pendingQuery || this.options.preserveBackground) this.hit.push({ node, x, y, radius: radius + 9 });
+    }
+    if (this.webglRenderer) {
+      const emptyField = { values: new Float32Array(4), columns: 2, rows: 2, step: Math.max(rect.width, rect.height), maximum: 1 }, field = this.tuning?.showTopography === false ? emptyField : this.lastTerrainField || emptyField, roadFrame = this.roadAnimationFrame !== null ? Math.round(performance.now() / 16) : 0, textureKey = `${layer.width}:${layer.height}:${this.lastTerrainAt || 0}:${this.lastCommunityAt || 0}:${this.terrainColorKey || ""}:${this.communityColorKey || ""}:${this.tuning?.showTopography !== false}:${this.showLinks}:${focused || ""}:${roadFrame}`, heightKey = `${field.columns}:${field.rows}:${this.lastTerrainAt || 0}:${field.maximum}:${this.tuning?.showTopography !== false}`;
+      this.webglRenderer.render(layer, field, gpuPoints, this.projectionMix, textureKey, heightKey, rect.width, rect.height, dpr);
     }
     if (this.queryPresence > 0.02) {
       const [queryX, queryY] = this.coordinates(this.queryNode, rect.width, rect.height), active = queryFocused, marker = 4.5 + this.queryMarkerFocus * 1.2, tickInner = marker + 3.5, tickOuter = tickInner + 3 + this.queryMarkerFocus * 1.5;
@@ -74644,7 +74935,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (this.center?.id) labels.push({ node: this.queryNode, x: queryX, y: queryY, radius: tickOuter, active, opacity: this.queryPresence, query: true });
       this.hit.push({ node: this.queryNode, x: queryX, y: queryY, radius: 16 });
     }
-    this.drawCommunityLabels(ctx, colors2);
+    this.drawCommunityLabels(ctx, colors2, rect.width, rect.height);
     this.drawLabels(ctx, labels, colors2, rect.width, rect.height);
     ctx.globalAlpha = 1;
   }
@@ -74745,7 +75036,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     if (this.dragging && this.draggingPointer === event.pointerId) {
       if (this.nodeDragOrigin && Math.hypot(event.clientX - this.nodeDragOrigin.x, event.clientY - this.nodeDragOrigin.y) > 3) this.suppressClick = true;
-      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom * this.userZoom, viewX = (event.clientX - rect.left - rect.width / 2 - this.panX) / scale + this.cameraX, viewY = (event.clientY - rect.top - rect.height / 2 - this.panY) / scale + this.cameraY, point = this.dragging.isQuery ? { x: viewX, y: viewY } : this.ambientPosition(viewX, viewY, true, this.dragging.id);
+      const scale = Math.max(20, Math.min(rect.width, rect.height) / 2 - 68) * this.cameraZoom * this.userZoom, [flatX, flatY] = this.unprojectScreen(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height), viewX = (flatX - rect.width / 2 - this.panX) / scale + this.cameraX, viewY = (flatY - rect.height / 2 - this.panY) / scale + this.cameraY, point = this.dragging.isQuery ? { x: viewX, y: viewY } : this.ambientPosition(viewX, viewY, true, this.dragging.id);
       this.dragging.x = point.x;
       this.dragging.y = point.y;
       this.dragging.vx = this.dragging.vy = 0;
@@ -74802,6 +75093,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     cancelAnimationFrame(this.roadAnimationFrame);
     cancelAnimationFrame(this.simulationFrame);
     cancelAnimationFrame(this.animationFrame);
+    this.webglRenderer?.destroy();
     this.resizeObserver?.disconnect();
   }
 };
@@ -75165,6 +75457,11 @@ var SemanticSearchModal = class extends SuggestModal {
       this.close();
       this.plugin.openNeighborhood(file, true);
     } });
+    this.map.options.mapProjection = validMapProjection(this.plugin.settings.mapProjection);
+    this.map.options.onProjection = async (value) => {
+      this.plugin.settings.mapProjection = validMapProjection(value);
+      await this.plugin.save();
+    };
     this.selectionObserver = new MutationObserver((mutations) => {
       const selectionChanged = mutations.some((mutation) => {
         const wasSelected = String(mutation.oldValue || "").split(/\s+/).includes("is-selected"), isSelected = mutation.target.classList?.contains("is-selected");
@@ -75283,6 +75580,11 @@ var NeighborhoodView = class extends ItemView {
       this.plugin.settings.graphManualLinkInfluence = value;
       await this.plugin.save();
     }, onSelect: (file) => this.openFile(file), onOpen: (file) => this.openFile(file) });
+    this.map.options.mapProjection = validMapProjection(this.plugin.settings.mapProjection);
+    this.map.options.onProjection = async (value) => {
+      this.plugin.settings.mapProjection = validMapProjection(value);
+      await this.plugin.save();
+    };
     this.fileOpenRef = this.app.workspace.on("file-open", (file) => {
       if (!this.pinned && file instanceof TFile) this.centerOn(file.path);
     });
@@ -75415,6 +75717,7 @@ var GraphView = class extends ItemView {
       preserveBackground: true,
       generations: this.mapGenerations,
       mapGroupingMode: this.mapGroupingMode,
+      mapProjection: validMapProjection(this.plugin.settings.mapProjection),
       showLinks: this.plugin.settings.showWikilinks,
       manualLinkInfluence: this.plugin.settings.graphManualLinkInfluence,
       semanticColors: this.plugin.settings.graphSemanticColors,
@@ -75437,6 +75740,10 @@ var GraphView = class extends ItemView {
           if (mapTuningNeedsLayout(key)) this.query.length >= 3 ? this.runSearch(this.query, true) : this.loadVault();
           else this.map?.draw();
         }, 180);
+      },
+      onProjection: async (value) => {
+        this.plugin.settings.mapProjection = validMapProjection(value);
+        await this.plugin.save();
       },
       onGenerations: async (value) => {
         this.mapGenerations = value;
@@ -75767,6 +76074,10 @@ var SearchSettings = class extends PluginSettingTab {
     });
     new Setting(this.containerEl).setName("Default map grouping").setDesc("Similarity follows meaning, Topics forms query-relative subject regions, and Links emphasizes explicit note connections.").addDropdown((d2) => d2.addOption("similarity", "Similarity").addOption("topics", "Topics").addOption("links", "Links").setValue(validMapGrouping(this.plugin.settings.mapGroupingMode)).onChange(async (value) => {
       this.plugin.settings.mapGroupingMode = validMapGrouping(value);
+      await this.plugin.save();
+    }));
+    new Setting(this.containerEl).setName("Default map perspective").setDesc("Choose a flat 2D map or an isometric 2.5D terrain. Both use the same semantic layout.").addDropdown((d2) => d2.addOption("flat", "2D").addOption("isometric", "2.5D isometric").setValue(validMapProjection(this.plugin.settings.mapProjection)).onChange(async (value) => {
+      this.plugin.settings.mapProjection = validMapProjection(value);
       await this.plugin.save();
     }));
     new Setting(this.containerEl).setName("Magic graph intelligence").setDesc("Combine topic direction, entities, communities, residual meaning, and relationships into a query-conditioned dimensional layout.").addToggle((t3) => t3.setValue(this.plugin.settings.magicGraphEnabled).onChange(async (value) => {
