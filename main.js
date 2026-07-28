@@ -71230,8 +71230,11 @@ var init_mobile_runtime = __esm({
         this.spellingVocabulary = /* @__PURE__ */ new Map();
         this.spellingByLength = /* @__PURE__ */ new Map();
         this.starfieldCache = null;
+        this.starfieldCaches = /* @__PURE__ */ new Map();
         this.topicBasisCache = null;
         this.contentProfileCache = null;
+        this.graphEvidenceCache = null;
+        this.graphEvidencePromise = null;
         this.relationCache = /* @__PURE__ */ new Map();
         this.relationPipe = null;
         this.relationModelPromise = null;
@@ -71250,6 +71253,7 @@ var init_mobile_runtime = __esm({
         this.lastError = "";
         this.process = null;
         this.listeners = /* @__PURE__ */ new Set();
+        this.graphCacheListeners = /* @__PURE__ */ new Set();
         this.updateTimer = null;
         this.indexRun = null;
         this.indexAgain = false;
@@ -71274,6 +71278,10 @@ var init_mobile_runtime = __esm({
         this.listeners.add(listener);
         return () => this.listeners.delete(listener);
       }
+      onGraphCache(listener) {
+        this.graphCacheListeners.add(listener);
+        return () => this.graphCacheListeners.delete(listener);
+      }
       changed() {
         for (const listener of this.listeners) listener();
       }
@@ -71292,7 +71300,7 @@ var init_mobile_runtime = __esm({
         return { phase: this.phase, message: this.message, modelMessage: this.modelMessage || "", relationMessage: this.relationMessage || "", topicLabelMessage: this.topicLabelMessage || "", pid: "mobile", startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt };
       }
       async health() {
-        return { indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), graphEntities: new Set(this.meta.flatMap((item) => item.entities || [])).size, cachedRelationships: this.relationCache.size, cachedTopicLabels: this.topicLabelCache.size, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === "indexing", modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), relationModelLoaded: Boolean(this.relationPipe || this.plugin.desktopEmbedder?.relationReady), topicLabelModelLoaded: Boolean(this.topicLabelPipe || this.plugin.desktopEmbedder?.topicLabelReady), modelProfile: "bge", modelId: MODEL_ID, modelBackend: this.isMobile ? this.modelBackend : "web-worker-wasm" };
+        return { indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), graphEntities: new Set(this.meta.flatMap((item) => item.entities || [])).size, graphCacheReady: Boolean(this.graphEvidenceCache?.rootGraph), graphCacheBuiltAt: this.graphEvidenceCache?.builtAt || null, cachedRelationships: this.relationCache.size, cachedTopicLabels: this.topicLabelCache.size, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === "indexing", modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), relationModelLoaded: Boolean(this.relationPipe || this.plugin.desktopEmbedder?.relationReady), topicLabelModelLoaded: Boolean(this.topicLabelPipe || this.plugin.desktopEmbedder?.topicLabelReady), modelProfile: "bge", modelId: MODEL_ID, modelBackend: this.isMobile ? this.modelBackend : "web-worker-wasm" };
       }
       async openDatabase() {
         if (this.database) return this.database;
@@ -71379,6 +71387,49 @@ var init_mobile_runtime = __esm({
             request.onerror = () => reject(request.error);
           });
         } else await this.plugin.desktopIndexStore.putTopicLabels(entries);
+      }
+      async loadGraphEvidenceCache() {
+        try {
+          let stored;
+          if (this.isMobile) {
+            const database = await this.openDatabase();
+            stored = await new Promise((resolve, reject) => {
+              const request = database.transaction("indexes", "readonly").objectStore("indexes").get(`${this.indexKey}:graph-evidence`);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+          } else stored = await this.plugin.desktopIndexStore?.getGraphEvidence?.();
+          if (!stored?.files?.length || !stored.scores || !stored.entities) return;
+          const count = stored.files.length, scores = new Float32Array(stored.scores), entities = new Float32Array(stored.entities);
+          if (scores.length !== count * count || entities.length !== count * count) return;
+          this.graphEvidenceCache = { ...stored, scores, entities, fileIndex: new Map(stored.files.map((file, index3) => [file, index3])) };
+        } catch {
+          this.graphEvidenceCache = null;
+        }
+      }
+      async saveGraphEvidenceCache(cache2) {
+        const value = { version: cache2.version, signature: cache2.signature, files: cache2.files, fingerprints: cache2.fingerprints, tuning: cache2.tuning, builtAt: cache2.builtAt, rootTopology: cache2.rootTopology || null, rootGraph: cache2.rootGraph || null, scores: cache2.scores.buffer.slice(cache2.scores.byteOffset, cache2.scores.byteOffset + cache2.scores.byteLength), entities: cache2.entities.buffer.slice(cache2.entities.byteOffset, cache2.entities.byteOffset + cache2.entities.byteLength) }, write = async () => {
+          if (this.isMobile) {
+            const database = await this.openDatabase();
+            await new Promise((resolve, reject) => {
+              const request = database.transaction("indexes", "readwrite").objectStore("indexes").put(value, `${this.indexKey}:graph-evidence`);
+              request.onsuccess = () => resolve();
+              request.onerror = () => reject(request.error);
+            });
+          } else if (this.plugin.desktopIndexStore?.putGraphEvidence) await this.plugin.desktopIndexStore.putGraphEvidence(value);
+        };
+        this.graphEvidenceSave = (this.graphEvidenceSave || Promise.resolve()).catch(() => {
+        }).then(write);
+        return this.graphEvidenceSave;
+      }
+      clearStarfieldCaches() {
+        this.starfieldCache = null;
+        this.starfieldCaches.clear();
+      }
+      invalidateGraphEvidence() {
+        this.graphEvidencePromise = null;
+        this.contentProfileCache = null;
+        this.clearStarfieldCaches();
       }
       async migrateLegacyIndex() {
         if (!this.isMobile) return;
@@ -71650,7 +71701,7 @@ var init_mobile_runtime = __esm({
           this.vectors = this.meta.map((_2, index3) => all4.subarray(index3 * DIMENSION, (index3 + 1) * DIMENSION));
           this.refreshLexical();
           this.refreshHighlightPhraseCache();
-          await Promise.all([this.loadRelationCache(), this.loadTopicLabelCache()]);
+          await Promise.all([this.loadRelationCache(), this.loadTopicLabelCache(), this.loadGraphEvidenceCache()]);
         } catch (error) {
           this.plugin.logDiagnostic(`Index load failed: ${error?.message || String(error)}`, true);
           if (!this.isMobile) throw error;
@@ -71685,7 +71736,7 @@ var init_mobile_runtime = __esm({
         this.queryCache.clear();
         this.resultCache.clear();
         this.conceptFacetCache.clear();
-        this.starfieldCache = null;
+        this.clearStarfieldCaches();
         this.topicBasisCache = null;
         this.contentProfileCache = null;
         await this.databasePut({ meta: this.meta, vectors: packed.buffer, highlightVectors: packedHighlights.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
@@ -71875,6 +71926,7 @@ var init_mobile_runtime = __esm({
             this.setState("starting", "Waiting for the vault to finish loading\u2026");
             await this.waitForVaultSettled();
             await this.updateIndex();
+            this.warmGraphEvidence();
           } catch (error) {
             this.setState("error", error.message);
             this.plugin.reportOnce(error.message);
@@ -71915,7 +71967,9 @@ var init_mobile_runtime = __esm({
           this.queryCache.clear();
           this.resultCache.clear();
           this.conceptFacetCache.clear();
-          this.starfieldCache = null;
+          this.clearStarfieldCaches();
+          this.graphEvidenceCache = null;
+          this.graphEvidencePromise = null;
           this.topicBasisCache = null;
           this.contentProfileCache = null;
           this.refreshLexical();
@@ -71924,6 +71978,7 @@ var init_mobile_runtime = __esm({
           this.startPromise = (async () => {
             try {
               await this.updateIndex(true);
+              this.warmGraphEvidence();
             } catch (error) {
               this.setState("error", error.message);
             } finally {
@@ -72494,6 +72549,59 @@ ${item.text || ""}`;
         }
         return { groups, centroids, labels, rankedByCommunity };
       }
+      fastTopicCommunityAnalysis(entries, communities, sensitivity = 0.58, minimumSize = 3) {
+        const groups = /* @__PURE__ */ new Map(), membership = /* @__PURE__ */ new Map();
+        for (const entry of entries) {
+          const id2 = communities.get(entry.id) ?? 0, members = groups.get(id2) || [];
+          members.push(entry);
+          groups.set(id2, members);
+          membership.set(entry.id, id2);
+        }
+        const centroids = /* @__PURE__ */ new Map();
+        for (const [id2, members] of groups) {
+          const vector = new Float32Array(DIMENSION);
+          for (const member of members) for (let dimension = 0; dimension < DIMENSION; dimension++) vector[dimension] += member.vector[dimension];
+          const norm = Math.sqrt(dot(vector, vector)) || 1;
+          for (let dimension = 0; dimension < DIMENSION; dimension++) vector[dimension] /= norm;
+          centroids.set(id2, vector);
+        }
+        const requested = new Set(entries.map((entry) => entry.id)), speakerLabels = this.structuralSpeakerLabels([...requested]), byCommunity = new Map([...groups.keys()].map((id2) => [id2, /* @__PURE__ */ new Map()])), globalFiles = /* @__PURE__ */ new Map();
+        for (const item of this.meta) {
+          const community = membership.get(item.file);
+          if (community === void 0) continue;
+          const seen = /* @__PURE__ */ new Set();
+          for (const candidate of item.highlightCandidates || []) {
+            if (candidate.field === "filename") continue;
+            const phrase = cleanText(candidate.phrase), key = phrase.toLowerCase();
+            if (!phrase || seen.has(key) || speakerLabels.has(key) || isTemporalConceptLabel(phrase) || isStructuralConceptLabel(phrase)) continue;
+            seen.add(key);
+            const local = byCommunity.get(community), value = local.get(key) || { phrase, key, field: candidate.field, quality: Number(candidate.quality || 0), novelty: Number(candidate.novelty || 0), files: /* @__PURE__ */ new Set() };
+            value.files.add(item.file);
+            value.quality = Math.max(value.quality, Number(candidate.quality || 0));
+            value.novelty = Math.max(value.novelty, Number(candidate.novelty || 0));
+            local.set(key, value);
+            const files = globalFiles.get(key) || /* @__PURE__ */ new Set();
+            files.add(item.file);
+            globalFiles.set(key, files);
+          }
+        }
+        const labels = /* @__PURE__ */ new Map(), rankedByCommunity = /* @__PURE__ */ new Map(), totalFiles = Math.max(2, requested.size), threshold = Math.max(0.35, Math.min(0.85, Number(sensitivity) || 0.58)), minimum = Math.max(2, Number(minimumSize) || 3);
+        for (const [id2, members] of groups) {
+          if (members.length < minimum) {
+            labels.set(id2, { label: "", fallbackLabel: "", confidence: 0 });
+            rankedByCommunity.set(id2, []);
+            continue;
+          }
+          const ranked = [...byCommunity.get(id2)?.values() || []].map((candidate) => {
+            const coverage = candidate.files.size / members.length, outside = Math.max(0, (globalFiles.get(candidate.key)?.size || candidate.files.size) - candidate.files.size), distinction = 1 - outside / Math.max(1, totalFiles - members.length), rarity = Math.max(0, 1 - Math.log1p((globalFiles.get(candidate.key)?.size || 1) / totalFiles * 24) / Math.log(25)), quality = Math.min(1, candidate.quality / 0.18), score = coverage * 0.4 + distinction * 0.25 + rarity * 0.2 + quality * 0.08 + Math.max(0, Math.min(1, candidate.novelty)) * 0.07;
+            return { ...candidate, coverage, distinction, rarity, score };
+          }).filter((candidate) => candidate.files.size >= Math.min(2, members.length)).sort((a2, b) => b.score - a2.score || b.files.size - a2.files.size || a2.phrase.localeCompare(b.phrase));
+          rankedByCommunity.set(id2, ranked.slice(0, 8));
+          const best = ranked[0], margin = Number(best?.score || 0) - Number(ranked[1]?.score || 0), confidence = best ? Math.max(0, Math.min(1, best.score * 0.84 + margin * 1.4)) : 0, fallbackLabel = best && best.score >= 0.44 && String(best.phrase).split(/\s+/).length <= 5 ? String(best.phrase).replace(/\b\p{L}/gu, (letter) => letter.toUpperCase()) : "";
+          labels.set(id2, { label: confidence >= threshold ? fallbackLabel : "", fallbackLabel, confidence });
+        }
+        return { groups, centroids, labels, rankedByCommunity };
+      }
       topicCommunityLabels(entries, communities, sensitivity = 0.58, minimumSize = 3) {
         return this.topicCommunityAnalysis(entries, communities, sensitivity, minimumSize).labels;
       }
@@ -72546,13 +72654,162 @@ ${item.text || ""}`;
           return fallbackLabels;
         }
       }
+      cachedTopicCommunityLabels(entries, communities, fallbackLabels) {
+        const groups = /* @__PURE__ */ new Map();
+        for (const entry of entries) {
+          const id2 = communities.get(entry.id) ?? 0, members = groups.get(id2) || [];
+          members.push(entry);
+          groups.set(id2, members);
+        }
+        const output = new Map(fallbackLabels), used = /* @__PURE__ */ new Set();
+        for (const [id2, members] of groups) {
+          const fingerprint = `${TOPIC_LABEL_MODEL_ID}:v3:${members.map((member) => `${member.id}:${this.fileFingerprint(member.id)}`).sort().join("|")}`, label = this.topicLabelCache.get(fingerprint) || "", fallback2 = fallbackLabels.get(id2) || { label: "", fallbackLabel: "", confidence: 0 };
+          if (!label || used.has(label.toLowerCase())) continue;
+          used.add(label.toLowerCase());
+          output.set(id2, { label, fallbackLabel: fallback2.fallbackLabel, confidence: Math.max(0.62, fallback2.confidence) });
+        }
+        return output;
+      }
+      queueTopicCommunityLabels(entries, communities, analysis, minimumSize, cacheSignature) {
+        if (!this.plugin.settings?.generatedTopicLabels) return;
+        this.topicLabelRefreshes || (this.topicLabelRefreshes = /* @__PURE__ */ new Map());
+        if (this.topicLabelRefreshes.has(cacheSignature)) return;
+        const pending = (this.topicLabelQueue || Promise.resolve()).catch(() => {
+        }).then(() => this.generatedTopicCommunityLabels(entries, communities, analysis, minimumSize)).then(() => {
+          this.starfieldCaches.delete(cacheSignature);
+          if (this.starfieldCache?.signature === cacheSignature) this.starfieldCache = null;
+          this.changed();
+        }).finally(() => this.topicLabelRefreshes.delete(cacheSignature));
+        this.topicLabelQueue = pending;
+        this.topicLabelRefreshes.set(cacheSignature, pending);
+      }
+      queueTopicCommunityAnalysis(entries, communities, sensitivity, minimumSize, cacheSignature) {
+        this.topicLabelRefreshes || (this.topicLabelRefreshes = /* @__PURE__ */ new Map());
+        this.deferredCommunityLabels || (this.deferredCommunityLabels = /* @__PURE__ */ new Map());
+        if (this.topicLabelRefreshes.has(cacheSignature)) return;
+        const pending = (this.topicLabelQueue || Promise.resolve()).catch(() => {
+        }).then(async () => {
+          await yieldToUi();
+          const analysis = this.fastTopicCommunityAnalysis(entries, communities, sensitivity, minimumSize);
+          this.deferredCommunityLabels.set(cacheSignature, analysis.labels);
+          if (this.plugin.settings?.generatedTopicLabels) await this.generatedTopicCommunityLabels(entries, communities, analysis, minimumSize);
+        }).then(() => {
+          this.starfieldCaches.delete(cacheSignature);
+          if (this.starfieldCache?.signature === cacheSignature) this.starfieldCache = null;
+          this.changed();
+        }).finally(() => this.topicLabelRefreshes.delete(cacheSignature));
+        this.topicLabelQueue = pending;
+        this.topicLabelRefreshes.set(cacheSignature, pending);
+      }
+      applyCachedGraphLabels(graph) {
+        const copy2 = { ...graph, nodes: (graph?.nodes || []).map((node) => ({ ...node })), edges: (graph?.edges || []).map((edge) => ({ ...edge })) }, nodes = copy2.nodes, labels = (field, outputField) => {
+          const groups = /* @__PURE__ */ new Map();
+          for (const node of nodes) {
+            const id2 = node[field], values = groups.get(id2) || [];
+            values.push(node);
+            groups.set(id2, values);
+          }
+          for (const members of groups.values()) {
+            const fingerprint = `${TOPIC_LABEL_MODEL_ID}:v3:${members.map((member) => `${member.id}:${this.fileFingerprint(member.id)}`).sort().join("|")}`, label = this.topicLabelCache.get(fingerprint) || "";
+            if (!label) continue;
+            for (const node of members) {
+              node[outputField] = label;
+              node[`${outputField}Confidence`] = Math.max(0.62, Number(node[`${outputField}Confidence`] || 0));
+            }
+          }
+        };
+        labels("community", "communityLabel");
+        labels("parentCommunity", "parentCommunityLabel");
+        return copy2;
+      }
+      graphEvidenceSignature(tuning) {
+        const files = [...new Set(this.meta.map((item) => item.file))].sort(), fingerprints = files.map((file) => this.fileFingerprint(file)), evidenceTuning = { commonnessSuppression: Number(tuning.commonnessSuppression ?? 0.75), passageCoverage: Number(tuning.passageCoverage ?? 0.72), passageDiversity: Number(tuning.passageDiversity ?? 0.28) }, signature = contentFingerprint(`graph-evidence-v2
+${JSON.stringify(evidenceTuning)}
+${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
+        return { files, fingerprints, tuning: evidenceTuning, signature };
+      }
+      async vaultGraphEvidence(tuning) {
+        const descriptor = this.graphEvidenceSignature(tuning), cached = this.graphEvidenceCache;
+        if (cached?.version === 2 && cached.signature === descriptor.signature && cached.scores.length === descriptor.files.length ** 2 && cached.files.every((file, index3) => file === descriptor.files[index3])) return cached;
+        if (this.graphEvidencePromise) return this.graphEvidencePromise;
+        this.graphEvidencePromise = (async () => {
+          const files = descriptor.files, count = files.length, profiles = this.vaultContentProfiles(files), entitySets = this.fileEntities(files), entityFrequency = /* @__PURE__ */ new Map();
+          for (const entities2 of entitySets.values()) for (const entity2 of entities2) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
+          const entityAffinity = (first, second) => {
+            const a2 = entitySets.get(first) || /* @__PURE__ */ new Set(), b = entitySets.get(second) || /* @__PURE__ */ new Set();
+            let shared = 0, aWeight = 0, bWeight = 0;
+            for (const entity2 of a2) {
+              const weight = Math.log(1 + count / Math.max(1, entityFrequency.get(entity2) || 1));
+              aWeight += weight * weight;
+              if (b.has(entity2)) shared += weight * weight;
+            }
+            for (const entity2 of b) {
+              const weight = Math.log(1 + count / Math.max(1, entityFrequency.get(entity2) || 1));
+              bWeight += weight * weight;
+            }
+            return shared / Math.max(1e-3, Math.sqrt(aWeight * bWeight));
+          }, scores = new Float32Array(count * count), entities = new Float32Array(count * count);
+          for (let index3 = 0; index3 < count; index3++) {
+            scores[index3 * count + index3] = 1;
+            entities[index3 * count + index3] = 1;
+          }
+          for (let first = 0; first < count; first++) {
+            for (let second = first + 1; second < count; second++) {
+              const score = contentProfileSimilarity(profiles.get(files[first]), profiles.get(files[second]), descriptor.tuning.passageCoverage), entity2 = entityAffinity(files[first], files[second]), forward = first * count + second, reverse3 = second * count + first;
+              scores[forward] = scores[reverse3] = score;
+              entities[forward] = entities[reverse3] = entity2;
+            }
+            if (first % 5 === 4) await yieldToUi();
+          }
+          const value = { version: 2, ...descriptor, builtAt: Date.now(), scores, entities, fileIndex: new Map(files.map((file, index3) => [file, index3])) };
+          this.graphEvidenceCache = value;
+          await this.saveGraphEvidenceCache(value);
+          return value;
+        })();
+        try {
+          return await this.graphEvidencePromise;
+        } finally {
+          this.graphEvidencePromise = null;
+        }
+      }
+      warmGraphEvidence() {
+        if (!this.meta.length || this.graphWarmPromise) return this.graphWarmPromise;
+        const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28 }, this.plugin.settings?.mapTuning || {});
+        this.graphWarmPromise = (async () => {
+          const evidence = await this.vaultGraphEvidence(tuning);
+          if (!evidence.rootGraph) await this.semanticStarfield("", evidence.files);
+          for (const listener of this.graphCacheListeners) listener();
+        })().catch((error) => this.plugin.logDiagnostic?.(`Graph cache preparation failed: ${error?.message || error}`)).finally(() => {
+          this.graphWarmPromise = null;
+        });
+        return this.graphWarmPromise;
+      }
       async semanticStarfield(query, files = null, focusFiles = []) {
         const requested = files ? [...new Set(files.filter(Boolean))] : [...new Set(this.meta.map((item) => item.file))], trimmed = String(query || "").trim(), vaultMode = !trimmed && requested.length > 18;
         const tuning = Object.assign({ passageCoverage: 0.72, commonnessSuppression: 0.75, passageDiversity: 0.28, communitySensitivity: 1, communityMinSize: 3, communityLabelSensitivity: 0.58, neighborhoodStability: 0.68, neighborhoodSeparation: 0.06, neighborhoodCoverage: 0.58, neighborhoodSpread: 1 }, this.plugin.settings?.mapTuning || {}), signature = `${this.meta.length}:${this.vectors.length}:hierarchy-v1:${vaultMode ? "chunks" : "files"}:${Boolean(this.plugin.settings?.generatedTopicLabels)}:${tuning.passageCoverage}:${tuning.commonnessSuppression}:${tuning.passageDiversity}:${tuning.communitySensitivity}:${tuning.communityMinSize}:${tuning.communityLabelSensitivity}:${tuning.neighborhoodStability}:${tuning.neighborhoodSeparation}:${tuning.neighborhoodCoverage}:${tuning.neighborhoodSpread}:${requested.join("\0")}`;
+        if (vaultMode && this.graphEvidenceCache?.rootGraph) {
+          const descriptor = this.graphEvidenceSignature(tuning), cache2 = this.graphEvidenceCache, sameFiles = requested.length === cache2.files.length && requested.every((file) => cache2.fileIndex.has(file)), currentEvidence = descriptor.signature === cache2.signature;
+          if (sameFiles && currentEvidence && cache2.rootGraph.signature === signature) return this.applyCachedGraphLabels(cache2.rootGraph.graph);
+          if (sameFiles && !currentEvidence) {
+            this.warmGraphEvidence();
+            return this.applyCachedGraphLabels(cache2.rootGraph.graph);
+          }
+        }
+        const remembered = this.starfieldCaches.get(signature);
+        if (remembered) {
+          this.starfieldCaches.delete(signature);
+          this.starfieldCaches.set(signature, remembered);
+          this.starfieldCache = remembered;
+        }
         if (!this.starfieldCache || this.starfieldCache.signature !== signature) {
-          const vectors = this.fileVectors(requested), profiles = vaultMode ? this.vaultContentProfiles(requested) : null, entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
+          const vectors = this.fileVectors(requested), evidence = vaultMode ? await this.vaultGraphEvidence(tuning) : null, entries2 = requested.filter((id2) => vectors.has(id2)).map((id2) => ({ id: id2, vector: vectors.get(id2).vector })), entitySets2 = this.fileEntities(requested), entityFrequency = /* @__PURE__ */ new Map();
           for (const entities of entitySets2.values()) for (const entity2 of entities) entityFrequency.set(entity2, (entityFrequency.get(entity2) || 0) + 1);
-          const entityAffinity = (first, second) => {
+          const evidenceValue = (matrix, first, second) => {
+            const a2 = evidence?.fileIndex.get(first), b = evidence?.fileIndex.get(second);
+            return a2 === void 0 || b === void 0 ? null : Number(matrix[a2 * evidence.files.length + b]);
+          }, entityAffinity = (first, second) => {
+            const stored = evidenceValue(evidence?.entities, first, second);
+            if (stored !== null) return stored;
             const a2 = entitySets2.get(first) || /* @__PURE__ */ new Set(), b = entitySets2.get(second) || /* @__PURE__ */ new Set();
             let shared = 0, aWeight = 0, bWeight = 0;
             for (const entity2 of a2) {
@@ -72566,45 +72823,57 @@ ${item.text || ""}`;
             }
             return shared / Math.max(1e-3, Math.sqrt(aWeight * bWeight));
           };
-          const neighbors = [];
-          for (let first = 0; first < entries2.length; first++) {
-            const entry = entries2[first], nearby = entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: vaultMode ? contentProfileSimilarity(profiles.get(entry.id), profiles.get(other.id), tuning.passageCoverage) : dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8);
-            neighbors.push(nearby);
-            if (first % 6 === 5) await yieldToUi();
-          }
-          const directed = neighbors.map((list4) => {
-            const floor = Number(list4.at(-1)?.score || 0), ceiling = Number(list4[0]?.score || 1), spread = Math.max(0.02, ceiling - floor);
-            return new Map(list4.map((item) => [item.index, { ...item, affinity: Math.max(1e-3, (item.score - floor) / spread) * 0.82 + item.entityScore * 0.18 }]));
-          }), edges2 = [], seen2 = /* @__PURE__ */ new Set(), incident = /* @__PURE__ */ new Set();
-          const rawUniqueness = entries2.map((entry, index3) => ({ id: entry.id, value: 1 - neighbors[index3].slice(0, 5).reduce((sum, item) => sum + item.score, 0) / Math.max(1, Math.min(5, neighbors[index3].length)) })).sort((a2, b) => a2.value - b.value || a2.id.localeCompare(b.id)), uniqueness2 = new Map(rawUniqueness.map((item, index3) => [item.id, rawUniqueness.length > 1 ? index3 / (rawUniqueness.length - 1) : 0.5]));
-          for (let first = 0; first < entries2.length; first++) for (const [second, relation] of directed[first]) {
-            if (second <= first) continue;
-            const reverse3 = directed[second].get(first);
-            if (!reverse3) continue;
-            const key = [entries2[first].id, entries2[second].id].sort().join("\0");
-            seen2.add(key);
-            incident.add(first);
-            incident.add(second);
-            edges2.push({ source: entries2[first].id, target: entries2[second].id, score: relation.score, entityScore: Math.max(relation.entityScore, reverse3.entityScore), affinity: Math.sqrt(relation.affinity * reverse3.affinity) });
-          }
-          for (let first = 0; first < entries2.length; first++) {
-            if (incident.has(first) || !neighbors[first].length) continue;
-            const relation = directed[first].get(neighbors[first][0].index), second = relation.index, key = [entries2[first].id, entries2[second].id].sort().join("\0");
-            if (seen2.has(key)) continue;
-            seen2.add(key);
-            incident.add(first);
-            incident.add(second);
-            edges2.push({ source: entries2[first].id, target: entries2[second].id, score: relation.score, affinity: relation.affinity * 0.28, bridge: true });
-          }
-          for (let first = 0; first < entries2.length; first++) {
-            const related = entries2.map((other, second) => second === first ? null : { second, score: entityAffinity(entries2[first].id, other.id) }).filter((item) => item?.score >= 0.16).sort((a2, b) => b.score - a2.score).slice(0, 2);
-            for (const relation of related) {
-              const key = [entries2[first].id, entries2[relation.second].id].sort().join("\0");
+          const exactRoot = evidence && entries2.length === evidence.files.length && entries2.every((entry) => evidence.fileIndex.has(entry.id));
+          let edges2, uniqueness2;
+          if (exactRoot && evidence.rootTopology) {
+            edges2 = evidence.rootTopology.edges.map((edge) => ({ ...edge }));
+            uniqueness2 = new Map(evidence.rootTopology.uniqueness);
+          } else {
+            const neighbors = [];
+            for (let first = 0; first < entries2.length; first++) {
+              const entry = entries2[first], nearby = entries2.map((other, second) => first === second ? null : { index: second, id: other.id, score: evidenceValue(evidence?.scores, entry.id, other.id) ?? dot(entry.vector, other.vector), entityScore: entityAffinity(entry.id, other.id) }).filter(Boolean).sort((a2, b) => b.score + b.entityScore * 0.08 - a2.score - a2.entityScore * 0.08).slice(0, 8);
+              neighbors.push(nearby);
+              if (first % 6 === 5) await yieldToUi();
+            }
+            const directed = neighbors.map((list4) => {
+              const floor = Number(list4.at(-1)?.score || 0), ceiling = Number(list4[0]?.score || 1), spread = Math.max(0.02, ceiling - floor);
+              return new Map(list4.map((item) => [item.index, { ...item, affinity: Math.max(1e-3, (item.score - floor) / spread) * 0.82 + item.entityScore * 0.18 }]));
+            }), builtEdges = [], seen2 = /* @__PURE__ */ new Set(), incident = /* @__PURE__ */ new Set(), rawUniqueness = entries2.map((entry, index3) => ({ id: entry.id, value: 1 - neighbors[index3].slice(0, 5).reduce((sum, item) => sum + item.score, 0) / Math.max(1, Math.min(5, neighbors[index3].length)) })).sort((a2, b) => a2.value - b.value || a2.id.localeCompare(b.id));
+            uniqueness2 = new Map(rawUniqueness.map((item, index3) => [item.id, rawUniqueness.length > 1 ? index3 / (rawUniqueness.length - 1) : 0.5]));
+            for (let first = 0; first < entries2.length; first++) for (const [second, relation] of directed[first]) {
+              if (second <= first) continue;
+              const reverse3 = directed[second].get(first);
+              if (!reverse3) continue;
+              const key = [entries2[first].id, entries2[second].id].sort().join("\0");
+              seen2.add(key);
+              incident.add(first);
+              incident.add(second);
+              builtEdges.push({ source: entries2[first].id, target: entries2[second].id, score: relation.score, entityScore: Math.max(relation.entityScore, reverse3.entityScore), affinity: Math.sqrt(relation.affinity * reverse3.affinity) });
+            }
+            for (let first = 0; first < entries2.length; first++) {
+              if (incident.has(first) || !neighbors[first].length) continue;
+              const relation = directed[first].get(neighbors[first][0].index), second = relation.index, key = [entries2[first].id, entries2[second].id].sort().join("\0");
               if (seen2.has(key)) continue;
               seen2.add(key);
-              edges2.push({ source: entries2[first].id, target: entries2[relation.second].id, score: dot(entries2[first].vector, entries2[relation.second].vector), entityScore: relation.score, affinity: 0.08 + relation.score * 0.28, entityBridge: true });
+              incident.add(first);
+              incident.add(second);
+              builtEdges.push({ source: entries2[first].id, target: entries2[second].id, score: relation.score, affinity: relation.affinity * 0.28, bridge: true });
             }
-            if (first % 8 === 7) await yieldToUi();
+            for (let first = 0; first < entries2.length; first++) {
+              const related = entries2.map((other, second) => second === first ? null : { second, score: entityAffinity(entries2[first].id, other.id) }).filter((item) => item?.score >= 0.16).sort((a2, b) => b.score - a2.score).slice(0, 2);
+              for (const relation of related) {
+                const key = [entries2[first].id, entries2[relation.second].id].sort().join("\0");
+                if (seen2.has(key)) continue;
+                seen2.add(key);
+                builtEdges.push({ source: entries2[first].id, target: entries2[relation.second].id, score: dot(entries2[first].vector, entries2[relation.second].vector), entityScore: relation.score, affinity: 0.08 + relation.score * 0.28, entityBridge: true });
+              }
+              if (first % 8 === 7) await yieldToUi();
+            }
+            edges2 = builtEdges;
+            if (exactRoot) {
+              evidence.rootTopology = { edges: edges2.map((edge) => ({ ...edge })), uniqueness: [...uniqueness2] };
+              this.saveGraphEvidenceCache(evidence).catch((error) => this.plugin.logDiagnostic?.(`Graph topology save failed: ${error?.message || error}`));
+            }
           }
           const sensitivity = Math.max(0.5, Math.min(2, Number(tuning.communitySensitivity) || 1)), detected = louvainCommunities(entries2.map((entry) => entry.id), edges2, sensitivity), baseMaximum = Math.max(10, Math.min(18, Math.round(Math.sqrt(entries2.length)))), parentCommunities2 = vaultMode ? mergeConnectedCommunities(entries2.map((entry) => entry.id), edges2, detected, Math.max(4, Math.round(baseMaximum * sensitivity))) : consolidateCommunities(entries2, detected), hierarchy = vaultMode ? stableLocalNeighborhoods(entries2, parentCommunities2, Math.max(4, Number(tuning.communityMinSize || 3)), Number(tuning.neighborhoodStability || 0.68), Number(tuning.neighborhoodSeparation || 0.06), Number(tuning.neighborhoodCoverage || 0.58)) : { communities: parentCommunities2, parentByCommunity: /* @__PURE__ */ new Map(), analysis: /* @__PURE__ */ new Map() }, communities2 = hierarchy.communities, positions2 = vaultMode ? hierarchicalSemanticPositions(entries2, parentCommunities2, communities2, tuning.neighborhoodSpread) : clusteredSemanticPositions(entries2, communities2), communityIds = [...new Set(communities2.values())], topicAffinities2 = /* @__PURE__ */ new Map();
           const topicScores = new Map(entries2.map((entry) => [entry.id, Object.fromEntries(communityIds.map((id2) => [id2, id2 === communities2.get(entry.id) ? 0.22 : 0.015]))]));
@@ -72621,21 +72890,32 @@ ${item.text || ""}`;
           for (const community of communities2.values()) communitySizes2.set(community, (communitySizes2.get(community) || 0) + 1);
           const parentCommunitySizes2 = /* @__PURE__ */ new Map();
           for (const community of parentCommunities2.values()) parentCommunitySizes2.set(community, (parentCommunitySizes2.get(community) || 0) + 1);
-          const communityAnalysis = this.topicCommunityAnalysis(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize), parentCommunityAnalysis = this.topicCommunityAnalysis(entries2, parentCommunities2, tuning.communityLabelSensitivity, tuning.communityMinSize);
-          let communityLabels2 = communityAnalysis.labels, parentCommunityLabels2 = parentCommunityAnalysis.labels;
+          let communityLabels2, parentCommunityLabels2;
           if (vaultMode) {
-            communityLabels2 = await this.generatedTopicCommunityLabels(entries2, communities2, communityAnalysis, tuning.communityMinSize);
-            parentCommunityLabels2 = await this.generatedTopicCommunityLabels(entries2, parentCommunities2, parentCommunityAnalysis, tuning.communityMinSize);
+            communityLabels2 = this.cachedTopicCommunityLabels(entries2, communities2, this.deferredCommunityLabels?.get(signature) || /* @__PURE__ */ new Map());
+            parentCommunityLabels2 = this.cachedTopicCommunityLabels(entries2, parentCommunities2, this.deferredCommunityLabels?.get(`${signature}:parents`) || /* @__PURE__ */ new Map());
+            this.queueTopicCommunityAnalysis(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize, signature);
+            this.queueTopicCommunityAnalysis(entries2, parentCommunities2, tuning.communityLabelSensitivity, tuning.communityMinSize, `${signature}:parents`);
+          } else {
+            const communityAnalysis = this.topicCommunityAnalysis(entries2, communities2, tuning.communityLabelSensitivity, tuning.communityMinSize), parentCommunityAnalysis = this.topicCommunityAnalysis(entries2, parentCommunities2, tuning.communityLabelSensitivity, tuning.communityMinSize);
+            communityLabels2 = communityAnalysis.labels;
+            parentCommunityLabels2 = parentCommunityAnalysis.labels;
           }
           this.starfieldCache = { signature, entries: entries2, edges: edges2, positions: positions2, communities: communities2, parentCommunities: parentCommunities2, hierarchyAnalysis: hierarchy.analysis, topicAffinities: topicAffinities2, communitySizes: communitySizes2, parentCommunitySizes: parentCommunitySizes2, communityLabels: communityLabels2, parentCommunityLabels: parentCommunityLabels2, entitySets: entitySets2, uniqueness: uniqueness2 };
+          this.starfieldCaches.set(signature, this.starfieldCache);
+          while (this.starfieldCaches.size > 12) this.starfieldCaches.delete(this.starfieldCaches.keys().next().value);
         }
         const { entries, edges, positions, communities, parentCommunities, hierarchyAnalysis, topicAffinities, communitySizes, parentCommunitySizes, communityLabels, parentCommunityLabels, entitySets, uniqueness } = this.starfieldCache, basis = this.topicBasis(), communityFields = (entry) => {
           const community = communities.get(entry.id) ?? 0, parentCommunity = parentCommunities?.get(entry.id) ?? community, parentAnalysis = hierarchyAnalysis?.get(parentCommunity), affinities = topicAffinities.get(entry.id) || {}, parentLabel = parentCommunityLabels?.get(parentCommunity) || {};
           return { community, parentCommunity, parentCommunitySize: Number(parentCommunitySizes?.get(parentCommunity) || 1), parentCommunityLabel: parentLabel.label || "", parentCommunityFallbackLabel: parentLabel.fallbackLabel || "", parentCommunityLabelConfidence: Number(parentLabel.confidence || 0), neighborhoodDepth: community === parentCommunity ? 1 : 2, neighborhoodTemperature: Number(parentAnalysis?.temperature || 0), neighborhoodStability: Number(parentAnalysis?.stability || 0), topicAffinities: affinities, communityMembership: Number(affinities[community] || 0), communitySize: Number(communitySizes.get(community) || 1), communityLabel: communityLabels.get(community)?.label || "", communityFallbackLabel: communityLabels.get(community)?.fallbackLabel || "", communityLabelConfidence: Number(communityLabels.get(community)?.confidence || 0) };
         };
         if (!trimmed) {
-          const topics2 = topicCoordinates(entries, basis.center, basis.axes);
-          return { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, uniqueness: uniqueness.get(entry.id) ?? 0.5, ...communityFields(entry), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics2.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) };
+          const topics2 = topicCoordinates(entries, basis.center, basis.axes), graph = { nodes: entries.map((entry) => ({ id: entry.id, label: basename(entry.id), semanticScore: 0, uniqueness: uniqueness.get(entry.id) ?? 0.5, ...communityFields(entry), entities: [...entitySets.get(entry.id) || []].slice(0, 8), ...positions.get(entry.id) || {}, ...topics2.get(entry.id) || {} })), edges: edges.map((edge) => ({ ...edge, residualScore: 0 })) }, evidence = this.graphEvidenceCache, fullVault = vaultMode && evidence && requested.length === evidence.files.length && requested.every((file) => evidence.fileIndex.has(file));
+          if (fullVault) {
+            evidence.rootGraph = { signature, graph };
+            this.saveGraphEvidenceCache(evidence).catch((error) => this.plugin.logDiagnostic?.(`Graph snapshot save failed: ${error?.message || error}`));
+          }
+          return graph;
         }
         const queryVector = await this.queryVector(this.correctQuery(trimmed)), residuals = new Map(entries.map((entry) => [entry.id, residualVector(entry.vector, queryVector)])), topics = topicCoordinates(entries, queryVector, basis.axes);
         const outputEdges = [...edges], seen = new Set(edges.map((edge) => [edge.source, edge.target].sort().join("\0"))), focus = new Set(focusFiles || []), focused = entries.filter((entry) => focus.has(entry.id));
@@ -72780,6 +73060,9 @@ function mapGroupingLabel(value) {
 }
 function mapTuningNeedsLayout(key) {
   return ["commonnessSuppression", "passageCoverage", "passageDiversity", "communitySensitivity", "neighborhoodStability", "neighborhoodSeparation", "neighborhoodCoverage", "neighborhoodSpread", "communityMinSize", "communityLabelSensitivity", "reset"].includes(key);
+}
+function mapTuningNeedsEvidence(key) {
+  return ["commonnessSuppression", "passageCoverage", "passageDiversity", "reset"].includes(key);
 }
 var DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, defaultSearchLens: "relevance", mapGroupingMode: "similarity", magicGraphEnabled: true, graphSemanticColors: true, generatedTopicLabels: true, graphRelationshipIntelligence: true, graphRelationshipBudgetDesktop: 8, graphRelationshipBudgetMobile: 2, graphManualLinkInfluence: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2e3, showWikilinks: true };
 function activeIndexDir(plugin6) {
@@ -72955,6 +73238,23 @@ var DesktopIndexStore = class {
     const target = path.join(this.directory, "index.topic-labels.json"), temporary = `${target}.download`;
     await fs2.promises.writeFile(temporary, JSON.stringify(entries));
     await fs2.promises.rename(temporary, target);
+  }
+  async getGraphEvidence() {
+    try {
+      const metadata = JSON.parse(await fs2.promises.readFile(path.join(this.directory, "index.graph.json"), "utf8")), data = await fs2.promises.readFile(path.join(this.directory, "index.graph.bin")), count = Number(metadata.files?.length || 0), matrixBytes = count * count * 4;
+      if (!count || data.byteLength !== matrixBytes * 2) return null;
+      return { ...metadata, scores: data.buffer.slice(data.byteOffset, data.byteOffset + matrixBytes), entities: data.buffer.slice(data.byteOffset + matrixBytes, data.byteOffset + data.byteLength) };
+    } catch {
+      return null;
+    }
+  }
+  async putGraphEvidence(value) {
+    fs2.mkdirSync(this.directory, { recursive: true });
+    const metadataTarget = path.join(this.directory, "index.graph.json"), binaryTarget = path.join(this.directory, "index.graph.bin"), metadataTemporary = `${metadataTarget}.download`, binaryTemporary = `${binaryTarget}.download`, scores = Buffer.from(value.scores), entities = Buffer.from(value.entities);
+    await fs2.promises.writeFile(metadataTemporary, JSON.stringify({ version: value.version, signature: value.signature, files: value.files, fingerprints: value.fingerprints, tuning: value.tuning, builtAt: value.builtAt, rootTopology: value.rootTopology || null, rootGraph: value.rootGraph || null }));
+    await fs2.promises.writeFile(binaryTemporary, Buffer.concat([scores, entities]));
+    await fs2.promises.rename(binaryTemporary, binaryTarget);
+    await fs2.promises.rename(metadataTemporary, metadataTarget);
   }
 };
 var DesktopEmbedder = class {
@@ -73897,14 +74197,20 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         input.value = String(this.tuning[control.key]);
         output.textContent = Number(this.tuning[control.key]).toFixed(control.step < 0.05 ? 2 : control.step >= 1 ? 0 : 1);
       }
-      input.addEventListener(control.type === "toggle" ? "change" : "input", () => {
+      const update = (notify) => {
         this.tuning[control.key] = control.type === "toggle" ? input.checked : Number(input.value);
         output.textContent = control.type === "toggle" ? input.checked ? "On" : "Off" : Number(input.value).toFixed(control.step < 0.05 ? 2 : control.step >= 1 ? 0 : 1);
         this.lastTerrainAt = 0;
         this.lastCommunityAt = 0;
         this.startSimulation(0.58);
-        this.options.onTune({ ...this.tuning }, control.key);
-      });
+        if (notify) this.options.onTune({ ...this.tuning }, control.key);
+        else this.draw();
+      };
+      if (control.type === "toggle") input.addEventListener("change", () => update(true));
+      else {
+        input.addEventListener("input", () => update(!mapTuningNeedsLayout(control.key)));
+        if (mapTuningNeedsLayout(control.key)) input.addEventListener("change", () => update(true));
+      }
       this.tuningInputs.set(control.key, { input, output, control });
     }
     const footer = this.tuningPanel.createDiv({ cls: "gib-search-map-tuning-footer" }), reset2 = footer.createEl("button", { text: "Reset", attr: { type: "button" } });
@@ -75482,10 +75788,8 @@ var SemanticSearchModal = class extends SuggestModal {
       this.plugin.settings.mapTuning = values;
       window.clearTimeout(this.mapTuneTimer);
       this.mapTuneTimer = window.setTimeout(async () => {
-        if (["commonnessSuppression", "passageCoverage", "passageDiversity", "communitySensitivity", "communityMinSize", "communityLabelSensitivity", "reset"].includes(key)) {
-          this.plugin.search.contentProfileCache = null;
-          this.plugin.search.starfieldCache = null;
-        }
+        if (mapTuningNeedsEvidence(key)) this.plugin.search.invalidateGraphEvidence();
+        else if (mapTuningNeedsLayout(key)) this.plugin.search.clearStarfieldCaches();
         await this.plugin.save();
         if (mapTuningNeedsLayout(key)) this.updateMap();
         else this.map?.draw();
@@ -75772,14 +76076,12 @@ var GraphView = class extends ItemView {
         this.plugin.settings.mapTuning = values;
         window.clearTimeout(this.tuneTimer);
         this.tuneTimer = window.setTimeout(async () => {
-          if (["commonnessSuppression", "passageCoverage", "passageDiversity", "communitySensitivity", "communityMinSize", "communityLabelSensitivity", "reset"].includes(key)) {
-            this.plugin.search.contentProfileCache = null;
-            this.plugin.search.starfieldCache = null;
-          }
+          if (mapTuningNeedsEvidence(key)) this.plugin.search.invalidateGraphEvidence();
+          else if (mapTuningNeedsLayout(key)) this.plugin.search.clearStarfieldCaches();
           await this.plugin.save();
           if (mapTuningNeedsLayout(key)) this.query.length >= 3 ? this.runSearch(this.query, true) : this.loadVault();
           else this.map?.draw();
-        }, 180);
+        }, 120);
       },
       onGenerations: async (value) => {
         this.mapGenerations = value;
@@ -75810,6 +76112,9 @@ var GraphView = class extends ItemView {
     this.reopenButton.addEventListener("click", () => this.setResultsCollapsed(false));
     previewOpen.addEventListener("click", () => this.openFile(this.previewFilePath));
     previewClose.addEventListener("click", () => this.closePreview());
+    this.graphCacheOff = this.plugin.search.onGraphCache(() => {
+      if (this.query.length < 3) this.loadVault();
+    });
     await this.loadVault();
     this.input.disabled = false;
     this.input.placeholder = "Search the vault by meaning\u2026";
@@ -76051,6 +76356,7 @@ var GraphView = class extends ItemView {
     this.searchVersion++;
     window.clearTimeout(this.searchTimer);
     window.clearTimeout(this.tuneTimer);
+    this.graphCacheOff?.();
     this.map?.destroy();
   }
 };
@@ -76183,7 +76489,7 @@ var SearchSettings = class extends PluginSettingTab {
     }));
     new Setting(this.containerEl).setName("Generated topic labels").setDesc("Use a small local language model to name full-vault topic communities from representative passages. The first use downloads it; labels are cached and statistical labels remain available as a fallback.").addToggle((t3) => t3.setValue(this.plugin.settings.generatedTopicLabels).onChange(async (value) => {
       this.plugin.settings.generatedTopicLabels = value;
-      this.plugin.search.starfieldCache = null;
+      this.plugin.search.clearStarfieldCaches();
       await this.plugin.save();
     }));
     new Setting(this.containerEl).setName("Relationship intelligence").setDesc("Use a small local NLI model on only the strongest visible graph connections. The first use downloads it; results are cached locally.").addToggle((t3) => t3.setValue(this.plugin.settings.graphRelationshipIntelligence).onChange(async (value) => {
@@ -76265,6 +76571,7 @@ var SearchSettings = class extends PluginSettingTab {
     this.field("Chunks", remote?.totalChunks ?? local.totalChunks ?? 0);
     this.field("Highlight phrases", remote?.highlightPhrases ?? local.highlightPhrases ?? 0);
     this.field("Graph entities", remote?.graphEntities ?? 0);
+    this.field("Graph cache", remote?.graphCacheReady ? "Ready" : remote?.isIndexing ? "Waiting for index" : "Preparing");
     this.field("Cached relationships", remote?.cachedRelationships ?? 0);
     this.field("Cached topic labels", remote?.cachedTopicLabels ?? 0);
     const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || remote?.modelId || "Loaded";
