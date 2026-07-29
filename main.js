@@ -73632,6 +73632,10 @@ function normalizeAnchor(anchor = {}, index3 = 0) {
   const label = String(anchor.label || anchor.name || anchor.anchor || "").trim();
   return { id: String(anchor.id || stableSignature(`${label}:${index3}`)), label, description: String(anchor.description || label).trim(), signal: validTextSignal(anchor.signal || anchor.source), strength: clamp(anchor.strength ?? anchor.weight ?? 0.7) };
 }
+function normalizeRegions(value = {}, appearance = {}) {
+  const legacyEnabled = appearance.regions === true, legacyLabels = appearance.labels === true;
+  return { style: ["off", "boundaries", "territories"].includes(value.style) ? value.style : legacyEnabled ? "territories" : "off", labels: ["off", "name", "name-count"].includes(value.labels) ? value.labels : legacyLabels ? "name" : "off", membership: clamp(value.membership ?? 0.42), minSize: Math.max(2, Math.min(12, Math.round(Number(value.minSize ?? 4)))), padding: clamp(value.padding ?? 0.72), separation: clamp(value.separation ?? 0.58), cohesion: clamp(value.cohesion ?? 0.34) };
+}
 function normalizeVisual(rule = {}) {
   return { id: String(rule.id || stableSignature(JSON.stringify(rule))), source: Object.keys(TEXT_SIGNALS).includes(rule.source) || ["fileSize", "density", "relationship", "community", "links"].includes(rule.source) ? rule.source : "semantic", channel: ["color", "size", "elevation", "regions", "labels", "lines"].includes(rule.channel) ? rule.channel : "color", enabled: rule.enabled !== false };
 }
@@ -73718,7 +73722,7 @@ var init_atlas_engine = __esm({
       scope: { match: "all", rules: [], folders: [], excludeFolders: [], tags: [], properties: {}, extensions: ["md", "txt", "markdown"] },
       anchor: { type: "default" },
       scale: "default",
-      frame: { mode: "natural", referenceFrame: "free", signal: "semantic", reference: "", geometry: "semantic", relationships: { semantic: 1, emotion: 0, purpose: 0, position: 0, form: 0, links: 0 }, anchors: [], dynamics: { contrast: 0.58, cohesion: 0.62, spacing: 0.55, spring: 0.68, charge: 0.56, selectivity: 0.45, mutuality: 0.7, bridges: 0.42, settling: 0.68, containment: 0.62, physicsRate: 0.5 }, environment: { collision: 0.7, charge: 0.56, containment: 0.62, damping: 0.72, physicsRate: 0.5 }, categoryPull: 0.78, localCohesion: 0.26, sensitivity: 0.58, unclaimedThreshold: 0.34, appearance: { colorBy: "semantic", sizeBy: "file", terrain: "density", regions: false, labels: false, linkLines: false }, visuals: [], categories: [] }
+      frame: { mode: "natural", referenceFrame: "free", signal: "semantic", reference: "", geometry: "semantic", relationships: { semantic: 1, emotion: 0, purpose: 0, position: 0, form: 0, links: 0 }, anchors: [], dynamics: { contrast: 0.58, cohesion: 0.62, spacing: 0.55, spring: 0.68, charge: 0.56, selectivity: 0.45, mutuality: 0.7, bridges: 0.42, settling: 0.68, containment: 0.62, physicsRate: 0.5 }, environment: { collision: 0.7, charge: 0.56, containment: 0.62, damping: 0.72, physicsRate: 0.5 }, regions: { style: "off", labels: "name", membership: 0.42, minSize: 4, padding: 0.72, separation: 0.58, cohesion: 0.34 }, categoryPull: 0.78, localCohesion: 0.26, sensitivity: 0.58, unclaimedThreshold: 0.34, appearance: { colorBy: "semantic", sizeBy: "file", terrain: "density", regions: false, labels: false, linkLines: false }, visuals: [], categories: [] }
     };
     ATLAS_VIEW_TEMPLATES = {
       meaning: { id: "all-notes", name: "Meaning", signal: "semantic", relationships: { semantic: 1 }, description: "See the vault by similarity of ideas.", categories: [] },
@@ -73737,6 +73741,7 @@ var init_atlas_engine = __esm({
         ...copy2(DEFAULT_ATLAS_VIEW.frame),
         signal: template.signal,
         relationships: { semantic: 0, emotion: 0, purpose: 0, position: 0, form: 0, links: 0, ...template.relationships },
+        regions: { ...copy2(DEFAULT_ATLAS_VIEW.frame.regions), style: template.id === "topics" ? "territories" : "off", labels: template.id === "topics" ? "name-count" : "name", membership: template.id === "topics" ? 0.34 : 0.42, minSize: template.id === "topics" ? 3 : 4, separation: template.id === "topics" ? 0.82 : 0.58, cohesion: template.id === "topics" ? 0.48 : 0.34 },
         appearance: { ...copy2(DEFAULT_ATLAS_VIEW.frame.appearance), colorBy: template.signal === "emotion" ? "emotion" : "semantic", terrain: template.signal === "emotion" ? "intensity" : "density", regions: template.id === "topics", labels: template.id === "topics", linkLines: template.id === "links" }
       }
     }));
@@ -73765,6 +73770,7 @@ var init_atlas_engine = __esm({
         const scope = view.scope || {}, extensions = Array.isArray(scope.extensions) && scope.extensions.length ? scope.extensions.map((value) => String(value).toLowerCase().replace(/^\./, "")) : DEFAULT_ATLAS_VIEW.scope.extensions, frame = view.frame || {}, legacyMode = frame.mode === "guided" ? "constellation" : view.anchor?.type === "query" ? "center" : "free", referenceFrame = ["free", "center", "constellation", "axis"].includes(frame.referenceFrame) ? frame.referenceFrame : legacyMode, migratedWeights = { ...frame.relationships || {} };
         for (const rule of frame.forces || []) if (TEXT_SIGNALS[rule.source] && !["collision", "charge", "containment", "flow"].includes(rule.force)) migratedWeights[rule.source] = Math.max(Number(migratedWeights[rule.source] || 0), Number(rule.strength || 0));
         const relationships = normalizeRelationships(migratedWeights, validTextSignal(frame.signal)), dynamics = normalizeDynamics(frame.dynamics), environment = { collision: clamp(frame.environment?.collision ?? 0.7), charge: clamp(frame.environment?.charge ?? dynamics.charge), containment: clamp(frame.environment?.containment ?? dynamics.containment), damping: clamp(frame.environment?.damping ?? 0.72), physicsRate: clamp(frame.environment?.physicsRate ?? dynamics.physicsRate) }, migratedAnchors = frame.anchors?.length ? frame.anchors : (frame.forces || []).filter((rule) => ["gravity", "axis"].includes(rule.force) && String(rule.anchor || "").trim()).map((rule) => ({ id: rule.id, label: rule.anchor, description: rule.anchor, signal: rule.source, strength: rule.strength })), anchors = migratedAnchors.map(normalizeAnchor).filter((anchor) => anchor.label).slice(0, 12), categories = anchors.length ? anchors.map((anchor) => ({ id: `anchor:${anchor.id}`, name: anchor.label, description: anchor.description, keywords: [], examples: [], weight: anchor.strength, position: null })) : (frame.categories || []).map(normalizeCategory).filter((category) => category.name).slice(0, 12), visuals = (frame.visuals?.length ? frame.visuals : [{ source: frame.appearance?.colorBy === "emotion" ? "emotion" : "semantic", channel: "color" }, { source: frame.appearance?.sizeBy === "uniform" ? "semantic" : "fileSize", channel: "size" }, { source: frame.appearance?.terrain === "intensity" ? "relationship" : "density", channel: "elevation", enabled: frame.appearance?.terrain !== "off" }, { source: "community", channel: "regions", enabled: frame.appearance?.regions === true }, { source: "community", channel: "labels", enabled: frame.appearance?.labels === true }, { source: "links", channel: "lines", enabled: frame.appearance?.linkLines === true }]).map(normalizeVisual);
+        const regions = normalizeRegions(frame.regions, frame.appearance);
         return {
           id: String(view.id || stableSignature(view.name || "all-notes")),
           name: String(view.name || "All Notes"),
@@ -73772,7 +73778,7 @@ var init_atlas_engine = __esm({
           scope: { match: scope.match === "any" ? "any" : "all", rules: (scope.rules || []).map(normalizeScopeRule), folders: (scope.folders || []).map(normalizedPath).filter(Boolean), excludeFolders: (scope.excludeFolders || []).map(normalizedPath).filter(Boolean), tags: (scope.tags || []).map((tag) => String(tag).replace(/^#/, "")).filter(Boolean), properties: { ...scope.properties || {} }, extensions },
           anchor: view.anchor && typeof view.anchor === "object" ? { ...view.anchor } : { type: "default" },
           scale: view.scale === "default" ? "default" : validAtlasScale(view.scale),
-          frame: { mode: anchors.length || categories.length && ["constellation", "axis"].includes(referenceFrame) ? "guided" : "natural", referenceFrame: anchors.length ? "constellation" : referenceFrame, signal: anchors[0]?.signal || validTextSignal(frame.signal), reference: String(frame.reference || "").trim(), geometry: ["semantic", "radial", "manual"].includes(frame.geometry) ? frame.geometry : "semantic", relationships, anchors, dynamics: { ...dynamics, charge: environment.charge, containment: environment.containment, physicsRate: environment.physicsRate }, environment, categoryPull: clamp(frame.categoryPull ?? 0.78), localCohesion: clamp(frame.localCohesion ?? 0.26), sensitivity: clamp(frame.sensitivity ?? 0.58), unclaimedThreshold: clamp(frame.unclaimedThreshold ?? 0.34), appearance: { colorBy: ["category", "semantic", "emotion", "relationship", "none"].includes(frame.appearance?.colorBy) ? frame.appearance.colorBy : anchors.length ? "category" : "semantic", sizeBy: frame.appearance?.sizeBy === "uniform" ? "uniform" : "file", terrain: ["density", "intensity", "off"].includes(frame.appearance?.terrain) ? frame.appearance.terrain : "density", regions: frame.appearance?.regions === true, labels: frame.appearance?.labels === true, linkLines: frame.appearance?.linkLines === true }, visuals, categories }
+          frame: { mode: anchors.length || categories.length && ["constellation", "axis"].includes(referenceFrame) ? "guided" : "natural", referenceFrame: anchors.length ? "constellation" : referenceFrame, signal: anchors[0]?.signal || validTextSignal(frame.signal), reference: String(frame.reference || "").trim(), geometry: ["semantic", "radial", "manual"].includes(frame.geometry) ? frame.geometry : "semantic", relationships, anchors, dynamics: { ...dynamics, charge: environment.charge, containment: environment.containment, physicsRate: environment.physicsRate }, environment, regions, categoryPull: clamp(frame.categoryPull ?? 0.78), localCohesion: clamp(frame.localCohesion ?? 0.26), sensitivity: clamp(frame.sensitivity ?? 0.58), unclaimedThreshold: clamp(frame.unclaimedThreshold ?? 0.34), appearance: { colorBy: ["category", "semantic", "emotion", "relationship", "none"].includes(frame.appearance?.colorBy) ? frame.appearance.colorBy : anchors.length ? "category" : "semantic", sizeBy: frame.appearance?.sizeBy === "uniform" ? "uniform" : "file", terrain: ["density", "intensity", "off"].includes(frame.appearance?.terrain) ? frame.appearance.terrain : "density", regions: regions.style !== "off", labels: regions.labels !== "off", linkLines: frame.appearance?.linkLines === true }, visuals, categories }
         };
       }
       activeView(id2 = this.plugin.settings?.atlasHomeViewId) {
@@ -73822,9 +73828,9 @@ var init_atlas_engine = __esm({
         return { files, paths: files.map((file) => file.path), signature: stableSignature(JSON.stringify([state.viewId, scope, files.map((file) => [file.path, file.stat?.mtime || 0])])) };
       }
       legendFor(state) {
-        const active = Object.entries(state.frame?.relationships || {}).filter(([, weight]) => Number(weight) > 0).map(([id2]) => TEXT_SIGNALS[id2]?.label || id2), mappings = (state.frame?.visuals || []).filter((rule) => rule.enabled !== false), sourceName = (source) => TEXT_SIGNALS[source]?.label || ({ fileSize: "Relative file size", density: "Local note density", relationship: "Distinctive relationship activity", community: "Community", links: "Authored wikilinks" }[source] || source), common = [{ key: "distance", label: state.anchor?.type === "query" ? "Distance from center" : "Distance", meaning: state.anchor?.type === "query" ? "Relevance to the anchor" : active.length ? active.join(" + ") : "Relationship field" }];
+        const active = Object.entries(state.frame?.relationships || {}).filter(([, weight]) => Number(weight) > 0).map(([id2]) => TEXT_SIGNALS[id2]?.label || id2), mappings = (state.frame?.visuals || []).filter((rule) => rule.enabled !== false && !["regions", "labels"].includes(rule.channel)), sourceName = (source) => TEXT_SIGNALS[source]?.label || ({ fileSize: "Relative file size", density: "Local note density", relationship: "Distinctive relationship activity", community: "Territory", links: "Authored wikilinks" }[source] || source), common = [{ key: "distance", label: state.anchor?.type === "query" ? "Distance from center" : "Distance", meaning: state.anchor?.type === "query" ? "Relevance to the anchor" : active.length ? active.join(" + ") : "Relationship field" }];
         for (const mapping3 of mappings) {
-          const labels = { color: "Color", size: "Dot size", elevation: "Terrain", regions: "Zones", labels: "Labels", lines: "Lines" }, item = { key: mapping3.channel, label: labels[mapping3.channel] || mapping3.channel, meaning: sourceName(mapping3.source) };
+          const labels = { color: "Color", size: "Dot size", elevation: "Terrain", lines: "Lines" }, item = { key: mapping3.channel, label: labels[mapping3.channel] || mapping3.channel, meaning: sourceName(mapping3.source) };
           if (!common.some((value) => value.key === item.key)) common.push(item);
         }
         if (state.frame?.mode === "guided" && !common.some((item) => item.key === "beacon")) common.push({ key: "beacon", label: "Gravity point", meaning: "A declared idea or pole" });
@@ -73856,6 +73862,10 @@ var init_atlas_engine = __esm({
           node.sourceFileScale = node.fileScale;
           node.semanticHue = node.topicHue;
           node.signalIntensities = Object.fromEntries([...field.profiles].map(([signal, values]) => [signal, Math.max(0, ...Object.values(values.get(node.id)?.scores || {}).map(Number))]));
+          node.qualityProfiles = Object.fromEntries([...field.profiles].map(([signal, values]) => {
+            const value = values.get(node.id) || {};
+            return [signal, { scores: { ...value.scores || {} }, evidence: { ...value.evidence || {} } }];
+          }));
           node.relationshipSignal = preferredSignal || "semantic";
           node.relationshipScores = scores;
           node.relationshipEvidence = profile?.evidence || null;
@@ -73947,6 +73957,24 @@ var init_atlas_engine = __esm({
         });
         return { layout: output, categories: anchors };
       }
+      async qualityProfile(filePath, state, hint = {}) {
+        const requested = ["emotion", "purpose", "form"], reference = String(state?.frame?.reference || "").trim();
+        if (reference) requested.push("position");
+        const cached = hint.qualityProfiles || {}, profiles = {};
+        for (const signal of requested) {
+          let value = cached[signal];
+          if (!value) value = (await this.plugin.search.textSignalProfiles(signal, [filePath], reference)).get(filePath) || {};
+          const definitions = TEXT_SIGNAL_PROFILES[signal] || [], byKey = new Map(definitions.map((item) => [`${signal}:${item.key}`, item]));
+          profiles[signal] = { label: TEXT_SIGNALS[signal]?.label || signal, intensity: Math.max(0, ...Object.values(value.scores || {}).map(Number)), qualities: Object.entries(value.scores || {}).map(([id2, score]) => {
+            const definition = byKey.get(id2) || definitions.find((item) => item.key === id2.split(":").pop());
+            return { id: id2, label: definition?.name || id2.split(":").pop(), score: clamp(score), hue: definition?.hue, evidence: value.evidence?.[id2] || "" };
+          }).filter((item) => item.score >= 0.04).sort((a2, b) => b.score - a2.score).slice(0, signal === "emotion" ? 4 : 3) };
+        }
+        const resolved = this.plugin.app.metadataCache.resolvedLinks || {}, incomingCounts = /* @__PURE__ */ new Map();
+        for (const links of Object.values(resolved)) for (const target of Object.keys(links || {})) incomingCounts.set(target, (incomingCounts.get(target) || 0) + 1);
+        const outgoing = Object.keys(resolved[filePath] || {}).length, incoming = incomingCounts.get(filePath) || 0, degrees = Object.entries(resolved).map(([source, links]) => Object.keys(links || {}).length + Number(incomingCounts.get(source) || 0)), maximumDegree = Math.max(1, ...degrees), regionLabel = hint.communityLabel || hint.communityFallbackLabel || hint.parentCommunityLabel || hint.parentCommunityFallbackLabel || "Uncharted";
+        return { file: filePath, region: { id: hint.community, label: regionLabel, membership: clamp(hint.communityMembership || 0), hue: Number.isFinite(Number(hint.displayTopicHue ?? hint.topicHue)) ? Number(hint.displayTopicHue ?? hint.topicHue) : null }, dimensions: { meaning: clamp(hint.communityMembership ?? hint.uniqueness ?? 0.5), emotion: profiles.emotion?.intensity || 0, purpose: profiles.purpose?.intensity || 0, form: profiles.form?.intensity || 0, links: clamp((incoming + outgoing) / maximumDegree) }, profiles, links: { incoming, outgoing } };
+      }
       async scene(state, results = [], options = {}) {
         const scope = options.scope || this.resolveScope(state), key = this.sceneKey(state, scope, results, options), remembered = this.sceneCache.get(key);
         if (remembered) {
@@ -73978,7 +74006,7 @@ var init_atlas_engine = __esm({
           }
         }
         const legend = this.legendFor(state);
-        return { state, scopeSignature: scope.signature, center: { label: state.viewName, hasQuery: false, resultCount: 0, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, legend }, nodes, edges: graph.edges || [], roads, results: [], legend, provisional: false };
+        return { state, scopeSignature: scope.signature, center: { label: state.viewName, hasQuery: false, resultCount: 0, guidedCategories: guided.categories, appearance: state.frame?.appearance, regions: state.frame?.regions, dynamics: state.frame?.dynamics, forceField, legend }, nodes, edges: graph.edges || [], roads, results: [], legend, provisional: false };
       }
       async queryScene(state, scope, results, options = {}) {
         const query = String(state.anchor.value || "").trim(), showCommunities = state.frame?.appearance?.regions === true || state.frame?.appearance?.labels === true, sourceResults = results.map((result) => ({ ...result })), roots = sourceResults.map((result) => result.file), generations = Math.max(1, Math.min(3, Number(options.generations) || 1)), expansion = this.plugin.search.semanticGenerations(roots, generations, 5), generationByFile = new Map(expansion.nodes.map((node) => [node.id, node])), allowed = new Set(scope.paths), activeFiles = expansion.nodes.map((node) => node.id).filter((file) => allowed.has(file)), [facets, graph] = await Promise.all([this.plugin.search.conceptFacets(query, activeFiles), this.plugin.search.semanticStarfield(query, activeFiles, activeFiles, { queryLabels: false })]);
@@ -74002,7 +74030,7 @@ var init_atlas_engine = __esm({
           }
         }
         const legend = this.legendFor(state);
-        return { state, scopeSignature: scope.signature, center: { label: query, hasQuery: true, resultCount: sourceResults.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, legend }, nodes, edges: combinedEdges, roads, results: sourceResults, legend, provisional: false };
+        return { state, scopeSignature: scope.signature, center: { label: query, hasQuery: true, resultCount: sourceResults.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, regions: state.frame?.regions, dynamics: state.frame?.dynamics, forceField, legend }, nodes, edges: combinedEdges, roads, results: sourceResults, legend, provisional: false };
       }
       async noteScene(state, scope, options = {}) {
         const filePath = String(state.anchor.value || ""), showCommunities = state.frame?.appearance?.regions === true || state.frame?.appearance?.labels === true, limit = state.scale === "detail" ? 32 : state.scale === "neighborhood" ? 22 : 16, graph = this.plugin.search.semanticNeighbors(filePath, limit), allowed = new Set(scope.paths);
@@ -74024,7 +74052,7 @@ var init_atlas_engine = __esm({
           }
         }
         const legend = this.legendFor(state);
-        return { state, scopeSignature: scope.signature, center: { id: filePath, label: basename2(filePath), hasQuery: true, resultCount: nodes.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, legend }, nodes, edges, roads, results: nodes, legend, provisional: false };
+        return { state, scopeSignature: scope.signature, center: { id: filePath, label: basename2(filePath), hasQuery: true, resultCount: nodes.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, regions: state.frame?.regions, dynamics: state.frame?.dynamics, forceField, legend }, nodes, edges, roads, results: nodes, legend, provisional: false };
       }
       provisionalScene(state, baseScene, results, positions = /* @__PURE__ */ new Map()) {
         const scores = results.map((result) => Number(result.viewScore ?? result.score ?? 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(1e-3, high - low), byFile = new Map(results.map((result) => [result.file, result])), nodes = baseScene.nodes.map((base) => {
@@ -74032,7 +74060,7 @@ var init_atlas_engine = __esm({
           return result ? { ...base, ...positioned, matched: true, generation: 1, relevance: 0.08 + (Number(result.viewScore ?? result.score ?? 0) - low) / spread * 0.92 } : { ...base, ...positioned, matched: false, relevance: 0 };
         });
         const legend = this.legendFor(state);
-        return { state, scopeSignature: baseScene.scopeSignature, center: { label: state.anchor.value, hasQuery: true, resultCount: results.length, transition: "provisional", guidedCategories: baseScene.center?.guidedCategories || [], appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField: baseScene.center?.forceField || null, legend }, nodes, edges: baseScene.edges, roads: baseScene.roads, results, legend, provisional: true };
+        return { state, scopeSignature: baseScene.scopeSignature, center: { label: state.anchor.value, hasQuery: true, resultCount: results.length, transition: "provisional", guidedCategories: baseScene.center?.guidedCategories || [], appearance: state.frame?.appearance, regions: state.frame?.regions, dynamics: state.frame?.dynamics, forceField: baseScene.center?.forceField || null, legend }, nodes, edges: baseScene.edges, roads: baseScene.roads, results, legend, provisional: true };
       }
       clear() {
         this.sceneCache.clear();
@@ -74069,7 +74097,7 @@ var MODEL_PROFILES = {
 var MODEL_TWEAK_DEFAULTS = {
   bge: { topK: 10, minScore: 0.5, scoreWindow: 0.14, folderPathBoost: 0.06, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3 }
 };
-var MAP_TUNING_DEFAULTS = { commonnessSuppression: 0.75, passageCoverage: 0.72, passageDiversity: 0.28, communitySensitivity: 1, communityMembership: 0.42, communityMinSize: 4, communityLabelSensitivity: 0.58, neighborhoodStability: 0.68, neighborhoodSeparation: 0.06, neighborhoodCoverage: 0.58, neighborhoodSpread: 1, boundaryPadding: 1, boundaryRepulsionEnabled: false, boundaryRepulsion: 0.65, showTopography: true, terrainSpread: 1, terrainContrast: 1 };
+var MAP_TUNING_DEFAULTS = { commonnessSuppression: 0.75, passageCoverage: 0.72, passageDiversity: 0.28, communitySensitivity: 1, communityMembership: 0.42, communityMinSize: 4, communityLabelSensitivity: 0.58, neighborhoodStability: 0.68, neighborhoodSeparation: 0.06, neighborhoodCoverage: 0.58, neighborhoodSpread: 1, showTopography: true, terrainSpread: 1, terrainContrast: 1 };
 function atlasId(value = "view") {
   return `${String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "view"}-${Date.now().toString(36)}`;
 }
@@ -74823,11 +74851,22 @@ var SemanticMapCanvas = class {
     this.titleEl.textContent = value || this.options.title || "Semantic map";
   }
   setLegend(items = []) {
+    this.baseLegend = items;
+    this.renderLegend();
+  }
+  setRegionLegend(items = []) {
+    this.regionLegend = items;
+    this.renderLegend();
+  }
+  renderLegend() {
     if (!this.keyEl) return;
+    const items = [...this.baseLegend || [], ...this.regionLegend || []];
     this.keyBody.empty();
     for (const item of items) {
-      const row = this.keyBody.createDiv({ cls: "gib-search-map-key-row" });
-      row.createSpan({ text: item.label });
+      const row = this.keyBody.createDiv({ cls: `gib-search-map-key-row${item.color ? " is-region" : ""}` });
+      const label = row.createSpan();
+      if (item.color) label.createSpan({ cls: "gib-search-map-key-swatch", attr: { style: `--gib-region-color:${item.color}` } });
+      label.createSpan({ text: item.label });
       row.createSpan({ text: item.meaning });
     }
     this.keyEl.toggle(Boolean(items.length));
@@ -75158,7 +75197,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     const weights = { ...frame.relationships || this.forceField.weights || {} }, environment = frame.environment || {}, dynamics = { ...frame.dynamics || this.forceField.dynamics || {}, charge: Number(environment.charge ?? frame.dynamics?.charge ?? this.forceField.dynamics?.charge ?? 0.56), containment: Number(environment.containment ?? frame.dynamics?.containment ?? 0.62), physicsRate: Number(environment.physicsRate ?? frame.dynamics?.physicsRate ?? 0.5), damping: Number(environment.damping ?? 0.72), collision: Number(environment.collision ?? 0.7) };
     this.forceField.weights = weights;
     this.forceField.dynamics = dynamics;
-    this.center = { ...this.center || {}, dynamics, environment, appearance: { ...frame.appearance || this.center?.appearance || {} }, visuals: frame.visuals || this.center?.visuals || [] };
+    this.center = { ...this.center || {}, dynamics, environment, regions: { ...this.center?.regions || {}, ...frame.regions || {} }, appearance: { ...frame.appearance || this.center?.appearance || {} }, visuals: frame.visuals || this.center?.visuals || [] };
     const colorMapping = (frame.visuals || []).find((rule) => rule.enabled !== false && rule.channel === "color"), sizeMapping = (frame.visuals || []).find((rule) => rule.enabled !== false && rule.channel === "size"), terrainMapping = (frame.visuals || []).find((rule) => rule.enabled !== false && rule.channel === "elevation"), colorBy = colorMapping?.source === "emotion" ? "emotion" : colorMapping?.source === "community" ? "category" : colorMapping ? "semantic" : this.center.appearance?.colorBy || "semantic", uniform = sizeMapping ? sizeMapping.source !== "fileSize" : this.center.appearance?.sizeBy === "uniform", weightedSignals = Object.entries(weights).filter(([, weight]) => Number(weight) > 1e-3), totalWeight = weightedSignals.reduce((sum, [, weight]) => sum + Number(weight), 0) || 1;
     for (const node of this.nodes) {
       node.topicHue = colorBy === "emotion" && Number.isFinite(node.emotionHue) ? node.emotionHue : colorBy === "category" && Number.isFinite(node.categoryHue) ? node.categoryHue : colorBy === "none" ? null : node.semanticHue ?? node.topicHue;
@@ -75174,8 +75213,16 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     return true;
   }
   setVisualRecipe(frame = {}) {
-    this.center = { ...this.center || {}, appearance: { ...this.center?.appearance || {}, ...frame.appearance || {} }, visuals: frame.visuals || this.center?.visuals || [] };
+    this.center = { ...this.center || {}, regions: { ...this.center?.regions || {}, ...frame.regions || {} }, appearance: { ...this.center?.appearance || {}, ...frame.appearance || {} }, visuals: frame.visuals || this.center?.visuals || [] };
     this.showLinks = Boolean(this.center.appearance.linkLines);
+    if (this.center.regions?.style === "off") {
+      for (const node of this.nodes) {
+        delete node.displayTopicHue;
+        delete node.displayTopicLightness;
+        delete node.regionColor;
+      }
+      this.setRegionLegend([]);
+    }
     this.lastTerrainAt = 0;
     this.lastCommunityAt = 0;
     this.draw();
@@ -75287,14 +75334,14 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   applyRelationshipForces(alpha2, querySettling = false) {
     const field = this.forceField, bodies = this.forceBodies, edges = this.forceEdges || [];
     if (!field || bodies.length < 2) return;
-    const dynamics = field.dynamics || {}, contrast = Number(dynamics.contrast ?? 0.58), cohesion = Number(dynamics.cohesion ?? 0.62), spacing = Number(dynamics.spacing ?? 0.55), spring = Number(dynamics.spring ?? 0.68), mutualBoost = Number(dynamics.mutuality ?? 0.7), bridgeStrength = Number(dynamics.bridges ?? 0.42), settling = Number(dynamics.settling ?? 0.68), temperature = Math.max(0.1, Number(alpha2) || 0) * (0.48 + settling * 1.35);
+    const dynamics = field.dynamics || {}, contrast = Number(dynamics.contrast ?? 0.58), cohesion = Number(dynamics.cohesion ?? 0.62), spacing = Number(dynamics.spacing ?? 0.55), spring = Number(dynamics.spring ?? 0.68), mutualBoost = Number(dynamics.mutuality ?? 0.7), bridgeStrength = Number(dynamics.bridges ?? 0.42), settling = Number(dynamics.settling ?? 0.68), regionSeparation = Number(this.center?.regions?.separation || 0), temperature = Math.max(0.1, Number(alpha2) || 0) * (0.48 + settling * 1.35);
     for (const edge of edges) {
       const a2 = bodies[edge.first], b = bodies[edge.second], active = !this.hasQuery || this.pendingQuery || a2.matched && b.matched;
       if (!active || a2 === this.dragging && b === this.dragging) continue;
       let dx = b.x - a2.x, dy = b.y - a2.y, distance = Math.max(0.014, Math.hypot(dx, dy));
       dx /= distance;
       dy /= distance;
-      const salience = edge.strength ** Math.max(0.56, 1.25 - contrast * 0.65), desired = 0.05 + spacing * 0.11 + (1 - salience) * (0.11 + spacing * 0.12), mutualGain = 1 + edge.mutual * mutualBoost * 1.25, bridgeGain = bridgeStrength + edge.mutual * (1 - bridgeStrength), error = Math.max(-0.2, Math.min(0.55, distance - desired)), force = Math.max(-9e-3, Math.min(9e-3, error * 0.018 * spring * (0.55 + cohesion) * salience * mutualGain * bridgeGain * edge.degreeScale * temperature));
+      const salience = edge.strength ** Math.max(0.56, 1.25 - contrast * 0.65), desired = 0.05 + spacing * 0.11 + (1 - salience) * (0.11 + spacing * 0.12), mutualGain = 1 + edge.mutual * mutualBoost * 1.25, bridgeGain = bridgeStrength + edge.mutual * (1 - bridgeStrength), differentRegions = a2.community !== void 0 && b.community !== void 0 && a2.community !== b.community, membership = Math.min(Number(a2.communityMembership || 0), Number(b.communityMembership || 0)), territoryGain = differentRegions ? 1 - regionSeparation * membership * 0.78 : 1, error = Math.max(-0.2, Math.min(0.55, distance - desired)), force = Math.max(-9e-3, Math.min(9e-3, error * 0.018 * spring * (0.55 + cohesion) * salience * mutualGain * bridgeGain * edge.degreeScale * temperature * territoryGain));
       if (a2 !== this.dragging) {
         a2.vx += dx * force;
         a2.vy += dy * force;
@@ -75319,6 +75366,55 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
           query.vx -= dx * force / Math.max(12, bodies.length * 0.3);
           query.vy -= dy * force / Math.max(12, bodies.length * 0.3);
         }
+      }
+    }
+  }
+  applyCommunityForces(nodes, alpha2) {
+    const config = this.center?.regions || {};
+    if (config.style === "off" || Number(config.separation || 0) <= 1e-3 || nodes.length < 4) return;
+    const threshold = Number(config.membership ?? 0.42), minimum = Math.max(2, Number(config.minSize || 4)), groups = /* @__PURE__ */ new Map();
+    for (const node of nodes) {
+      const membership = Number(node.communityMembership || 0);
+      if (node.guidedUnclaimed || membership < threshold || node.community === void 0) continue;
+      const members = groups.get(node.community) || [];
+      members.push({ node, membership });
+      groups.set(node.community, members);
+    }
+    const territories = [...groups].filter(([, members]) => members.length >= minimum).map(([id2, members]) => {
+      const weight = members.reduce((sum, value) => sum + value.membership ** 2, 0) || 1, x = members.reduce((sum, value) => sum + value.node.x * value.membership ** 2, 0) / weight, y = members.reduce((sum, value) => sum + value.node.y * value.membership ** 2, 0) / weight, radius = Math.max(0.065, ...members.map((value) => Math.hypot(value.node.x - x, value.node.y - y) + this.collisionDistance(value.node, value.node) * 0.4));
+      return { id: id2, members, x, y, radius };
+    });
+    const heat = Math.max(0.08, alpha2), cohesion = Number(config.cohesion ?? 0.34) * heat * 11e-4;
+    for (const territory of territories) for (const value of territory.members) {
+      const node = value.node;
+      if (node === this.dragging) continue;
+      const pull = cohesion * value.membership ** 2;
+      node.vx += (territory.x - node.x) * pull;
+      node.vy += (territory.y - node.y) * pull;
+    }
+    const separation = Number(config.separation || 0) * heat;
+    for (let first = 0; first < territories.length; first++) for (let second = first + 1; second < territories.length; second++) {
+      const a2 = territories[first], b = territories[second];
+      let dx = b.x - a2.x, dy = b.y - a2.y, distance = Math.hypot(dx, dy);
+      if (distance < 1e-4) {
+        const angle = stableMapAngle(`${a2.id}\0${b.id}`);
+        dx = Math.cos(angle);
+        dy = Math.sin(angle);
+        distance = 1e-4;
+      } else {
+        dx /= distance;
+        dy /= distance;
+      }
+      const desired = a2.radius + b.radius + 0.07 + Number(config.padding || 0.72) * 0.12;
+      if (distance >= desired) continue;
+      const pressure = Math.min(8e-3, (desired - distance) * 9e-3 * separation), firstScale = 1 / Math.sqrt(a2.members.length), secondScale = 1 / Math.sqrt(b.members.length);
+      for (const value of a2.members) if (value.node !== this.dragging) {
+        value.node.vx -= dx * pressure * firstScale;
+        value.node.vy -= dy * pressure * firstScale;
+      }
+      for (const value of b.members) if (value.node !== this.dragging) {
+        value.node.vx += dx * pressure * secondScale;
+        value.node.vy += dy * pressure * secondScale;
       }
     }
   }
@@ -75575,8 +75671,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.nodes = values.map((value, order) => {
       const old = previous.get(value.id), angle = stableMapAngle(value.id), normalized = hasQuery ? Math.max(0, Math.min(1, (Number(value.semanticScore || 0) - low) / spread)) : 0.5, relevance = Number.isFinite(Number(value.relevance)) ? Number(value.relevance) : normalized, fileScale = Math.max(0, Math.min(1, Number(value.fileScale ?? 0.35))), targetVisibility = hasQuery ? 0.12 + relevance * 0.88 : 0.38 + fileScale * 0.42, preserveBackground = Boolean(this.options.preserveBackground);
       const matched = Boolean(value.matched), generation = Math.max(1, Math.min(3, Number(value.generation) || 1)), generationVisibility = generation === 1 ? 0.78 + relevance * 0.22 : generation === 2 ? 0.68 : 0.52;
-      const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64), backgroundVisibility = 0.08 + fileScale * 0.12, promoted = Boolean(hasQuery && matched && old && !old.matched), captureX = promoted ? layoutX - Number(old.x || 0) : 0, captureY = promoted ? layoutY - Number(old.y || 0) : 0;
-      return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : preserveBackground ? backgroundVisibility : 0 : targetVisibility, blur: old?.blur ?? 0, targetBlur: hasQuery && !matched && preserveBackground ? 1 : 0, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, capture: promoted ? 1 : Number(old?.capture || 0), layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: promoted ? Number(old.vx || 0) * 0.12 + captureX * 0.018 : old?.vx || 0, vy: promoted ? Number(old.vy || 0) * 0.12 + captureY * 0.018 : old?.vy || 0 };
+      const layoutX = Number.isFinite(value.layoutX) ? value.layoutX : Number.isFinite(value.x) ? value.x : Math.cos(angle) * (0.18 + order % 17 / 17 * 0.64), layoutY = Number.isFinite(value.layoutY) ? value.layoutY : Number.isFinite(value.y) ? value.y : Math.sin(angle) * (0.18 + order % 17 / 17 * 0.64), promoted = Boolean(hasQuery && matched && old && !old.matched), captureX = promoted ? layoutX - Number(old.x || 0) : 0, captureY = promoted ? layoutY - Number(old.y || 0) : 0;
+      return { ...value, matched, generation, order, fileScale, relevance: old?.relevance ?? relevance, targetRelevance: relevance, visibility: old?.visibility ?? 0, targetVisibility: hasQuery ? matched ? generationVisibility : 0 : targetVisibility, blur: old?.blur ?? 0, targetBlur: 0, accent: old?.accent ?? 0, targetAccent: hasQuery && matched && generation === 1 ? 0.3 + relevance * 0.7 : 0, capture: promoted ? 1 : Number(old?.capture || 0), layoutX, layoutY, x: old?.x ?? layoutX, y: old?.y ?? layoutY, vx: promoted ? Number(old.vx || 0) * 0.12 + captureX * 0.018 : old?.vx || 0, vy: promoted ? Number(old.vy || 0) * 0.12 + captureY * 0.018 : old?.vy || 0 };
     });
     if (!center?.forceField) this.resolveLayoutOverlaps(hasQuery ? this.nodes.filter((node) => node.matched) : this.nodes, hasQuery);
     const communityById = new Map(this.nodes.map((node) => [node.id, node.community])), overallScores = edges.map((edge) => Number(edge.affinity ?? edge.score ?? 0)), overallLow = overallScores.length ? Math.min(...overallScores) : 0, overallHigh = overallScores.length ? Math.max(...overallScores) : 1, overallSpread = Math.max(1e-3, overallHigh - overallLow);
@@ -75628,8 +75724,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     for (const node of this.nodes) {
       if (entering) node.matched = false;
       const active = retainingResults && node.matched;
-      node.targetVisibility = active ? Math.max(0.46, Number(node.visibility || 0) * 0.9) : this.options.preserveBackground ? 0.08 + node.fileScale * 0.12 : 0.04;
-      node.targetBlur = this.options.preserveBackground && !active ? 1 : active ? 0.08 : 0;
+      node.targetVisibility = active ? Math.max(0.62, Number(node.visibility || 0) * 0.94) : this.options.preserveBackground ? 0.3 + node.fileScale * 0.12 : 0.08;
+      node.targetBlur = 0;
       node.targetAccent = active ? Number(node.targetAccent || 0) * 0.72 : 0;
     }
     this.startSimulation(entering ? 0.62 : 0.24);
@@ -75694,6 +75790,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const fieldNodes = querySettling ? foreground : activeNodes;
       this.applyRelationshipForces(alpha2, querySettling);
       this.applyFieldCharge(fieldNodes, alpha2);
+      this.applyCommunityForces(fieldNodes, alpha2);
     }
     if (preserveBackground && this.hasQuery && this.queryPresence > 0.04) {
       const repellers = this.pendingQuery ? [query] : [query, ...foreground];
@@ -75730,31 +75827,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         target.vy -= dy * force;
       }
     }
-    if (this.center?.appearance?.regions === true && tuning.boundaryRepulsionEnabled && Number(tuning.boundaryRepulsion) > 0) {
-      const topicNodes = querySettling ? foreground : activeNodes, threshold = Number(tuning.communityMembership || 0.42), minimum = Math.max(2, Number(tuning.communityMinSize || 3)), groups = /* @__PURE__ */ new Map(), sigma = 0.11 * Math.max(0.5, Math.min(2, Number(tuning.boundaryPadding || 1))), divisor = 2 * sigma * sigma;
-      for (const node of topicNodes) if (Number(node.communityMembership || 0) >= threshold) {
-        const values = groups.get(node.community) || [];
-        values.push(node);
-        groups.set(node.community, values);
-      }
-      for (const [community, members] of groups) {
-        if (members.length < minimum) continue;
-        for (const node of topicNodes) {
-          if (node.community === community || node === this.dragging) continue;
-          let density = 0, gradientX = 0, gradientY = 0;
-          for (const member of members) {
-            const dx = node.x - member.x, dy = node.y - member.y, weight = Math.exp(-(dx * dx + dy * dy) / divisor);
-            density += weight;
-            gradientX += dx * weight;
-            gradientY += dy * weight;
-          }
-          if (density < 0.34) continue;
-          const length2 = Math.max(8e-3, Math.hypot(gradientX, gradientY)), force = Math.min(0.012, (density - 0.34) * 28e-4) * Number(tuning.boundaryRepulsion) * alpha2;
-          node.vx += gradientX / length2 * force;
-          node.vy += gradientY / length2 * force;
-        }
-      }
-    }
     const centeringBodies = querySettling ? [query, ...foreground] : this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes;
     this.applySoftContainment(centeringBodies.filter((body) => !body.isQuery), alpha2);
     const damping = 0.8 + Number(this.forceField?.dynamics?.damping ?? 0.72) * 0.13, bodies = this.queryPresence > 0.04 ? [query, ...this.nodes] : this.nodes;
@@ -75778,6 +75850,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     if (livingField) {
       this.applyRelationshipForces(0.035, queryActive);
       this.applyFieldCharge(activeNodes, 0.035);
+      this.applyCommunityForces(activeNodes, 0.035);
     }
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
@@ -76044,7 +76117,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
   }
   topicCommunityGroups(width, height) {
-    const tuning = this.tuning || MAP_TUNING_DEFAULTS, guided = this.nodes.some((node) => node.guidedFrame), threshold = guided || this.hasQuery ? 0.01 : Number(tuning.communityMembership || 0.42), minimum = guided ? 2 : Math.max(2, Number(tuning.communityMinSize || 3)), visible = this.nodes.filter((node) => node.visibility > 0.08 && !node.guidedUnclaimed && (!this.hasQuery || this.pendingQuery || node.matched) && Number(node.communityMembership || 0) >= threshold), grouped = /* @__PURE__ */ new Map();
+    const config = this.center?.regions || {}, guided = this.nodes.some((node) => node.guidedFrame), threshold = guided ? Math.min(0.24, Number(config.membership ?? 0.42)) : Number(config.membership ?? 0.42), minimum = guided ? 2 : Math.max(2, Number(config.minSize || 4)), visible = this.nodes.filter((node) => node.visibility > 0.08 && !node.guidedUnclaimed && (!this.hasQuery || this.pendingQuery || node.matched) && Number(node.communityMembership || 0) >= threshold), grouped = /* @__PURE__ */ new Map();
     for (const node of visible) {
       const values = grouped.get(node.community) || [];
       const [x, y] = this.baseCoordinates(node, width, height);
@@ -76052,8 +76125,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       grouped.set(node.community, values);
     }
     const groups = [...grouped].filter(([, values]) => values.length >= minimum).map(([id2, values]) => {
-      const weightedHue = values.filter((value) => Number.isFinite(value.node.topicHue)), hueX = weightedHue.reduce((sum, value) => sum + Math.cos(value.node.topicHue * Math.PI / 180), 0), hueY = weightedHue.reduce((sum, value) => sum + Math.sin(value.node.topicHue * Math.PI / 180), 0);
-      return { id: id2, values, label: values.find((value) => value.node.communityLabel)?.node.communityLabel || values.find((value) => value.node.communityFallbackLabel)?.node.communityFallbackLabel || "", confidence: Math.max(...values.map((value) => Number(value.node.communityLabelConfidence || 0))), naturalHue: weightedHue.length ? (Math.atan2(hueY, hueX) * 180 / Math.PI + 360) % 360 : stableMapAngle(id2) * 180 / Math.PI };
+      const weightedHue = values.filter((value) => Number.isFinite(value.node.topicHue)), hueX = weightedHue.reduce((sum, value) => sum + Math.cos(value.node.topicHue * Math.PI / 180), 0), hueY = weightedHue.reduce((sum, value) => sum + Math.sin(value.node.topicHue * Math.PI / 180), 0), label = values.find((value) => value.node.communityLabel)?.node.communityLabel || values.find((value) => value.node.communityFallbackLabel)?.node.communityFallbackLabel || `Region ${String(id2).replace(/\D/g, "") || ""}`.trim();
+      return { id: id2, values, label, confidence: Math.max(...values.map((value) => Number(value.node.communityLabelConfidence || 0))), naturalHue: weightedHue.length ? (Math.atan2(hueY, hueX) * 180 / Math.PI + 360) % 360 : stableMapAngle(id2) * 180 / Math.PI };
     }).sort((first, second) => first.naturalHue - second.naturalHue || String(first.id).localeCompare(String(second.id)));
     const count = groups.length, step = count > 1 ? 360 / count : 0, offset2 = count > 1 ? (() => {
       const x = groups.reduce((sum, group, index3) => sum + Math.cos((group.naturalHue - index3 * step) * Math.PI / 180), 0), y = groups.reduce((sum, group, index3) => sum + Math.sin((group.naturalHue - index3 * step) * Math.PI / 180), 0);
@@ -76062,9 +76135,11 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     groups.forEach((group, index3) => {
       group.hue = count > 1 ? (offset2 + index3 * step) % 360 : group.naturalHue;
       group.lightness = count > 10 ? 59 + index3 % 2 * 8 : 63;
+      group.color = `hsl(${group.hue} 58% ${group.lightness}%)`;
       for (const value of group.values) {
         value.node.displayTopicHue = group.hue;
         value.node.displayTopicLightness = group.lightness;
+        value.node.regionColor = group.color;
       }
     });
     return groups;
@@ -76095,23 +76170,6 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     return edges;
   }
-  communityCoreIslands(values, padding) {
-    const tuning = this.tuning || MAP_TUNING_DEFAULTS, memberships = values.map((value) => Number(value.node.communityMembership || 0)).sort((a2, b) => a2 - b), floor = Math.max(Number(tuning.communityMembership || 0.42), memberships[Math.floor(memberships.length * 0.35)] || 0), core = values.filter((value) => Number(value.node.communityMembership || 0) >= floor), remaining = new Set(core), islands = [], reach = padding * 2.45;
-    while (remaining.size) {
-      const first = remaining.values().next().value, island = [first], queue = [first];
-      remaining.delete(first);
-      while (queue.length) {
-        const current = queue.shift();
-        for (const candidate of [...remaining]) if (Math.hypot(candidate.x - current.x, candidate.y - current.y) <= reach) {
-          remaining.delete(candidate);
-          island.push(candidate);
-          queue.push(candidate);
-        }
-      }
-      if (island.length >= 2) islands.push(island);
-    }
-    return islands;
-  }
   communityBoundaryField(points, padding, connect = true) {
     const step = 3, margin = padding * 1.35, left = Math.floor((Math.min(...points.map((point) => point.x)) - margin) / step) * step, top = Math.floor((Math.min(...points.map((point) => point.y)) - margin) / step) * step, right = Math.ceil((Math.max(...points.map((point) => point.x)) + margin) / step) * step, bottom = Math.ceil((Math.max(...points.map((point) => point.y)) + margin) / step) * step, columns = Math.max(3, Math.round((right - left) / step) + 1), rows = Math.max(3, Math.round((bottom - top) / step) + 1), values = new Float32Array(columns * rows), spine = connect ? this.communitySpine(points) : [], nodeSigma = padding * (connect ? 0.54 : 0.65), spineSigma = padding * 0.39;
     const addGaussian = (x, y, sigma, amplitude) => {
@@ -76131,12 +76189,34 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     return { values, columns, rows, step, left, top, level: 0.2 };
   }
+  paintCommunityTint(ctx, field, color) {
+    const mask = this.communityMask || (this.communityMask = document.createElement("canvas"));
+    mask.width = field.columns;
+    mask.height = field.rows;
+    const maskContext = mask.getContext("2d"), image = maskContext.createImageData(field.columns, field.rows), sampleContext = this.colorSampler?.getContext("2d") || document.createElement("canvas").getContext("2d");
+    sampleContext.canvas.width = sampleContext.canvas.height = 1;
+    sampleContext.fillStyle = color;
+    sampleContext.fillRect(0, 0, 1, 1);
+    const sample = sampleContext.getImageData(0, 0, 1, 1).data;
+    for (let index3 = 0; index3 < field.values.length; index3++) {
+      const strength = Math.max(0, Math.min(1, (field.values[index3] - 0.12) / 0.72)), offset2 = index3 * 4;
+      image.data[offset2] = sample[0];
+      image.data[offset2 + 1] = sample[1];
+      image.data[offset2 + 2] = sample[2];
+      image.data[offset2 + 3] = Math.round(strength * 18);
+    }
+    maskContext.putImageData(image, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(mask, 0, 0, field.columns, field.rows, field.left, field.top, field.columns * field.step, field.rows * field.step);
+  }
   paintTopicCommunities(ctx, width, height, colors2) {
-    if (this.center?.appearance?.regions !== true) {
+    const config = this.center?.regions || {}, style = config.style || (this.center?.appearance?.regions ? "boundaries" : "off");
+    if (style === "off") {
       this.communityLabelsForDraw = [];
+      this.setRegionLegend([]);
       return;
     }
-    const now = performance.now(), dpr = window.devicePixelRatio || 1, colorKey = `${colors2.muted}|${this.options.semanticColors !== false}`, refreshInterval = this.pendingQuery ? 150 : this.ambientDrawing ? 220 : 64, refresh = !this.communityCanvas || this.communityCanvas.width !== Math.ceil(width * dpr) || this.communityCanvas.height !== Math.ceil(height * dpr) || this.communityColorKey !== colorKey || now - Number(this.lastCommunityAt || 0) >= refreshInterval;
+    const now = performance.now(), dpr = window.devicePixelRatio || 1, colorKey = `${colors2.muted}|${this.options.semanticColors !== false}|${style}|${config.labels}|${config.padding}|${config.membership}|${config.minSize}`, refreshInterval = this.pendingQuery ? 150 : this.ambientDrawing ? 180 : 72, refresh = !this.communityCanvas || this.communityCanvas.width !== Math.ceil(width * dpr) || this.communityCanvas.height !== Math.ceil(height * dpr) || this.communityColorKey !== colorKey || now - Number(this.lastCommunityAt || 0) >= refreshInterval;
     if (refresh) {
       if (!this.communityCanvas) this.communityCanvas = document.createElement("canvas");
       const canvas = this.communityCanvas;
@@ -76145,50 +76225,65 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const communityContext = canvas.getContext("2d");
       communityContext.setTransform(dpr, 0, 0, dpr, 0, 0);
       communityContext.clearRect(0, 0, width, height);
-      const groups = this.topicCommunityGroups(width, height), tuning = this.tuning || MAP_TUNING_DEFAULTS, padding = 17 * Math.max(0.5, Math.min(2, Number(tuning.boundaryPadding || 1))), labels = [];
+      const groups = this.topicCommunityGroups(width, height), padding = 11 + Number(config.padding ?? 0.72) * 18, labels = [];
       for (const group of groups) {
-        const color = this.options.semanticColors !== false ? `hsl(${group.hue} 58% ${group.lightness}%)` : colors2.muted, islands = this.hasQuery ? [group.values] : this.communityCoreIslands(group.values, padding), regions = islands.length ? islands : [group.values];
-        let label = null;
-        for (const region of regions) {
-          const field = this.communityBoundaryField(region, padding, this.hasQuery);
+        const color = this.options.semanticColors !== false ? group.color : colors2.muted, field = this.communityBoundaryField(group.values, padding, true);
+        if (style === "territories") this.paintCommunityTint(communityContext, field, color);
+        const levels = style === "territories" ? [0.2, 0.44, 0.7] : [0.22];
+        for (const [index3, level] of levels.entries()) {
           communityContext.save();
           communityContext.translate(field.left, field.top);
-          this.traceDensityLevel(communityContext, field, field.level);
+          this.traceDensityLevel(communityContext, field, level);
           communityContext.strokeStyle = color;
-          communityContext.globalAlpha = this.hasQuery ? 0.28 : 0.2;
-          communityContext.lineWidth = 1;
+          communityContext.globalAlpha = style === "territories" ? 0.17 + index3 * 0.07 : 0.3;
+          communityContext.lineWidth = index3 === 0 ? 1.05 : 0.72;
           communityContext.lineCap = "round";
           communityContext.lineJoin = "round";
           communityContext.stroke();
           communityContext.restore();
-          const weight = region.reduce((sum, value) => sum + Math.max(0.01, Number(value.node.communityMembership || 0)), 0), x = region.reduce((sum, value) => sum + value.x * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight, y = region.reduce((sum, value) => sum + value.y * Math.max(0.01, Number(value.node.communityMembership || 0)), 0) / weight, candidate = { x, y, text: group.label, color, confidence: group.confidence, size: region.length };
-          if (!label || candidate.size > label.size) label = candidate;
         }
-        if (label) labels.push(label);
+        const weight = group.values.reduce((sum, value) => sum + Math.max(0.01, Number(value.node.communityMembership || 0)) ** 2, 0), x = group.values.reduce((sum, value) => sum + value.x * Math.max(0.01, Number(value.node.communityMembership || 0)) ** 2, 0) / weight, y = group.values.reduce((sum, value) => sum + value.y * Math.max(0.01, Number(value.node.communityMembership || 0)) ** 2, 0) / weight;
+        labels.push({ x, y, text: group.label, color, confidence: group.confidence, size: group.values.length });
       }
       communityContext.globalAlpha = 1;
       this.communityLabelsForDraw = labels;
       this.lastCommunityAt = now;
       this.communityColorKey = colorKey;
+      const legend = groups.slice(0, 10).map((group) => ({ label: group.label, meaning: `${group.values.length} note${group.values.length === 1 ? "" : "s"}`, color: this.options.semanticColors !== false ? group.color : colors2.muted }));
+      if (groups.length > 10) legend.push({ label: "Other regions", meaning: `${groups.length - 10} more`, color: colors2.muted });
+      const signature = JSON.stringify(legend);
+      if (signature !== this.regionLegendSignature) {
+        this.regionLegendSignature = signature;
+        this.setRegionLegend(legend);
+      }
     }
     if (this.communityCanvas) ctx.drawImage(this.communityCanvas, 0, 0, this.communityCanvas.width, this.communityCanvas.height, 0, 0, width, height);
   }
   drawCommunityLabels(ctx, colors2) {
-    if (this.categoryAnchors?.length || this.center?.appearance?.labels !== true) return;
-    const detail = this.semanticDetailLevel(), alpha2 = this.hasQuery ? 0.58 : 0.46 * (1 - detail * 0.68);
+    const labelMode = this.center?.regions?.labels || (this.center?.appearance?.labels ? "name" : "off");
+    if (this.categoryAnchors?.length || labelMode === "off") return;
+    const detail = this.semanticDetailLevel(), alpha2 = this.hasQuery ? 0.82 : 0.68 * (1 - detail * 0.42);
     for (const label of this.communityLabelsForDraw || []) {
-      const { x, y } = label, text = String(label.text || "");
+      const { x, y } = label, base = String(label.text || ""), text = labelMode === "name-count" ? `${base} \xB7 ${label.size}` : base;
       if (!text) continue;
-      ctx.font = `${this.hasQuery ? 600 : 560} ${this.hasQuery ? 11 : 13}px -apple-system, BlinkMacSystemFont, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.lineWidth = 4;
-      ctx.lineJoin = "round";
+      ctx.font = "600 10px -apple-system, BlinkMacSystemFont, sans-serif";
+      const width = ctx.measureText(text).width + 18;
       ctx.globalAlpha = alpha2 * 0.82;
-      ctx.strokeStyle = colors2.background;
-      ctx.strokeText(text, x, y + 4);
+      ctx.fillStyle = colors2.background;
+      ctx.beginPath();
+      ctx.roundRect(x - width / 2, y - 9, width, 19, 9);
+      ctx.fill();
       ctx.globalAlpha = alpha2;
-      ctx.fillStyle = this.hasQuery ? label.color : colors2.muted;
-      ctx.fillText(text, x, y + 4);
+      ctx.strokeStyle = label.color;
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      ctx.fillStyle = label.color;
+      ctx.beginPath();
+      ctx.arc(x - width / 2 + 8, y + 0.5, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.textAlign = "center";
+      ctx.fillStyle = colors2.normal;
+      ctx.fillText(text, x + 3, y + 4);
     }
     ctx.globalAlpha = 1;
     ctx.textAlign = "left";
@@ -76323,27 +76418,29 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const candidates = this.hasQuery ? this.nodes.filter((node) => node.matched).sort((first, second) => Number(second.relevance || 0) - Number(first.relevance || 0)) : this.nodes.filter((node) => this.landmarkIds?.has(node.id) || detail > 0.52 && Number(this.visualImportance?.get(node.id) || 0) > 0.54 || detail > 0.86).sort((first, second) => Number(this.visualImportance?.get(second.id) || second.relevance || 0) - Number(this.visualImportance?.get(first.id) || first.relevance || 0)), maximum = this.hasQuery ? 5 + Math.round(detail * 7) : 9 + Math.round(detail * 22);
       for (const node of candidates.slice(0, maximum)) labelNodes.add(node.id);
     }
+    const focusedNode = !queryFocused ? this.byId.get(focused) : null;
     for (const node of ordered) {
       if (node.visibility < 0.012) continue;
-      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, landmark = Boolean(this.landmarkIds?.has(node.id)), hierarchy = this.hasQuery ? 1 : landmark ? 1 : 0.28 + detail * 0.72, relationship = focused && !queryFocused ? this.relationships.get(mapEdgeKey(node.id, focused)) : null, related = Number(relationship?.overall || 0), generationScale = node.generation === 1 ? 1 : node.generation === 2 ? 0.86 : 0.74, radius = Math.max(1, (2 + node.fileScale * 4.4 + (active ? 1.5 : 0)) * generationScale * (this.hasQuery || active ? 1 : landmark ? 1.14 : 0.62 + detail * 0.38)), focusAlpha = !focused ? 1 : active ? 1 : queryFocused ? 0.38 + node.relevance * 0.62 : 0.18 + related * 0.76, opacity = Math.max(8e-3, node.visibility * focusAlpha * hierarchy), blur = Math.max(0, Math.min(1, Number(node.blur || 0))), hue = Number.isFinite(node.displayTopicHue) ? node.displayTopicHue : node.topicHue, lightness = Number.isFinite(node.displayTopicLightness) ? node.displayTopicLightness : 64, semanticColor = node.matched || !this.hasQuery || this.pendingQuery ? this.options.semanticColors !== false && Number.isFinite(hue) ? `hsl(${hue} 54% ${lightness}%)` : colors2.normal : colors2.faint, alpha2 = opacity * (1 - blur * 0.28);
+      const [x, y] = this.coordinates(node, rect.width, rect.height), active = node.id === focused, landmark = Boolean(this.landmarkIds?.has(node.id)), hierarchy = this.hasQuery ? 1 : landmark ? 1 : 0.28 + detail * 0.72, relationship = focused && !queryFocused ? this.relationships.get(mapEdgeKey(node.id, focused)) : null, related = Number(relationship?.overall || 0), sameRegion = focusedNode && focusedNode.community !== void 0 && node.community === focusedNode.community, generationScale = node.generation === 1 ? 1 : node.generation === 2 ? 0.86 : 0.74, radius = Math.max(1, (2 + node.fileScale * 4.4 + (active ? 1.5 : 0)) * generationScale * (this.hasQuery || active ? 1 : landmark ? 1.14 : 0.62 + detail * 0.38)), focusAlpha = !focused ? 1 : active ? 1 : queryFocused ? 0.5 + node.relevance * 0.5 : sameRegion ? 0.88 : 0.54 + related * 0.4, opacity = Math.max(8e-3, node.visibility * focusAlpha * hierarchy), blur = Math.max(0, Math.min(1, Number(node.blur || 0))), hue = Number.isFinite(node.displayTopicHue) ? node.displayTopicHue : node.topicHue, lightness = Number.isFinite(node.displayTopicLightness) ? node.displayTopicLightness : 64, semanticColor = node.matched || !this.hasQuery || this.pendingQuery ? this.options.semanticColors !== false && Number.isFinite(hue) ? `hsl(${hue} 54% ${lightness}%)` : colors2.normal : colors2.faint, alpha2 = opacity * (1 - blur * 0.28);
       if (this.webglRenderer) {
-        if (blur > 0.04) gpuPoints.push({ x, y, size: (radius + 2.2 * blur) * 2, color: mapColorRgba(this, semanticColor, opacity * blur * 0.22) });
         gpuPoints.push({ x, y, size: radius * 2, color: mapColorRgba(this, semanticColor, alpha2) });
       } else {
         ctx.fillStyle = semanticColor;
-        if (blur > 0.04) {
-          ctx.globalAlpha = opacity * blur * 0.22;
-          ctx.beginPath();
-          ctx.arc(x, y, radius + 2.2 * blur, 0, Math.PI * 2);
-          ctx.fill();
-        }
         ctx.globalAlpha = alpha2;
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.fill();
       }
+      if (active) {
+        ctx.globalAlpha = 0.56;
+        ctx.strokeStyle = semanticColor;
+        ctx.lineWidth = 1.15;
+        ctx.beginPath();
+        ctx.arc(x, y, radius + 4.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       if (labelNodes.has(node.id) && (node.matched || !this.hasQuery || this.pendingQuery)) labels.push({ node, x, y, radius, active, opacity });
-      if (node.matched || !this.hasQuery || this.pendingQuery || this.options.preserveBackground) this.hit.push({ node, x, y, radius: radius + 9 });
+      if (node.matched || !this.hasQuery || this.pendingQuery) this.hit.push({ node, x, y, radius: radius + 9 });
     }
     if (this.webglRenderer) {
       const roadFrame = this.roadAnimationFrame !== null ? Math.round(performance.now() / 16) : 0, terrainBlendFrame = this.previousTerrainCanvas && performance.now() - Number(this.terrainTransitionAt || 0) < 180 ? Math.round(performance.now() / 16) : 0, textureKey = `${layer.width}:${layer.height}:${this.lastTerrainAt || 0}:${terrainBlendFrame}:${this.lastCommunityAt || 0}:${this.terrainColorKey || ""}:${this.communityColorKey || ""}:${this.tuning?.showTopography !== false}:${this.showLinks}:${focused || ""}:${roadFrame}`;
@@ -76861,7 +76958,7 @@ var SemanticSearchModal = class extends SuggestModal {
     }
     const model5 = await buildQueryMapModel(this.plugin, query, results, { viewId: this.viewId, generations: this.mapGenerations });
     if (version2 !== this.mapVersion) return;
-    this.map.setGraph({ label: query, hasQuery: true, resultCount: results.length }, model5.nodes, model5.edges, model5.roads);
+    this.map.setGraph(model5.center, model5.nodes, model5.edges, model5.roads);
   }
   hoverResult(file) {
     for (const item2 of this.modalEl.querySelectorAll(".suggestion-item.is-map-hovered")) item2.removeClass("is-map-hovered");
@@ -77026,6 +77123,8 @@ var NeighborhoodView = class extends ItemView {
       if (!this.pinned) this.syncWorkspace();
     });
     this.body = this.contentEl.createDiv({ cls: "gib-companion-body" });
+    this.quality = this.body.createDiv({ cls: "gib-companion-quality" });
+    this.quality.hide();
     const mapHost = this.body.createDiv({ cls: "gib-neighborhood-map" });
     this.splitter = this.body.createDiv({ cls: "gib-companion-splitter", attr: { role: "separator", "aria-label": "Resize visual and list views", "aria-orientation": "horizontal" } });
     const listSection = this.body.createDiv({ cls: "gib-companion-list-section" }), listHeader = listSection.createDiv({ cls: "gib-companion-list-header" });
@@ -77096,15 +77195,15 @@ var NeighborhoodView = class extends ItemView {
     this.viewId = this.inheritedState.viewId;
     this.viewSelect.value = this.viewId;
     this.viewSelect.disabled = true;
-    const target = context.hover || context.selection;
+    const target = context.selection || context.hover, hint = context.focus?.id === target ? context.focus : {};
     window.clearTimeout(this.contextTimer);
     if (!target) {
       this.empty("Select a note or region in the Atlas");
       return;
     }
-    this.contextTimer = window.setTimeout(() => this.centerOn(target, false, this.inheritedState), context.hover ? 70 : 0);
+    this.contextTimer = window.setTimeout(() => this.centerOn(target, false, this.inheritedState, hint), context.selection ? 0 : 70);
   }
-  async centerOn(filePath, pin = this.pinned, inheritedState = this.inheritedState) {
+  async centerOn(filePath, pin = this.pinned, inheritedState = this.inheritedState, hint = {}) {
     const file = this.app.vault.getAbstractFileByPath(filePath);
     if (!(file instanceof TFile)) return;
     this.filePath = file.path;
@@ -77113,8 +77212,9 @@ var NeighborhoodView = class extends ItemView {
     this.noteTitle.textContent = file.basename;
     const version2 = ++this.loadVersion, base = inheritedState || this.plugin.atlas.state({ viewId: this.viewId }), state = this.plugin.atlas.state({ viewId: base.viewId, anchor: { type: "note", value: file.path }, scale: "neighborhood" });
     try {
-      const scene = await this.plugin.atlas.scene(state);
+      const [scene, quality2] = await Promise.all([this.plugin.atlas.scene(state), this.plugin.atlas.qualityProfile(file.path, state, hint)]);
       if (version2 !== this.loadVersion) return;
+      this.renderQuality(quality2);
       this.map.setShowLinks(state.frame.appearance.linkLines, false);
       this.map.setGraph(scene.center, scene.nodes, scene.edges, scene.roads);
       this.map.setIntelligenceStatus("");
@@ -77122,6 +77222,74 @@ var NeighborhoodView = class extends ItemView {
     } catch (error) {
       if (version2 === this.loadVersion) this.empty(error.message);
     }
+  }
+  renderQuality(profile) {
+    this.quality.empty();
+    this.quality.show();
+    const color = Number.isFinite(profile.region?.hue) ? `hsl(${profile.region.hue} 58% 63%)` : "var(--interactive-accent)", header = this.quality.createDiv({ cls: "gib-quality-header" }), title = header.createDiv();
+    title.createSpan({ cls: "gib-quality-kicker", text: "Atlas signature" });
+    title.createSpan({ cls: "gib-quality-region", text: profile.region?.label || "Uncharted" });
+    const badge = header.createSpan({ cls: "gib-quality-region-badge", attr: { style: `--gib-quality-color:${color}`, title: profile.region?.membership ? `${Math.round(profile.region.membership * 100)}% territory membership` : "No strong territory membership" } });
+    badge.createSpan();
+    badge.createSpan({ text: profile.region?.membership ? `${Math.round(profile.region.membership * 100)}%` : "open" });
+    const content = this.quality.createDiv({ cls: "gib-quality-content" }), compass = content.createDiv({ cls: "gib-quality-compass" }), namespace = "http://www.w3.org/2000/svg", svg = document.createElementNS(namespace, "svg");
+    svg.setAttribute("viewBox", "0 0 150 150");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "Note quality compass");
+    compass.appendChild(svg);
+    const dimensions = [["meaning", "Meaning"], ["emotion", "Emotion"], ["purpose", "Purpose"], ["form", "Form"], ["links", "Links"]], center = 75, radius = 48, point = (index3, scale = 1) => {
+      const angle = -Math.PI / 2 + index3 / dimensions.length * Math.PI * 2;
+      return [center + Math.cos(angle) * radius * scale, center + Math.sin(angle) * radius * scale];
+    }, polygon = (points, className) => {
+      const element = document.createElementNS(namespace, "polygon");
+      element.setAttribute("points", points.map((value) => value.join(",")).join(" "));
+      element.setAttribute("class", className);
+      svg.appendChild(element);
+      return element;
+    };
+    for (const scale of [0.33, 0.66, 1]) polygon(dimensions.map((_2, index3) => point(index3, scale)), "gib-quality-compass-ring");
+    for (let index3 = 0; index3 < dimensions.length; index3++) {
+      const [x, y] = point(index3), axis = document.createElementNS(namespace, "line");
+      axis.setAttribute("x1", center);
+      axis.setAttribute("y1", center);
+      axis.setAttribute("x2", x);
+      axis.setAttribute("y2", y);
+      axis.setAttribute("class", "gib-quality-compass-axis");
+      svg.appendChild(axis);
+      const [labelX, labelY] = point(index3, 1.28), label = document.createElementNS(namespace, "text");
+      label.setAttribute("x", labelX);
+      label.setAttribute("y", labelY + (labelY < center ? -1 : 3));
+      label.setAttribute("text-anchor", labelX < center - 6 ? "end" : labelX > center + 6 ? "start" : "middle");
+      label.setAttribute("class", "gib-quality-compass-label");
+      label.textContent = dimensions[index3][1];
+      svg.appendChild(label);
+    }
+    const values = dimensions.map(([id2]) => Math.max(0.06, Math.min(1, Number(profile.dimensions?.[id2] || 0))));
+    const shape = polygon(values.map((value, index3) => point(index3, value)), "gib-quality-compass-shape");
+    shape.style.setProperty("--gib-quality-color", color);
+    const centerPoint = document.createElementNS(namespace, "circle");
+    centerPoint.setAttribute("cx", center);
+    centerPoint.setAttribute("cy", center);
+    centerPoint.setAttribute("r", "2");
+    centerPoint.setAttribute("class", "gib-quality-compass-center");
+    svg.appendChild(centerPoint);
+    const signals = content.createDiv({ cls: "gib-quality-signals" });
+    for (const id2 of ["emotion", "purpose", "form", "position"]) {
+      const signal = profile.profiles?.[id2];
+      if (!signal?.qualities?.length) continue;
+      const row = signals.createDiv({ cls: "gib-quality-signal" });
+      row.createDiv({ cls: "gib-quality-signal-name", text: signal.label });
+      const qualities = row.createDiv({ cls: "gib-quality-chips" });
+      for (const quality2 of signal.qualities.slice(0, 3)) {
+        const chip = qualities.createSpan({ cls: "gib-quality-chip", attr: { title: quality2.evidence || `${quality2.label}: ${Math.round(quality2.score * 100)}%` } });
+        chip.style.setProperty("--gib-quality-strength", String(quality2.score));
+        if (Number.isFinite(quality2.hue)) chip.style.setProperty("--gib-quality-chip-color", `hsl(${quality2.hue} 58% 63%)`);
+        chip.createSpan({ text: quality2.label });
+        chip.createSpan({ text: `${Math.round(quality2.score * 100)}` });
+      }
+    }
+    const links = signals.createDiv({ cls: "gib-quality-links", text: `${profile.links.incoming} in \xB7 ${profile.links.outgoing} out` });
+    links.setAttribute("title", "Authored links");
   }
   renderList(scene) {
     const nodes = [...scene.nodes].sort((first, second) => Number(second.score ?? second.relevance ?? 0) - Number(first.score ?? first.relevance ?? 0));
@@ -77153,6 +77321,7 @@ var NeighborhoodView = class extends ItemView {
     this.loadVersion++;
     this.filePath = null;
     this.noteTitle.textContent = message;
+    this.quality?.hide();
     this.map?.setGraph({ label: "Companion", hasQuery: false, resultCount: 0 }, [], [], []);
     if (this.list) {
       this.list.empty();
@@ -77232,7 +77401,7 @@ var GraphView = class extends ItemView {
       showLinks: this.atlasState.frame.appearance.linkLines,
       semanticColors: this.plugin.settings.graphSemanticColors,
       tuning: this.plugin.settings.mapTuning,
-      onHover: (file) => this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), query: this.query, results: this.results, hover: file }),
+      onHover: (file) => this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), query: this.query, results: this.results, hover: file, focus: this.focusPayload(file) }),
       onSelect: (file) => this.selectResult(file, true),
       onOpen: (file) => this.openFile(file),
       onViewportScale: (value) => this.setScaleIndicator(value)
@@ -77300,6 +77469,7 @@ var GraphView = class extends ItemView {
     } else this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), query: "", results: [], loading: false, selection: null, hover: null });
   }
   renderViewControls(sourceView = null) {
+    var _a2;
     if (!this.controls) return;
     this.controls.empty();
     const view = sourceView || this.plugin.atlas.activeView(this.viewSelect?.value || this.atlasState.viewId), draft = JSON.parse(JSON.stringify(view));
@@ -77329,18 +77499,19 @@ var GraphView = class extends ItemView {
       select.addEventListener("change", () => change(select.value));
       return select;
     };
-    const sliderRow = (host, label, value, change) => {
+    const rangeRow = (host, label, value, config, change) => {
       const row = host.createEl("label", { cls: "gib-atlas-control-slider" });
       row.createSpan({ text: label });
-      const slider = row.createEl("input", { type: "range", attr: { min: "0", max: "1", step: ".01" } });
+      const slider = row.createEl("input", { type: "range", attr: { min: String(config.min ?? 0), max: String(config.max ?? 1), step: String(config.step ?? 0.01) } });
       slider.value = String(value);
-      const output = row.createEl("output", { text: `${Math.round(Number(value) * 100)}%` });
+      const format2 = config.format || ((number) => `${Math.round(number * 100)}%`), output = row.createEl("output", { text: format2(Number(value)) });
       slider.addEventListener("input", () => {
-        output.textContent = `${Math.round(Number(slider.value) * 100)}%`;
+        output.textContent = format2(Number(slider.value));
         change(Number(slider.value));
       });
       return slider;
     };
+    const sliderRow = (host, label, value, change) => rangeRow(host, label, value, {}, change);
     const updateLayout = (rebuild = false) => {
       const environment = draft.frame.environment || {};
       draft.frame.dynamics.charge = Number(environment.charge ?? draft.frame.dynamics.charge);
@@ -77433,7 +77604,7 @@ var GraphView = class extends ItemView {
       this.renderViewControls(draft);
     });
     const visuals = section("Visuals", "Measurements shown on the map and in its key");
-    selectRow(visuals, "Color", draft.frame.appearance.colorBy, [["semantic", "Meaning"], ["emotion", "Emotion"], ["category", "Community"], ["none", "Monochrome"]], (value) => {
+    selectRow(visuals, "Color", draft.frame.appearance.colorBy, [["semantic", "Meaning"], ["emotion", "Emotion"], ["category", "Territory"], ["none", "Monochrome"]], (value) => {
       draft.frame.appearance.colorBy = value;
       draft.frame.visuals = draft.frame.visuals.filter((rule) => rule.channel !== "color");
       if (value !== "none") draft.frame.visuals.push({ id: atlasId("visual"), source: value === "category" ? "community" : value, channel: "color", enabled: true });
@@ -77460,9 +77631,44 @@ var GraphView = class extends ItemView {
         this.scheduleViewUpdate(false);
       });
     };
-    visualToggle("Community zones", "regions", "community", "regions");
-    visualToggle("Community labels", "labels", "community", "labels");
     visualToggle("Authored link lines", "linkLines", "links", "lines");
+    const regions = section("Territories", "Readable communities that also shape the layout"), regionConfig = (_a2 = draft.frame).regions || (_a2.regions = { style: "off", labels: "name", membership: 0.42, minSize: 4, padding: 0.72, separation: 0.58, cohesion: 0.34 }), syncRegions = (rebuild = false) => {
+      draft.frame.appearance.regions = regionConfig.style !== "off";
+      draft.frame.appearance.labels = regionConfig.labels !== "off";
+      draft.frame.visuals = draft.frame.visuals.filter((rule) => !["regions", "labels"].includes(rule.channel));
+      if (regionConfig.style !== "off") draft.frame.visuals.push({ id: atlasId("visual"), source: "community", channel: "regions", enabled: true });
+      if (regionConfig.labels !== "off") draft.frame.visuals.push({ id: atlasId("visual"), source: "community", channel: "labels", enabled: true });
+      this.map?.setVisualRecipe(draft.frame);
+      updateLayout(rebuild);
+    };
+    selectRow(regions, "Display", regionConfig.style, [["off", "Off"], ["boundaries", "Boundaries"], ["territories", "Topographic territories"]], (value) => {
+      regionConfig.style = value;
+      syncRegions(false);
+    });
+    selectRow(regions, "Labels", regionConfig.labels, [["off", "Off"], ["name", "Name"], ["name-count", "Name + note count"]], (value) => {
+      regionConfig.labels = value;
+      syncRegions(false);
+    });
+    rangeRow(regions, "Membership", regionConfig.membership, {}, (value) => {
+      regionConfig.membership = value;
+      syncRegions(false);
+    });
+    rangeRow(regions, "Minimum notes", regionConfig.minSize, { min: 2, max: 12, step: 1, format: (value) => String(Math.round(value)) }, (value) => {
+      regionConfig.minSize = Math.round(value);
+      syncRegions(false);
+    });
+    rangeRow(regions, "Separation", regionConfig.separation, {}, (value) => {
+      regionConfig.separation = value;
+      syncRegions(false);
+    });
+    rangeRow(regions, "Cohesion", regionConfig.cohesion, {}, (value) => {
+      regionConfig.cohesion = value;
+      syncRegions(false);
+    });
+    rangeRow(regions, "Boundary padding", regionConfig.padding, {}, (value) => {
+      regionConfig.padding = value;
+      syncRegions(false);
+    });
     const physics = section("Physics", "Standard force-directed layout controls");
     for (const [place2, id2, label] of [["dynamics", "spring", "Spring strength"], ["dynamics", "spacing", "Spring length"], ["environment", "charge", "Repulsion"], ["environment", "containment", "Gravity"], ["environment", "collision", "Collision"], ["environment", "damping", "Damping"], ["dynamics", "selectivity", "Neighbor selectivity"], ["dynamics", "mutuality", "Mutual-neighbor boost"], ["dynamics", "bridges", "One-way neighbor pull"], ["environment", "physicsRate", "Simulation rate"]]) sliderRow(physics, label, draft.frame[place2][id2], (value) => {
       draft.frame[place2][id2] = value;
@@ -77635,9 +77841,14 @@ var GraphView = class extends ItemView {
   renderResults() {
     this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), query: this.query, results: this.results, loading: false, error: null, selection: this.map.selected, hover: null });
   }
+  focusPayload(filePath) {
+    const node = this.map?.byId?.get(filePath);
+    if (!node) return null;
+    return { id: node.id, community: node.community, communityLabel: node.communityLabel, communityFallbackLabel: node.communityFallbackLabel, parentCommunityLabel: node.parentCommunityLabel, parentCommunityFallbackLabel: node.parentCommunityFallbackLabel, communityMembership: node.communityMembership, displayTopicHue: node.displayTopicHue, topicHue: node.topicHue, uniqueness: node.uniqueness, qualityProfiles: node.qualityProfiles, signalIntensities: node.signalIntensities, relationshipScores: node.relationshipScores, relationshipEvidence: node.relationshipEvidence };
+  }
   selectResult(filePath, fromMap = false) {
     if (!fromMap) this.map.setSelected(filePath || null);
-    this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), query: this.query, results: this.results, loading: false, selection: filePath || null, hover: null });
+    this.plugin.atlas.publishContext({ surface: "atlas", state: this.currentAtlasState(), query: this.query, results: this.results, loading: false, selection: filePath || null, hover: null, focus: this.focusPayload(filePath) });
   }
   async openFile(filePath) {
     const file = this.app.vault.getAbstractFileByPath(filePath);
@@ -77987,6 +78198,9 @@ module.exports = class GibSearch extends Plugin {
     delete this.settings.graphRelationshipBudgetDesktop;
     delete this.settings.graphRelationshipBudgetMobile;
     this.settings.mapTuning = Object.assign({}, MAP_TUNING_DEFAULTS, loaded.mapTuning || {});
+    delete this.settings.mapTuning.boundaryPadding;
+    delete this.settings.mapTuning.boundaryRepulsionEnabled;
+    delete this.settings.mapTuning.boundaryRepulsion;
     this.settings.atlasViews = (Array.isArray(loaded.atlasViews) ? loaded.atlasViews : []).filter((view) => !Object.prototype.hasOwnProperty.call(view, "lens"));
     this.settings.atlasHomeViewId = this.settings.atlasViews.some((view) => view.id === loaded.atlasHomeViewId) || STANDARD_ATLAS_VIEWS2.some((view) => view.id === loaded.atlasHomeViewId) ? loaded.atlasHomeViewId : DEFAULT_ATLAS_VIEW2.id;
     this.isMobile = Platform.isMobileApp;

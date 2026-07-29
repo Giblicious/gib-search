@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.51.0
+
+- Replaces decorative community outlines with configurable topographic territories that participate in the force layout.
+- Adds territory membership, minimum-size, separation, cohesion, padding, display, and label controls to every Atlas View.
+- Adds a dynamic map key that names visible territories, shows their colors, and reports their note counts.
+- Adds an Atlas signature to Companion with a five-axis quality compass and readable emotion, purpose, form, position, and link evidence.
+- Makes resolved Atlas searches remove non-results instead of leaving a blurred sea of background dots.
+- Keeps surrounding notes legible during hover and selection while emphasizing the selected note, its territory, and its strongest relationships.
+- Removes the superseded boundary-repulsion experiment and migrates existing community-zone Views to the new territory renderer.
+
 ## 0.50.0
 
 - Removes the legacy Similarity, Topics, and Links graph engines; every View now uses one force-directed relationship model.

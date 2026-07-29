@@ -12,14 +12,15 @@ The living map combines semantic relationships, authored links, and local writin
 
 Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the established flat topographic design. Devices without WebGL 2 automatically retain the Canvas renderer.
 
-The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Search score controls each result's preferred radius, while the active View determines the relationships around it. Nonmatches remain as subdued spatial context, and ranked excerpts appear in the native Atlas Navigator pane.
+The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Search score controls each result's preferred radius, while the active View determines the relationships around it. The vault remains visible while a query is loading, then nonresults leave the active map as the result landscape forms. Ranked excerpts appear in the native Atlas Navigator pane.
 
-Saved Atlas Views are built from five explicit parts:
+Saved Atlas Views are built from six explicit parts:
 
 - **Scope** uses composable filters for folders, paths, filenames, extensions, tags, properties, incoming and outgoing links, dates, and file size.
 - **Relationships** blend Meaning, Emotion, Purpose, Position, Form, and authored Links into weighted springs between notes.
 - **Anchors** optionally add declared ideas or questions as gravity points.
-- **Visuals** map available measurements to color, dot size, terrain, community zones, labels, and link lines. The expandable map key explains the active encodings.
+- **Visuals** map available measurements to color, dot size, terrain, territories, labels, and link lines. Territories can be drawn as quiet boundaries or tinted topographic landforms.
+- **Territories** control membership confidence, minimum region size, separation, internal cohesion, boundary padding, and label detail. The expandable map key names the visible regions, colors, and note counts.
 - **Physics** controls spring strength and length, many-body repulsion, weak gravity, collision, damping, neighbor selectivity, and simulation rate.
 
 The relationship field can use five measurements:
@@ -30,7 +31,7 @@ The relationship field can use five measurements:
 - **Form** combines local language inference with document structure to distinguish journals, essays, conversations, reference notes, narratives, and plans.
 - **Links** makes authored wikilinks contribute directly to distance alongside any analytical measurements.
 
-View controls live directly on the Atlas. Scope, relationship weights, anchors, visual mappings, and physics settings update the active landscape without opening a separate editor. Rendering remains smooth at the display refresh rate while the more expensive physics simulation runs independently at a bounded rate. Standard Views can be tuned or reset, and **Save as new view** creates a reusable custom View. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes.
+View controls live directly on the Atlas. Scope, relationship weights, anchors, visual mappings, territory behavior, and physics settings update the active landscape without opening a separate editor. Selecting a note lets Atlas Companion show its local map, related-note list, territory identity, and an Atlas signature summarizing its Meaning, Emotion, Purpose, Form, and Links. Rendering remains smooth at the display refresh rate while the more expensive physics simulation runs independently at a bounded rate. Standard Views can be tuned or reset, and **Save as new view** creates a reusable custom View. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes.
 
 ## Install with BRAT
 
