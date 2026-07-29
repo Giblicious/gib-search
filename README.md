@@ -8,18 +8,19 @@ Plugin settings are divided into Status, Search, Views, and Console pages. Statu
 
 One View definition now controls the Atlas, search map, and Atlas Companion. The included Views are **Meaning**, **Topics**, **Emotion**, **Purpose**, **Writing form**, and **Links**. Choose the same View anywhere without translating between separate lens, grouping, and graph-mode controls.
 
-The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. For each View and scope, Gib Search subtracts the ordinary relationship baseline and compiles the remainder into a sparse network of mutual springs, weaker bridges, and targeted separation. Barnes–Hut charge keeps independent neighborhoods legible without repeated all-pair work. The map settles quickly, then continues at a bounded low-energy cadence so the Atlas stays alive.
+The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. For each View and scope, Gib Search removes the ordinary relationship baseline and compiles the distinctive positive relationships into a sparse weighted graph. Standard spring forces draw related notes together; Barnes–Hut repulsion, weak gravity, collision, and damping keep the landscape open, stable, and responsive. The map settles quickly, then continues at a bounded low-energy cadence so the Atlas stays alive.
 
 Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the established flat topographic design. Devices without WebGL 2 automatically retain the Canvas renderer.
 
-The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Search score controls each result's preferred radius, while the active View determines the relationships and arrangement around it. Nonmatches remain as subdued spatial context, and ranked excerpts appear in the native Atlas Navigator pane.
+The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Search score controls each result's preferred radius, while the active View determines the relationships around it. Nonmatches remain as subdued spatial context, and ranked excerpts appear in the native Atlas Navigator pane.
 
-Saved Atlas Views are built from four explicit primitives:
+Saved Atlas Views are built from five explicit parts:
 
 - **Scope** uses composable filters for folders, paths, filenames, extensions, tags, properties, incoming and outgoing links, dates, and file size.
-- **Forces** map Meaning, Emotion, Purpose, Form, authored Links, constants, and active anchors to attraction, springs, repulsion, gravity points, axes, collision, containment, or flow.
-- **Visuals** map available measurements to color, dot size, terrain, community zones, labels, and link lines. The map key follows those mappings automatically.
-- **Environment** controls collision, open space, damping, simulation rate, and a soft boundary that moves whole neighborhoods without crushing their internal shape.
+- **Relationships** blend Meaning, Emotion, Purpose, Position, Form, and authored Links into weighted springs between notes.
+- **Anchors** optionally add declared ideas or questions as gravity points.
+- **Visuals** map available measurements to color, dot size, terrain, community zones, labels, and link lines. The expandable map key explains the active encodings.
+- **Physics** controls spring strength and length, many-body repulsion, weak gravity, collision, damping, neighbor selectivity, and simulation rate.
 
 The relationship field can use five measurements:
 
@@ -29,7 +30,7 @@ The relationship field can use five measurements:
 - **Form** combines local language inference with document structure to distinguish journals, essays, conversations, reference notes, narratives, and plans.
 - **Links** makes authored wikilinks contribute directly to distance alongside any analytical measurements.
 
-View controls live directly on the Atlas. Scope, force rules, visual mappings, and environment settings update the active landscape without opening a separate editor. Rendering remains smooth at the display refresh rate while the more expensive physics simulation runs independently at a bounded rate. Standard Views can be tuned or reset, and **Save as new view** creates a reusable custom View. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes.
+View controls live directly on the Atlas. Scope, relationship weights, anchors, visual mappings, and physics settings update the active landscape without opening a separate editor. Rendering remains smooth at the display refresh rate while the more expensive physics simulation runs independently at a bounded rate. Standard Views can be tuned or reset, and **Save as new view** creates a reusable custom View. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes.
 
 ## Install with BRAT
 

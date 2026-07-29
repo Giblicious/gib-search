@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.50.0
+
+- Removes the legacy Similarity, Topics, and Links graph engines; every View now uses one force-directed relationship model.
+- Replaces arbitrary quality-to-force rules with weighted relationship springs, optional idea anchors, and standard spring, charge, gravity, collision, and damping controls.
+- Makes pure Emotion, Purpose, Position, and Form Views function without requiring Meaning to be enabled.
+- Treats authored links as ordinary weighted springs instead of switching to a separate Link layout.
+- Adds an expandable map key and makes community zones and labels independent visual mappings.
+- Smooths live topography updates in the WebGL renderer and avoids blank community regions when a group lacks a dense core.
+
 ## 0.49.0
 
 - Replaces overlapping Frame, Scale, and tuning controls with explicit Scope, Forces, Visuals, and Environment primitives.
