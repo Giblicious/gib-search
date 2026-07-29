@@ -8,7 +8,7 @@ Plugin settings are divided into Status, Search, Views, and Console pages. Statu
 
 One View definition now controls the Atlas, search map, and Atlas Companion. The included Views are **Meaning**, **Topics**, **Emotion**, **Purpose**, **Writing form**, and **Links**. Choose the same View anywhere without translating between separate lens, grouping, and graph-mode controls.
 
-The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. Every enabled quality contributes to a desired distance between each pair of notes, and all pairs participate across short deterministic sweeps. Weak evidence remains weak instead of being stretched into false contrast; collision only prevents overlap. Views change the mixture of measured relationships without replacing the vault with a fixed neighbor sample.
+The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. For each View and scope, Gib Search subtracts the ordinary relationship baseline and retains only locally distinctive attraction or separation. The unremarkable middle exerts no force, while real neighborhoods, bridges, and outliers remain free to emerge. Deterministic sweeps settle the structure, then continue at a bounded low-energy cadence so the Atlas stays alive.
 
 Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the established flat topographic design. Devices without WebGL 2 automatically retain the Canvas renderer.
 

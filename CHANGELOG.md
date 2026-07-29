@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.47.0
+
+- Replaces raw pair distances with a scope-relative contrastive field that removes each note's ordinary relationship baseline.
+- Keeps only locally distinctive positive and negative relationships; the unremarkable middle now exerts no force.
+- Lets exceptional similarity attract, exceptional dissimilarity separate, and genuinely unstructured notes remain as outliers.
+- Drives vault terrain height from distinctive activity in the selected View and uses bounded local charge to keep neighborhoods spatially legible.
+- Removes frozen force-field snapshots and continues the selected View at a bounded low-energy cadence with subtle ambient flow.
+
 ## 0.46.0
 
 - Rebuilds non-Link View placement as a continuous pair-distance stress field instead of thresholded attraction and short-range repulsion.
