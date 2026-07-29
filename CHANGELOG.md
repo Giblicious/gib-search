@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.45.1
+
+- Fixes non-Link Atlas Views continuing to apply full relationship forces after settling, which made completed quality-aware maps appear to boil.
+- Cools relationship forces with the simulation and preserves settled positions for subtle ambient motion.
+
 ## 0.45.0
 
 - Splits plugin settings into compact Status, Search, Views, and Console pages.

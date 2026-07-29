@@ -75018,6 +75018,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     this.ambientStartedAt = performance.now();
     this.ambientDrawing = false;
     this.linkIdleAnchored = false;
+    this.fieldIdleAnchored = false;
     this.visibilityHandler = () => {
       if (!document.hidden) this.startSimulation(0);
     };
@@ -75239,7 +75240,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   applyRelationshipForces(alpha2, querySettling = false) {
     const field = this.forceField, bodies = this.forceBodies;
     if (!field || bodies.length < 2 || this.mapGroupingMode === "links") return;
-    const weights = Object.entries(field.weights || {}).filter(([signal, weight]) => field.components[signal] && Number(weight) > 1e-3), total = weights.reduce((sum, [, weight]) => sum + Number(weight), 0) || 1, dynamics = field.dynamics || {}, contrast = Number(dynamics.contrast ?? 0.58), cohesion = Number(dynamics.cohesion ?? 0.62), spacing = Number(dynamics.spacing ?? 0.55), pairCount = Number(field.pairCount || 0), budget = weights.length ? Math.min(pairCount, Platform.isMobile ? 7e3 : 26e3) : 0, scale = 24e-5 / Math.sqrt(Math.max(1, bodies.length / 90));
+    const weights = Object.entries(field.weights || {}).filter(([signal, weight]) => field.components[signal] && Number(weight) > 1e-3), total = weights.reduce((sum, [, weight]) => sum + Number(weight), 0) || 1, dynamics = field.dynamics || {}, contrast = Number(dynamics.contrast ?? 0.58), cohesion = Number(dynamics.cohesion ?? 0.62), spacing = Number(dynamics.spacing ?? 0.55), pairCount = Number(field.pairCount || 0), budget = weights.length ? Math.min(pairCount, Platform.isMobile ? 7e3 : 26e3) : 0, temperature = Math.max(0.02, Math.min(1, Number(alpha2) || 0)), scale = 24e-5 * temperature / Math.sqrt(Math.max(1, bodies.length / 90));
     let first = this.forcePairFirst, second = this.forcePairSecond, cursor = this.forcePairCursor;
     for (let processed = 0; processed < budget; processed++) {
       const a2 = bodies[first], b = bodies[second], active = !this.hasQuery || this.pendingQuery || a2.matched && b.matched;
@@ -75872,7 +75873,13 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   idlePhysicsStep(now) {
     const queryActive = this.hasQuery && !this.pendingQuery, activeNodes = queryActive ? this.nodes.filter((node) => node.matched) : this.nodes, origin = this.queryPresence > 0.04 ? this.queryNode : { x: 0, y: 0 };
-    if (this.forceField && this.mapGroupingMode !== "links") this.applyRelationshipForces(0.1, queryActive);
+    if (this.forceField && !this.fieldIdleAnchored) {
+      for (const node of activeNodes) {
+        node.idleLayoutX = node.x;
+        node.idleLayoutY = node.y;
+      }
+      this.fieldIdleAnchored = true;
+    }
     if (this.mapGroupingMode === "links" && !this.linkIdleAnchored) {
       for (const node of activeNodes) {
         node.layoutX = node.x;
@@ -75882,8 +75889,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     for (const node of activeNodes) {
       if (node === this.dragging) continue;
-      const phase = stableMapAngle(node.id), speed = 12e-5 + phase / (Math.PI * 2) * 55e-6, orbit = 22e-4 + Math.max(0, Math.min(1, Number(node.fileScale || 0.35))) * 24e-4, angle = now * speed + phase, targetX2 = node.layoutX + Math.cos(angle) * orbit, targetY2 = node.layoutY + Math.sin(angle * 0.83 + phase) * orbit;
-      const anchor = this.forceField ? 7e-4 : 65e-4;
+      const phase = stableMapAngle(node.id), speed = 12e-5 + phase / (Math.PI * 2) * 55e-6, orbit = 22e-4 + Math.max(0, Math.min(1, Number(node.fileScale || 0.35))) * 24e-4, angle = now * speed + phase, baseX = this.forceField ? Number(node.idleLayoutX ?? node.x) : node.layoutX, baseY = this.forceField ? Number(node.idleLayoutY ?? node.y) : node.layoutY, targetX2 = baseX + Math.cos(angle) * orbit, targetY2 = baseY + Math.sin(angle * 0.83 + phase) * orbit;
+      const anchor = 65e-4;
       node.vx += (targetX2 - node.x) * anchor;
       node.vy += (targetY2 - node.y) * anchor;
       node.vx *= 0.91;
@@ -75914,6 +75921,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       this.linkSimulationTicks = 0;
       this.linkIdleAnchored = false;
     }
+    if (alpha2 >= 0.08) this.fieldIdleAnchored = false;
     this.alpha = Math.max(this.alpha, alpha2);
     if (this.simulationFrame) return;
     const tick = (now) => {
