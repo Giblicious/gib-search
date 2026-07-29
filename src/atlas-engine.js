@@ -1,40 +1,48 @@
-import { EMOTION_LANDMARKS, TEXT_SIGNAL_TEMPLATES, TEXT_SIGNALS, validTextSignal } from './text-signals.js';
+import { EMOTION_LANDMARKS, TEXT_SIGNALS, validTextSignal } from './text-signals.js';
 
 const INDEXABLE = /\.(?:md|txt|markdown)$/i;
 
-export const ATLAS_LENSES = {
-  relevance: { label: 'Relevance', analysis: 'relevance', mapMode: 'similarity', description: 'Judge notes by their relationship to the active anchor.' },
-  topics: { label: 'Topics', analysis: 'relevance', mapMode: 'topics', description: 'Reveal distinct treatments within the active anchor and scope.' },
-  links: { label: 'Links', analysis: 'relevance', mapMode: 'links', description: 'Let authored wikilinks define the primary relationship network.' },
-  arguments: { label: 'Arguments', analysis: 'arguments', mapMode: 'similarity', description: 'Organize support, alignment, and tension around the active anchor.' },
-  context: { label: 'Context', analysis: 'context', mapMode: 'similarity', description: 'Emphasize notes that connect strongly to the wider scope.' },
+export const ATLAS_ARRANGEMENTS = {
+  meaning: { label: 'Meaning', analysis: 'semantic', mapMode: 'similarity', description: 'Arrange notes by their relationships in meaning.' },
+  topics: { label: 'Topics', analysis: 'semantic', mapMode: 'topics', description: 'Reveal distinct treatments within the active anchor and scope.' },
+  links: { label: 'Links', analysis: 'semantic', mapMode: 'links', description: 'Let authored wikilinks define the primary relationship network.' },
 };
 
 export const DEFAULT_ATLAS_VIEW = {
   id: 'all-notes',
-  name: 'All Notes',
+  name: 'Meaning',
   scope: { folders: [], excludeFolders: [], tags: [], properties: {}, extensions: ['md', 'txt', 'markdown'] },
   anchor: { type: 'default' },
-  lens: 'default',
   scale: 'default',
-  frame: { mode: 'natural', referenceFrame: 'free', signal: 'semantic', reference: '', geometry: 'semantic', relationships: { semantic: 1, emotion: 0, purpose: 0, position: 0, form: 0, links: 0 }, dynamics: { contrast: .58, cohesion: .62, spacing: .55 }, categoryPull: .78, localCohesion: .26, sensitivity: .58, unclaimedThreshold: .34, appearance: { colorBy: 'semantic', sizeBy: 'file', terrain: 'density', regions: false }, categories: [] },
+  frame: { mode: 'natural', referenceFrame: 'free', arrangement: 'meaning', signal: 'semantic', reference: '', geometry: 'semantic', relationships: { semantic: 1, emotion: 0, purpose: 0, position: 0, form: 0, links: 0 }, dynamics: { contrast: .58, cohesion: .62, spacing: .55 }, categoryPull: .78, localCohesion: .26, sensitivity: .58, unclaimedThreshold: .34, appearance: { colorBy: 'semantic', sizeBy: 'file', terrain: 'density', regions: false, linkLines: false }, categories: [] },
 };
 
 export const ATLAS_VIEW_TEMPLATES = {
-  natural: { name: 'Meaning landscape', signal: 'semantic', frameMode: 'natural', relationships: { semantic: 1 }, description: 'Let meaning relationships form an anchor-free landscape.', categories: [] },
-  ...TEXT_SIGNAL_TEMPLATES,
-  inquiry: { name: 'Theological inquiry', signal: 'semantic', frameMode: 'guided', relationships: { semantic: 1 }, description: 'Explore different ways religious ideas are approached.', categories: [
-    ['Doctrine', 'Beliefs, scripture, theology, divine attributes, and doctrinal explanation.'],
-    ['History', 'Historical development, institutions, people, chronology, and source context.'],
-    ['Personal faith', 'Prayer, testimony, spiritual experience, devotion, and personal belief.'],
-    ['Critique', 'Doubt, counterargument, tension, contradiction, criticism, and reassessment.'],
-    ['Practice', 'Worship, ethics, ritual, discipleship, habits, and lived religious action.'],
-  ] },
+  meaning: { id: 'all-notes', name: 'Meaning', signal: 'semantic', arrangement: 'meaning', frameMode: 'natural', relationships: { semantic: 1 }, description: 'See the vault by similarity of ideas.', categories: [] },
+  topics: { id: 'topics', name: 'Topics', signal: 'semantic', arrangement: 'topics', frameMode: 'natural', relationships: { semantic: 1 }, description: 'Reveal local topic neighborhoods and their boundaries.', categories: [] },
+  emotion: { id: 'emotion', name: 'Emotion', signal: 'emotion', arrangement: 'meaning', frameMode: 'natural', relationships: { emotion: 1 }, description: 'See writing by its expressed emotional character.', categories: [] },
+  purpose: { id: 'purpose', name: 'Purpose', signal: 'purpose', arrangement: 'meaning', frameMode: 'natural', relationships: { purpose: 1 }, description: 'Group writing by what it is trying to do.', categories: [] },
+  form: { id: 'form', name: 'Writing form', signal: 'form', arrangement: 'meaning', frameMode: 'natural', relationships: { form: 1 }, description: 'Separate journals, essays, conversations, references, narratives, and plans.', categories: [] },
+  links: { id: 'links', name: 'Links', signal: 'semantic', arrangement: 'links', frameMode: 'natural', relationships: { semantic: .12, links: 1 }, description: 'Let authored links provide the primary structure.', categories: [] },
 };
 
-export function validAtlasLens(value) { return ATLAS_LENSES[value] ? value : 'relevance'; }
+export const STANDARD_ATLAS_VIEWS = Object.values(ATLAS_VIEW_TEMPLATES).map(template => ({
+  ...copy(DEFAULT_ATLAS_VIEW),
+  id: template.id,
+  name: template.name,
+  description: template.description,
+  frame: {
+    ...copy(DEFAULT_ATLAS_VIEW.frame),
+    arrangement: template.arrangement,
+    signal: template.signal,
+    relationships: { semantic: 0, emotion: 0, purpose: 0, position: 0, form: 0, links: 0, ...template.relationships },
+    appearance: { ...copy(DEFAULT_ATLAS_VIEW.frame.appearance), colorBy: template.signal === 'emotion' ? 'emotion' : 'semantic', terrain: template.signal === 'emotion' ? 'intensity' : 'density', regions: template.arrangement === 'topics', linkLines: template.arrangement === 'links' },
+  },
+}));
+
+export function validAtlasArrangement(value) { return ATLAS_ARRANGEMENTS[value] ? value : 'meaning'; }
 export function validAtlasScale(value) { return ['overview', 'neighborhood', 'detail'].includes(value) ? value : 'overview'; }
-export function atlasLens(value) { return ATLAS_LENSES[validAtlasLens(value)]; }
+export function atlasArrangement(value) { return ATLAS_ARRANGEMENTS[validAtlasArrangement(value)]; }
 
 function normalizedPath(value) { return String(value || '').replaceAll('\\', '/').replace(/^\/+|\/+$/g, ''); }
 function pathWithin(path, folder) { const normalized = normalizedPath(folder); return !normalized || path === normalized || path.startsWith(`${normalized}/`); }
@@ -84,8 +92,9 @@ export class AtlasEngine {
   subscribeContext(listener) { this.contextListeners.add(listener); listener(this.context); return () => this.contextListeners.delete(listener); }
 
   views() {
-    const configured = Array.isArray(this.plugin.settings?.atlasViews) ? this.plugin.settings.atlasViews : [], views = configured.length ? configured : [DEFAULT_ATLAS_VIEW];
-    return views.map(view => this.normalizeView(view));
+    const configured = Array.isArray(this.plugin.settings?.atlasViews) ? this.plugin.settings.atlasViews : [], byId = new Map(STANDARD_ATLAS_VIEWS.map(view => [view.id, this.normalizeView(view)]));
+    for (const view of configured) byId.set(String(view.id || ''), this.normalizeView(view));
+    return [...byId.values()];
   }
 
   normalizeView(view = {}) {
@@ -93,19 +102,19 @@ export class AtlasEngine {
     return {
       id: String(view.id || stableSignature(view.name || 'all-notes')),
       name: String(view.name || 'All Notes'),
+      description: String(view.description || '').trim(),
       scope: { folders: (scope.folders || []).map(normalizedPath).filter(Boolean), excludeFolders: (scope.excludeFolders || []).map(normalizedPath).filter(Boolean), tags: (scope.tags || []).map(tag => String(tag).replace(/^#/, '')).filter(Boolean), properties: { ...(scope.properties || {}) }, extensions },
       anchor: view.anchor && typeof view.anchor === 'object' ? { ...view.anchor } : { type: 'default' },
-      lens: view.lens === 'default' ? 'default' : validAtlasLens(view.lens),
       scale: view.scale === 'default' ? 'default' : validAtlasScale(view.scale),
-      frame: { mode: ['constellation', 'axis'].includes(referenceFrame) ? 'guided' : 'natural', referenceFrame, signal: validTextSignal(frame.signal), reference: String(frame.reference || '').trim(), geometry: ['semantic', 'radial', 'manual'].includes(frame.geometry) ? frame.geometry : 'semantic', relationships: normalizeRelationships(frame.relationships, validTextSignal(frame.signal)), dynamics: normalizeDynamics(frame.dynamics), categoryPull: clamp(frame.categoryPull ?? .78), localCohesion: clamp(frame.localCohesion ?? .26), sensitivity: clamp(frame.sensitivity ?? .58), unclaimedThreshold: clamp(frame.unclaimedThreshold ?? .34), appearance: { colorBy: ['category', 'semantic', 'emotion', 'relationship', 'none'].includes(frame.appearance?.colorBy) ? frame.appearance.colorBy : frame.mode === 'guided' ? 'category' : 'semantic', sizeBy: frame.appearance?.sizeBy === 'uniform' ? 'uniform' : 'file', terrain: ['density', 'intensity', 'off'].includes(frame.appearance?.terrain) ? frame.appearance.terrain : 'density', regions: frame.appearance?.regions === true }, categories: (frame.categories || []).map(normalizeCategory).filter(category => category.name).slice(0, 12) },
+      frame: { mode: ['constellation', 'axis'].includes(referenceFrame) ? 'guided' : 'natural', referenceFrame, arrangement: ['meaning', 'topics', 'links'].includes(frame.arrangement) ? frame.arrangement : 'meaning', signal: validTextSignal(frame.signal), reference: String(frame.reference || '').trim(), geometry: ['semantic', 'radial', 'manual'].includes(frame.geometry) ? frame.geometry : 'semantic', relationships: normalizeRelationships(frame.relationships, validTextSignal(frame.signal)), dynamics: normalizeDynamics(frame.dynamics), categoryPull: clamp(frame.categoryPull ?? .78), localCohesion: clamp(frame.localCohesion ?? .26), sensitivity: clamp(frame.sensitivity ?? .58), unclaimedThreshold: clamp(frame.unclaimedThreshold ?? .34), appearance: { colorBy: ['category', 'semantic', 'emotion', 'relationship', 'none'].includes(frame.appearance?.colorBy) ? frame.appearance.colorBy : frame.mode === 'guided' ? 'category' : 'semantic', sizeBy: frame.appearance?.sizeBy === 'uniform' ? 'uniform' : 'file', terrain: ['density', 'intensity', 'off'].includes(frame.appearance?.terrain) ? frame.appearance.terrain : 'density', regions: frame.appearance?.regions === true, linkLines: frame.appearance?.linkLines === true }, categories: (frame.categories || []).map(normalizeCategory).filter(category => category.name).slice(0, 12) },
     };
   }
 
   activeView(id = this.plugin.settings?.atlasHomeViewId) { return this.views().find(view => view.id === id) || this.views()[0] || this.normalizeView(DEFAULT_ATLAS_VIEW); }
 
   state(overrides = {}) {
-    const view = this.normalizeView(overrides.view || this.activeView(overrides.viewId)), defaultLens = validAtlasLens(this.plugin.settings?.defaultSearchLens), lens = validAtlasLens(overrides.lens || (view.lens === 'default' ? defaultLens : view.lens)), scale = validAtlasScale(overrides.scale || (view.scale === 'default' ? 'overview' : view.scale)), anchor = overrides.anchor ? { ...overrides.anchor } : { ...view.anchor };
-    return { viewId: view.id, viewName: view.name, scope: copy(view.scope), anchor, lens, scale, frame: copy(view.frame), selection: overrides.selection || null };
+    const view = this.normalizeView(overrides.view || this.activeView(overrides.viewId)), arrangement = view.frame.arrangement, scale = validAtlasScale(overrides.scale || (view.scale === 'default' ? 'overview' : view.scale)), anchor = overrides.anchor ? { ...overrides.anchor } : { ...view.anchor };
+    return { viewId: view.id, viewName: view.name, scope: copy(view.scope), anchor, arrangement, scale, frame: copy(view.frame), selection: overrides.selection || null };
   }
 
   resolveScope(state) {
@@ -126,15 +135,14 @@ export class AtlasEngine {
     if (state.frame?.mode === 'guided') common.push({ key: 'beacon', label: 'Beacon', meaning: 'Optional reference-frame attraction' });
     if (state.frame?.appearance?.terrain === 'intensity') common.push({ key: 'terrain', label: 'Terrain', meaning: 'Strongest active profile' }); else if (state.frame?.appearance?.terrain !== 'off') common.push({ key: 'terrain', label: 'Terrain', meaning: 'Local note density' });
     if (state.frame?.appearance?.colorBy === 'emotion') common.push({ key: 'color', label: 'Color', meaning: 'Emotional profile' });
-    if (state.lens === 'topics') return [...common, { key: 'color', label: 'Color', meaning: 'Topic direction' }, { key: 'region', label: 'Region', meaning: 'Soft topical neighborhood' }];
-    if (state.lens === 'links') return [...common, { key: 'line', label: 'Road', meaning: 'Authored wikilink' }];
-    if (state.lens === 'arguments') return [...common, { key: 'relationship', label: 'Relationship', meaning: 'Alignment or tension' }];
+    if (state.arrangement === 'topics') return [...common, { key: 'color', label: 'Color', meaning: 'Topic direction' }, { key: 'region', label: 'Region', meaning: 'Soft topical neighborhood' }];
+    if (state.arrangement === 'links') return [...common, { key: 'line', label: 'Road', meaning: 'Authored wikilink' }];
     return state.frame?.appearance?.colorBy === 'emotion' ? common : [...common, { key: 'color', label: 'Color', meaning: state.frame?.appearance?.colorBy === 'none' ? 'Monochrome' : state.frame?.appearance?.colorBy === 'category' ? 'Beacon affinity' : 'Meaning direction' }];
   }
 
   sceneKey(state, scope, results, options) {
-    const index = this.plugin.search, indexSignature = `${index.meta.length}:${index.vectors.length}:${index.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}`, relationships = state.lens === 'arguments' && options.relationships instanceof Map ? [...options.relationships].map(([key, value]) => [key, value?.type, Number(value?.confidence || 0)]).sort() : [];
-    return JSON.stringify([indexSignature, scope.signature, state.anchor, state.lens, state.scale, state.frame, results.map(result => [result.file, Number(result.lensScore ?? result.score ?? 0)]), relationships]);
+    const index = this.plugin.search, indexSignature = `${index.meta.length}:${index.vectors.length}:${index.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}`;
+    return JSON.stringify([indexSignature, scope.signature, state.anchor, state.arrangement, state.scale, state.frame, results.map(result => [result.file, Number(result.viewScore ?? result.score ?? 0)])]);
   }
 
   async prepareRelationshipField(state, files, roads = [], options = {}) {
@@ -176,33 +184,30 @@ export class AtlasEngine {
   }
 
   async vaultScene(state, scope, options = {}) {
-    const graph = await this.plugin.search.semanticStarfield('', scope.paths), scales = options.fileScales || fileScales(this.plugin.app), definition = atlasLens(state.lens), nodes = graph.nodes.map(node => ({ ...node, matched: false, generation: 1, relevance: .5, fileScale: scales.get(node.id) ?? .35, facet: node.community, conceptAffinities: node.topicAffinities })), roads = manualLinks(this.plugin.app, scope.paths), field = await this.prepareRelationshipField(state, nodes.map(node => node.id), roads, options); this.applyRelationshipPresentation(state, nodes, field); const naturalLayout = new Map(nodes.map(node => [node.id, { x: Number(node.x || 0), y: Number(node.y || 0) }])), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout, forceField = await this.plugin.search.relationshipForceField('', nodes, field, { vaultCenter: true });
+    const graph = await this.plugin.search.semanticStarfield('', scope.paths), scales = options.fileScales || fileScales(this.plugin.app), definition = atlasArrangement(state.arrangement), nodes = graph.nodes.map(node => ({ ...node, matched: false, generation: 1, relevance: .5, fileScale: scales.get(node.id) ?? .35, facet: node.community, conceptAffinities: node.topicAffinities })), roads = manualLinks(this.plugin.app, scope.paths), field = await this.prepareRelationshipField(state, nodes.map(node => node.id), roads, options); this.applyRelationshipPresentation(state, nodes, field); const naturalLayout = new Map(nodes.map(node => [node.id, { x: Number(node.x || 0), y: Number(node.y || 0) }])), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout, forceField = await this.plugin.search.relationshipForceField('', nodes, field, { vaultCenter: true });
     for (const node of nodes) { const target = layout.get(node.id); if (target) { node.layoutX = target.x; node.layoutY = target.y; } }
     return { state, scopeSignature: scope.signature, center: { label: state.viewName, hasQuery: false, resultCount: 0, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, mapMode: guided.categories.length ? 'topics' : definition.mapMode }, nodes, edges: graph.edges || [], roads, results: [], legend: this.legendFor(state), provisional: false };
   }
 
   async queryScene(state, scope, results, options = {}) {
-    const query = String(state.anchor.value || '').trim(), definition = atlasLens(state.lens), relationships = options.relationships instanceof Map ? options.relationships : new Map(), relationshipEdges = options.relationshipEdges || [], sourceResults = results.map(result => ({ ...result })), roots = sourceResults.map(result => result.file), generations = Math.max(1, Math.min(3, Number(options.generations) || 1)), expansion = this.plugin.search.semanticGenerations(roots, generations, 5), generationByFile = new Map(expansion.nodes.map(node => [node.id, node])), allowed = new Set(scope.paths), activeFiles = expansion.nodes.map(node => node.id).filter(file => allowed.has(file)), [facets, graph] = await Promise.all([this.plugin.search.conceptFacets(query, activeFiles), this.plugin.search.semanticStarfield(query, activeFiles, activeFiles, { queryLabels: false })]);
+    const query = String(state.anchor.value || '').trim(), definition = atlasArrangement(state.arrangement), sourceResults = results.map(result => ({ ...result })), roots = sourceResults.map(result => result.file), generations = Math.max(1, Math.min(3, Number(options.generations) || 1)), expansion = this.plugin.search.semanticGenerations(roots, generations, 5), generationByFile = new Map(expansion.nodes.map(node => [node.id, node])), allowed = new Set(scope.paths), activeFiles = expansion.nodes.map(node => node.id).filter(file => allowed.has(file)), [facets, graph] = await Promise.all([this.plugin.search.conceptFacets(query, activeFiles), this.plugin.search.semanticStarfield(query, activeFiles, activeFiles, { queryLabels: false })]);
     for (const result of sourceResults) { const facet = facets.get(result.file); result.facet = facet?.facet; result.conceptAffinities = facet?.affinities; }
-    const byFile = new Map(sourceResults.map(result => [result.file, result])), scales = options.fileScales || fileScales(this.plugin.app), rankingScores = sourceResults.map(result => Number(result.lensScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(.001, rankingHigh - rankingLow), semanticScores = graph.nodes.map(node => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(.001, semanticHigh - semanticLow), expansionEdges = expansion.edges.map(edge => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map(edge => edgeKey(edge.source, edge.target))), combinedEdges = [...(graph.edges || []), ...expansionEdges.filter(edge => !edgeKeys.has(edgeKey(edge.source, edge.target)))];
-    const nodes = graph.nodes.map(node => { const result = byFile.get(node.id), generation = generationByFile.get(node.id), subtopic = facets.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.lensScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(.22, Math.min(.62, Number(generation.relationScore || 0))) : semanticRelevance, community = definition.mapMode === 'topics' && subtopic ? subtopic.facet : node.community, membership = subtopic ? Number(subtopic.affinities?.[subtopic.facet] || 0) : Number(node.communityMembership || 0); return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: result ? .08 + rankedRelevance * .92 : expandedRelevance, fileScale: scales.get(node.id) ?? .35, facet: subtopic?.facet ?? result?.facet ?? node.community, community, communityMembership: definition.mapMode === 'topics' ? membership : node.communityMembership, communityLabel: definition.mapMode === 'topics' ? subtopic?.label || '' : node.communityLabel, communityFallbackLabel: definition.mapMode === 'topics' ? subtopic?.fallbackLabel || '' : node.communityFallbackLabel, communityLabelConfidence: definition.mapMode === 'topics' ? Number(subtopic?.confidence || 0) : node.communityLabelConfidence, conceptAffinities: subtopic?.affinities || result?.conceptAffinities || node.topicAffinities, topicAffinities: definition.mapMode === 'topics' && subtopic ? subtopic.affinities : node.topicAffinities, contextScore: result?.contextScore }; }), roads = manualLinks(this.plugin.app, nodes.map(node => node.id)), field = await this.prepareRelationshipField(state, nodes.map(node => node.id), roads, options); this.applyRelationshipPresentation(state, nodes, field); const naturalLayout = new Map(nodes.map(node => [node.id, { x: Number(node.x || 0), y: Number(node.y || 0) }])), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout, forceField = await this.plugin.search.relationshipForceField(query, nodes, field);
+    const byFile = new Map(sourceResults.map(result => [result.file, result])), scales = options.fileScales || fileScales(this.plugin.app), rankingScores = sourceResults.map(result => Number(result.viewScore ?? result.score ?? 0)), rankingLow = rankingScores.length ? Math.min(...rankingScores) : 0, rankingHigh = rankingScores.length ? Math.max(...rankingScores) : 1, rankingSpread = Math.max(.001, rankingHigh - rankingLow), semanticScores = graph.nodes.map(node => Number(node.semanticScore || 0)), semanticLow = semanticScores.length ? Math.min(...semanticScores) : 0, semanticHigh = semanticScores.length ? Math.max(...semanticScores) : 1, semanticSpread = Math.max(.001, semanticHigh - semanticLow), expansionEdges = expansion.edges.map(edge => ({ ...edge, residualScore: 0 })), edgeKeys = new Set((graph.edges || []).map(edge => edgeKey(edge.source, edge.target))), combinedEdges = [...(graph.edges || []), ...expansionEdges.filter(edge => !edgeKeys.has(edgeKey(edge.source, edge.target)))];
+    const nodes = graph.nodes.map(node => { const result = byFile.get(node.id), generation = generationByFile.get(node.id), subtopic = facets.get(node.id), semanticRelevance = (Number(node.semanticScore || 0) - semanticLow) / semanticSpread, rankedRelevance = result ? (Number(result.viewScore ?? result.score ?? 0) - rankingLow) / rankingSpread : 0, expandedRelevance = generation && generation.generation > 1 ? Math.max(.22, Math.min(.62, Number(generation.relationScore || 0))) : semanticRelevance, community = definition.mapMode === 'topics' && subtopic ? subtopic.facet : node.community, membership = subtopic ? Number(subtopic.affinities?.[subtopic.facet] || 0) : Number(node.communityMembership || 0); return { ...node, generation: generation?.generation || 1, parent: generation?.parent || null, matched: Boolean(generation), relevance: result ? .08 + rankedRelevance * .92 : expandedRelevance, fileScale: scales.get(node.id) ?? .35, facet: subtopic?.facet ?? result?.facet ?? node.community, community, communityMembership: definition.mapMode === 'topics' ? membership : node.communityMembership, communityLabel: definition.mapMode === 'topics' ? subtopic?.label || '' : node.communityLabel, communityFallbackLabel: definition.mapMode === 'topics' ? subtopic?.fallbackLabel || '' : node.communityFallbackLabel, communityLabelConfidence: definition.mapMode === 'topics' ? Number(subtopic?.confidence || 0) : node.communityLabelConfidence, conceptAffinities: subtopic?.affinities || result?.conceptAffinities || node.topicAffinities, topicAffinities: definition.mapMode === 'topics' && subtopic ? subtopic.affinities : node.topicAffinities, contextScore: result?.contextScore }; }), roads = manualLinks(this.plugin.app, nodes.map(node => node.id)), field = await this.prepareRelationshipField(state, nodes.map(node => node.id), roads, options); this.applyRelationshipPresentation(state, nodes, field); const naturalLayout = new Map(nodes.map(node => [node.id, { x: Number(node.x || 0), y: Number(node.y || 0) }])), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout, forceField = await this.plugin.search.relationshipForceField(query, nodes, field);
     for (const node of nodes) { const target = layout.get(node.id); if (target) { node.layoutX = target.x; node.layoutY = target.y; } }
-    const edges = definition.analysis === 'arguments' ? [...combinedEdges.map(edge => ({ ...edge, relation: relationships.get(edgeKey(edge.source, edge.target)) })), ...relationshipEdges.filter(edge => !edgeKeys.has(edgeKey(edge.source, edge.target))).map(edge => ({ ...edge, relation: relationships.get(edgeKey(edge.source, edge.target)) }))] : combinedEdges;
-    return { state, scopeSignature: scope.signature, center: { label: query, hasQuery: true, resultCount: sourceResults.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, mapMode: guided.categories.length ? 'topics' : definition.mapMode }, nodes, edges, roads, results: sourceResults, legend: this.legendFor(state), provisional: false };
+    return { state, scopeSignature: scope.signature, center: { label: query, hasQuery: true, resultCount: sourceResults.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, mapMode: guided.categories.length ? 'topics' : definition.mapMode }, nodes, edges: combinedEdges, roads, results: sourceResults, legend: this.legendFor(state), provisional: false };
   }
 
   async noteScene(state, scope, options = {}) {
-    const filePath = String(state.anchor.value || ''), definition = atlasLens(state.lens), limit = state.scale === 'detail' ? 32 : state.scale === 'neighborhood' ? 22 : 16, graph = this.plugin.search.semanticNeighbors(filePath, limit), allowed = new Set(scope.paths); let nodes = graph.nodes.filter(node => allowed.has(node.id)).map(node => ({ ...node, semanticScore: Number(node.score || 0) })), edges = (graph.edges || []).filter(edge => allowed.has(edge.source) && allowed.has(edge.target)), relationships = new Map();
-    if (definition.mapMode === 'topics' || state.lens === 'relevance') { const facets = await this.plugin.search.conceptFacetsFromFile(filePath, nodes.map(node => node.id)); nodes = nodes.map(node => ({ ...node, facet: facets.get(node.id)?.facet, community: definition.mapMode === 'topics' ? facets.get(node.id)?.facet : node.community, communityLabel: definition.mapMode === 'topics' ? facets.get(node.id)?.label || '' : node.communityLabel, conceptAffinities: facets.get(node.id)?.affinities, topicAffinities: definition.mapMode === 'topics' ? facets.get(node.id)?.affinities : node.topicAffinities })); }
-    if (state.lens === 'context') { const context = this.plugin.search.contextScores(nodes.map(node => node.id)); nodes = nodes.map(node => ({ ...node, contextScore: Number(context.get(node.id) || 0), score: Number(node.score || 0) * .62 + Number(context.get(node.id) || 0) * .38 })).sort((first, second) => second.score - first.score); }
-    if (state.lens === 'arguments' && this.plugin.settings.graphRelationshipIntelligence) { const candidates = this.plugin.search.argumentCandidateEdges(nodes.map(node => node.id)), budget = this.plugin.isMobile ? this.plugin.settings.graphRelationshipBudgetMobile : this.plugin.settings.graphRelationshipBudgetDesktop; relationships = await this.plugin.search.graphRelationships(candidates, budget); edges = candidates.map(edge => ({ ...edge, relation: relationships.get(edgeKey(edge.source, edge.target)) })); }
+    const filePath = String(state.anchor.value || ''), definition = atlasArrangement(state.arrangement), limit = state.scale === 'detail' ? 32 : state.scale === 'neighborhood' ? 22 : 16, graph = this.plugin.search.semanticNeighbors(filePath, limit), allowed = new Set(scope.paths); let nodes = graph.nodes.filter(node => allowed.has(node.id)).map(node => ({ ...node, semanticScore: Number(node.score || 0) })), edges = (graph.edges || []).filter(edge => allowed.has(edge.source) && allowed.has(edge.target));
+    if (definition.mapMode === 'topics' || state.arrangement === 'meaning') { const facets = await this.plugin.search.conceptFacetsFromFile(filePath, nodes.map(node => node.id)); nodes = nodes.map(node => ({ ...node, facet: facets.get(node.id)?.facet, community: definition.mapMode === 'topics' ? facets.get(node.id)?.facet : node.community, communityLabel: definition.mapMode === 'topics' ? facets.get(node.id)?.label || '' : node.communityLabel, conceptAffinities: facets.get(node.id)?.affinities, topicAffinities: definition.mapMode === 'topics' ? facets.get(node.id)?.affinities : node.topicAffinities })); }
     const scores = nodes.map(node => Number(node.score || 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(.001, high - low), scales = options.fileScales || fileScales(this.plugin.app); nodes = nodes.map(node => ({ ...node, relevance: (Number(node.score || 0) - low) / spread, matched: true, generation: 1, fileScale: scales.get(node.id) ?? .35 })); const roads = manualLinks(this.plugin.app, [filePath, ...nodes.map(node => node.id)]), field = await this.prepareRelationshipField(state, nodes.map(node => node.id), roads, options); this.applyRelationshipPresentation(state, nodes, field); const naturalLayout = new Map(nodes.map(node => [node.id, { x: Number(node.x || 0), y: Number(node.y || 0) }])), guided = await this.applyGuidedFrame(state, nodes, naturalLayout), layout = guided.layout, forceField = await this.plugin.search.relationshipForceField('', nodes, field, { centerFile: filePath });
     for (const node of nodes) { const target = layout.get(node.id); if (target) { node.layoutX = target.x; node.layoutY = target.y; } }
     return { state, scopeSignature: scope.signature, center: { id: filePath, label: basename(filePath), hasQuery: true, resultCount: nodes.length, guidedCategories: guided.categories, appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField, mapMode: guided.categories.length ? 'topics' : definition.mapMode }, nodes, edges, roads, results: nodes, legend: this.legendFor(state), provisional: false };
   }
 
   provisionalScene(state, baseScene, results, positions = new Map()) {
-    const scores = results.map(result => Number(result.lensScore ?? result.score ?? 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(.001, high - low), byFile = new Map(results.map(result => [result.file, result])), nodes = baseScene.nodes.map(base => { const result = byFile.get(base.id), current = positions.get(base.id), positioned = current ? { layoutX: current.x, layoutY: current.y } : {}; return result ? { ...base, ...positioned, matched: true, generation: 1, relevance: .08 + (Number(result.lensScore ?? result.score ?? 0) - low) / spread * .92 } : { ...base, ...positioned, matched: false, relevance: 0 }; });
+    const scores = results.map(result => Number(result.viewScore ?? result.score ?? 0)), low = scores.length ? Math.min(...scores) : 0, high = scores.length ? Math.max(...scores) : 1, spread = Math.max(.001, high - low), byFile = new Map(results.map(result => [result.file, result])), nodes = baseScene.nodes.map(base => { const result = byFile.get(base.id), current = positions.get(base.id), positioned = current ? { layoutX: current.x, layoutY: current.y } : {}; return result ? { ...base, ...positioned, matched: true, generation: 1, relevance: .08 + (Number(result.viewScore ?? result.score ?? 0) - low) / spread * .92 } : { ...base, ...positioned, matched: false, relevance: 0 }; });
     return { state, scopeSignature: baseScene.scopeSignature, center: { label: state.anchor.value, hasQuery: true, resultCount: results.length, transition: 'provisional', guidedCategories: baseScene.center?.guidedCategories || [], appearance: state.frame?.appearance, dynamics: state.frame?.dynamics, forceField: baseScene.center?.forceField || null, mapMode: baseScene.center?.mapMode }, nodes, edges: baseScene.edges, roads: baseScene.roads, results, legend: this.legendFor(state), provisional: true };
   }
 

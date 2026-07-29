@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.44.0
+
+- Replaces the separate Atlas View editor with compact, live controls directly on the Atlas.
+- Introduces six universal standard Views: Meaning, Topics, Emotion, Purpose, Writing form, and Links.
+- Uses the same selected View in the primary Atlas, search popup, Atlas Navigator, and Atlas Companion.
+- Removes user-facing legacy lens and grouping controls so a View is the single reusable map recipe.
+- Adds in-place territory, orientation, scale, arrangement, relationship, dynamics, beacon, and cartography controls with automatic saving, preset reset, and custom View creation.
+
 ## 0.43.0
 
 - Replaces repeated global Atlas projection with a live particle field driven directly by cached note-to-note qualities.

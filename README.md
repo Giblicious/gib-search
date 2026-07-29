@@ -4,36 +4,31 @@ Local semantic search and a similarity graph for Obsidian.
 
 Gib Search indexes note content, headings, filenames, entities, and optional folder-path signals. Search results include compact source excerpts, semantic phrase emphasis, ranking controls, and a living graph of related notes.
 
-The search popup includes three coordinated lenses. **Relevance** gives the strongest overall matches while revealing the concepts within them, **Arguments** separates support and tension, and **Context** favors notes connected to the wider vault. A lens changes both result ordering and the map layout; Relevance is the default and can be changed in settings.
-
-The note-neighborhood pane offers the same lenses with the active note as its semantic center. Arguments compares relevant neighboring notes pairwise; it does not treat the first result or the active note as an authoritative claim.
-
-When Arguments finds a confident alignment or tension, its result card shows the exact query-relevant passage pair used for that judgment and names the counterpart note. These are source excerpts, not generated explanations.
+One View definition now controls the Atlas, search map, and Atlas Companion. The included Views are **Meaning**, **Topics**, **Emotion**, **Purpose**, **Writing form**, and **Links**. Choose the same View anywhere without translating between separate lens, grouping, and graph-mode controls.
 
 The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. Every note remains a particle, and all note pairs participate across short rolling sweeps. Views change the mixture of measured relationships; they do not rerun a global projection or replace the vault with a fixed neighbor sample.
 
 Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the established flat topographic design. Devices without WebGL 2 automatically retain the Canvas renderer.
 
-The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Relevance controls each result's preferred radius, while residual note-to-note meaning lets conceptual directions emerge naturally. Nonmatches remain as subdued spatial context, and ranked excerpts appear in the native Atlas Navigator pane.
+The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Search score controls each result's preferred radius, while the active View determines the relationships and arrangement around it. Nonmatches remain as subdued spatial context, and ranked excerpts appear in the native Atlas Navigator pane.
 
 Saved Atlas Views are built as a readable map formula:
 
 - **Territory** selects which notes exist in the landscape.
 - **Reference frame** leaves the map free, centers it on an idea, orients it with a constellation or two-pole axis.
-- **Relationship field** blends Meaning, Emotion, Purpose, Position, Form, and authored Links into one normalized note-to-note distance model.
+- **Relationship field** blends Meaning, Emotion, Purpose, Form, and authored Links into one normalized note-to-note distance model.
 - **Dynamics** controls contrast, cohesion, and spacing without inventing new relationships.
 - **Cartography** assigns color, dot size, terrain, and optional beacon regions independently from placement.
 
-The relationship field can use six measurements:
+The relationship field can use five measurements:
 
 - **Meaning** maps what the writing is about using semantic embeddings.
 - **Emotion** reads a continuous profile across 24 affective landmarks, including joy, gratitude, awe, longing, grief, despondency, anxiety, frustration, indignation, guilt, and determination. A note can express several at once.
 - **Purpose** distinguishes questioning, explaining, reflecting, persuading, comparing, planning, and summarizing.
-- **Position** compares passages directly with a reference claim and separates support, opposition, questioning, uncertainty, and neutral reporting.
 - **Form** combines local language inference with document structure to distinguish journals, essays, conversations, reference notes, narratives, and plans.
 - **Links** makes authored wikilinks contribute directly to distance alongside any analytical measurements.
 
-The View builder includes local starting templates while keeping the five parts independently editable. Its preview uses the complete selected Territory. Relationship and Dynamics sliders remix cached measurements live; they do not rebuild the graph. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes. Hovering an analyzed map node shows its strongest quality and the source passage behind that judgment.
+View controls live directly on the Atlas. Territory, orientation, scale, arrangement, relationship weights, dynamics, and cartography update the active landscape without opening a separate editor. Standard Views can be tuned or reset, and **Save as new view** creates a reusable custom View. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes.
 
 ## Install with BRAT
 
@@ -51,7 +46,7 @@ Each device builds its own local index. The first index can take several minutes
 - Notes, queries, embeddings, and indexes remain on the local device.
 - Inference runs directly inside Obsidian using the bundled WebAssembly engine.
 - BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached.
-- MobileBERT MNLI is downloaded the first time Arguments or a nonsemantic analytical View needs it. It runs locally and its judgments and text profiles are cached on the device.
+- MobileBERT MNLI is downloaded the first time a nonsemantic View needs it. It runs locally and its judgments and text profiles are cached on the device.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 
