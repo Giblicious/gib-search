@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.49.0
+
+- Replaces overlapping Frame, Scale, and tuning controls with explicit Scope, Forces, Visuals, and Environment primitives.
+- Adds composable vault filters for paths, filenames, extensions, tags, properties, authored links, dates, and file size.
+- Adds ordered force recipes with relationship sources, force types, strengths, ranges, optional idea anchors, and automatic migration of existing Views.
+- Adds visual mappings and an automatically derived map key for color, size, terrain, communities, labels, and link lines.
+- Keeps neighborhoods inside a soft boundary by translating whole relationship groups rather than compressing their internal shape.
+- Separates 20â€“40 Hz physics from interpolated 60 FPS drawing for smoother motion without increasing analysis cost.
+
 ## 0.48.0
 
 - Compiles contrastive relationship matrices into compact spring, bridge, and targeted-separation edges before animation.

@@ -73632,7 +73632,38 @@ function normalizeRelationships(value, legacySignal = "semantic") {
   return output;
 }
 function normalizeDynamics(value = {}) {
-  return { contrast: clamp(value.contrast ?? 0.58), cohesion: clamp(value.cohesion ?? 0.62), spacing: clamp(value.spacing ?? 0.55), spring: clamp(value.spring ?? 0.68), charge: clamp(value.charge ?? 0.56), selectivity: clamp(value.selectivity ?? 0.45), mutuality: clamp(value.mutuality ?? 0.7), bridges: clamp(value.bridges ?? 0.42), settling: clamp(value.settling ?? 0.68) };
+  return { contrast: clamp(value.contrast ?? 0.58), cohesion: clamp(value.cohesion ?? 0.62), spacing: clamp(value.spacing ?? 0.55), spring: clamp(value.spring ?? 0.68), charge: clamp(value.charge ?? 0.56), selectivity: clamp(value.selectivity ?? 0.45), mutuality: clamp(value.mutuality ?? 0.7), bridges: clamp(value.bridges ?? 0.42), settling: clamp(value.settling ?? 0.68), containment: clamp(value.containment ?? 0.62), physicsRate: clamp(value.physicsRate ?? 0.5) };
+}
+function normalizeScopeRule(rule = {}) {
+  return { id: String(rule.id || stableSignature(JSON.stringify(rule))), field: ["folder", "path", "name", "extension", "tag", "property", "linksTo", "linkedFrom", "size", "created", "modified"].includes(rule.field) ? rule.field : "folder", operator: ["is", "isNot", "contains", "notContains", "startsWith", "endsWith", "exists", "notExists", "greater", "less"].includes(rule.operator) ? rule.operator : "contains", key: String(rule.key || "").trim(), value: String(rule.value ?? "").trim() };
+}
+function defaultForces(relationships, dynamics) {
+  const rules2 = Object.entries(relationships).filter(([, strength]) => Number(strength) > 1e-3).map(([source, strength]) => ({ id: `relationship-${source}`, source, force: source === "links" ? "spring" : "attraction", strength: clamp(strength), range: dynamics.spacing, curve: "contrastive", enabled: true }));
+  rules2.push({ id: "collision", source: "constant", force: "collision", strength: 0.7, range: dynamics.spacing, curve: "linear", enabled: true }, { id: "charge", source: "constant", force: "repulsion", strength: dynamics.charge, range: 1, curve: "inverse-square", enabled: true }, { id: "containment", source: "constant", force: "containment", strength: dynamics.containment ?? 0.62, range: 0.82, curve: "soft-edge", enabled: true });
+  return rules2;
+}
+function normalizeForce(rule = {}) {
+  return { id: String(rule.id || stableSignature(JSON.stringify(rule))), source: Object.keys(TEXT_SIGNALS).includes(rule.source) || ["constant", "query", "fileSize", "inLinks", "outLinks"].includes(rule.source) ? rule.source : "semantic", force: ["spring", "attraction", "repulsion", "gravity", "axis", "collision", "charge", "containment", "flow"].includes(rule.force) ? rule.force : "attraction", strength: clamp(rule.strength ?? 0.5), range: clamp(rule.range ?? 0.5), curve: ["linear", "contrastive", "inverse-square", "soft-edge"].includes(rule.curve) ? rule.curve : "contrastive", anchor: String(rule.anchor || "").trim(), enabled: rule.enabled !== false };
+}
+function normalizeVisual(rule = {}) {
+  return { id: String(rule.id || stableSignature(JSON.stringify(rule))), source: Object.keys(TEXT_SIGNALS).includes(rule.source) || ["fileSize", "density", "relationship", "community", "links"].includes(rule.source) ? rule.source : "semantic", channel: ["color", "size", "elevation", "regions", "labels", "lines"].includes(rule.channel) ? rule.channel : "color", enabled: rule.enabled !== false };
+}
+function compareRule(actual, operator, expected) {
+  const values = Array.isArray(actual) ? actual.map(String) : [String(actual ?? "")], wanted = String(expected ?? ""), lower = wanted.toLowerCase(), matches3 = (value) => {
+    const text = value.toLowerCase();
+    if (operator === "is") return text === lower;
+    if (operator === "isNot") return text !== lower;
+    if (operator === "contains") return text.includes(lower);
+    if (operator === "notContains") return !text.includes(lower);
+    if (operator === "startsWith") return text.startsWith(lower);
+    if (operator === "endsWith") return text.endsWith(lower);
+    if (operator === "exists") return text.length > 0;
+    if (operator === "notExists") return text.length === 0;
+    if (operator === "greater") return Number(value) > Number(wanted);
+    if (operator === "less") return Number(value) < Number(wanted);
+    return false;
+  };
+  return operator === "isNot" || operator === "notContains" || operator === "notExists" ? values.every(matches3) : values.some(matches3);
 }
 function categoryAnchorLayout(categories, vectors, geometry) {
   const count = categories.length, radial = categories.map((category, index3) => {
@@ -73702,10 +73733,10 @@ var init_atlas_engine = __esm({
     DEFAULT_ATLAS_VIEW = {
       id: "all-notes",
       name: "Meaning",
-      scope: { folders: [], excludeFolders: [], tags: [], properties: {}, extensions: ["md", "txt", "markdown"] },
+      scope: { match: "all", rules: [], folders: [], excludeFolders: [], tags: [], properties: {}, extensions: ["md", "txt", "markdown"] },
       anchor: { type: "default" },
       scale: "default",
-      frame: { mode: "natural", referenceFrame: "free", arrangement: "meaning", signal: "semantic", reference: "", geometry: "semantic", relationships: { semantic: 1, emotion: 0, purpose: 0, position: 0, form: 0, links: 0 }, dynamics: { contrast: 0.58, cohesion: 0.62, spacing: 0.55, spring: 0.68, charge: 0.56, selectivity: 0.45, mutuality: 0.7, bridges: 0.42, settling: 0.68 }, categoryPull: 0.78, localCohesion: 0.26, sensitivity: 0.58, unclaimedThreshold: 0.34, appearance: { colorBy: "semantic", sizeBy: "file", terrain: "density", regions: false, linkLines: false }, categories: [] }
+      frame: { mode: "natural", referenceFrame: "free", arrangement: "meaning", signal: "semantic", reference: "", geometry: "semantic", relationships: { semantic: 1, emotion: 0, purpose: 0, position: 0, form: 0, links: 0 }, forces: [], dynamics: { contrast: 0.58, cohesion: 0.62, spacing: 0.55, spring: 0.68, charge: 0.56, selectivity: 0.45, mutuality: 0.7, bridges: 0.42, settling: 0.68, containment: 0.62, physicsRate: 0.5 }, environment: { collision: 0.7, charge: 0.56, containment: 0.62, damping: 0.72, physicsRate: 0.5 }, categoryPull: 0.78, localCohesion: 0.26, sensitivity: 0.58, unclaimedThreshold: 0.34, appearance: { colorBy: "semantic", sizeBy: "file", terrain: "density", regions: false, linkLines: false }, visuals: [], categories: [] }
     };
     ATLAS_VIEW_TEMPLATES = {
       meaning: { id: "all-notes", name: "Meaning", signal: "semantic", arrangement: "meaning", frameMode: "natural", relationships: { semantic: 1 }, description: "See the vault by similarity of ideas.", categories: [] },
@@ -73750,15 +73781,15 @@ var init_atlas_engine = __esm({
         return [...byId.values()];
       }
       normalizeView(view = {}) {
-        const scope = view.scope || {}, extensions = Array.isArray(scope.extensions) && scope.extensions.length ? scope.extensions.map((value) => String(value).toLowerCase().replace(/^\./, "")) : DEFAULT_ATLAS_VIEW.scope.extensions, frame = view.frame || {}, legacyMode = frame.mode === "guided" ? "constellation" : view.anchor?.type === "query" ? "center" : "free", referenceFrame = ["free", "center", "constellation", "axis"].includes(frame.referenceFrame) ? frame.referenceFrame : legacyMode;
+        const scope = view.scope || {}, extensions = Array.isArray(scope.extensions) && scope.extensions.length ? scope.extensions.map((value) => String(value).toLowerCase().replace(/^\./, "")) : DEFAULT_ATLAS_VIEW.scope.extensions, frame = view.frame || {}, legacyMode = frame.mode === "guided" ? "constellation" : view.anchor?.type === "query" ? "center" : "free", referenceFrame = ["free", "center", "constellation", "axis"].includes(frame.referenceFrame) ? frame.referenceFrame : legacyMode, relationships = normalizeRelationships(frame.relationships, validTextSignal(frame.signal)), dynamics = normalizeDynamics(frame.dynamics), environment = { collision: clamp(frame.environment?.collision ?? 0.7), charge: clamp(frame.environment?.charge ?? dynamics.charge), containment: clamp(frame.environment?.containment ?? dynamics.containment), damping: clamp(frame.environment?.damping ?? 0.72), physicsRate: clamp(frame.environment?.physicsRate ?? dynamics.physicsRate) }, forces = (frame.forces?.length ? frame.forces : defaultForces(relationships, dynamics)).map(normalizeForce), visuals = (frame.visuals?.length ? frame.visuals : [{ source: frame.appearance?.colorBy === "emotion" ? "emotion" : "semantic", channel: "color" }, { source: frame.appearance?.sizeBy === "uniform" ? "semantic" : "fileSize", channel: "size" }, { source: frame.appearance?.terrain === "intensity" ? "relationship" : "density", channel: "elevation", enabled: frame.appearance?.terrain !== "off" }, { source: "community", channel: "regions", enabled: frame.appearance?.regions === true }, { source: "community", channel: "labels", enabled: frame.appearance?.regions === true }, { source: "links", channel: "lines", enabled: frame.appearance?.linkLines === true }]).map(normalizeVisual);
         return {
           id: String(view.id || stableSignature(view.name || "all-notes")),
           name: String(view.name || "All Notes"),
           description: String(view.description || "").trim(),
-          scope: { folders: (scope.folders || []).map(normalizedPath).filter(Boolean), excludeFolders: (scope.excludeFolders || []).map(normalizedPath).filter(Boolean), tags: (scope.tags || []).map((tag) => String(tag).replace(/^#/, "")).filter(Boolean), properties: { ...scope.properties || {} }, extensions },
+          scope: { match: scope.match === "any" ? "any" : "all", rules: (scope.rules || []).map(normalizeScopeRule), folders: (scope.folders || []).map(normalizedPath).filter(Boolean), excludeFolders: (scope.excludeFolders || []).map(normalizedPath).filter(Boolean), tags: (scope.tags || []).map((tag) => String(tag).replace(/^#/, "")).filter(Boolean), properties: { ...scope.properties || {} }, extensions },
           anchor: view.anchor && typeof view.anchor === "object" ? { ...view.anchor } : { type: "default" },
           scale: view.scale === "default" ? "default" : validAtlasScale(view.scale),
-          frame: { mode: ["constellation", "axis"].includes(referenceFrame) ? "guided" : "natural", referenceFrame, arrangement: ["meaning", "topics", "links"].includes(frame.arrangement) ? frame.arrangement : "meaning", signal: validTextSignal(frame.signal), reference: String(frame.reference || "").trim(), geometry: ["semantic", "radial", "manual"].includes(frame.geometry) ? frame.geometry : "semantic", relationships: normalizeRelationships(frame.relationships, validTextSignal(frame.signal)), dynamics: normalizeDynamics(frame.dynamics), categoryPull: clamp(frame.categoryPull ?? 0.78), localCohesion: clamp(frame.localCohesion ?? 0.26), sensitivity: clamp(frame.sensitivity ?? 0.58), unclaimedThreshold: clamp(frame.unclaimedThreshold ?? 0.34), appearance: { colorBy: ["category", "semantic", "emotion", "relationship", "none"].includes(frame.appearance?.colorBy) ? frame.appearance.colorBy : frame.mode === "guided" ? "category" : "semantic", sizeBy: frame.appearance?.sizeBy === "uniform" ? "uniform" : "file", terrain: ["density", "intensity", "off"].includes(frame.appearance?.terrain) ? frame.appearance.terrain : "density", regions: frame.appearance?.regions === true, linkLines: frame.appearance?.linkLines === true }, categories: (frame.categories || []).map(normalizeCategory).filter((category) => category.name).slice(0, 12) }
+          frame: { mode: ["constellation", "axis"].includes(referenceFrame) ? "guided" : "natural", referenceFrame, arrangement: ["meaning", "topics", "links"].includes(frame.arrangement) ? frame.arrangement : "meaning", signal: validTextSignal(frame.signal), reference: String(frame.reference || "").trim(), geometry: ["semantic", "radial", "manual"].includes(frame.geometry) ? frame.geometry : "semantic", relationships, forces, dynamics: { ...dynamics, charge: environment.charge, containment: environment.containment, physicsRate: environment.physicsRate }, environment, categoryPull: clamp(frame.categoryPull ?? 0.78), localCohesion: clamp(frame.localCohesion ?? 0.26), sensitivity: clamp(frame.sensitivity ?? 0.58), unclaimedThreshold: clamp(frame.unclaimedThreshold ?? 0.34), appearance: { colorBy: ["category", "semantic", "emotion", "relationship", "none"].includes(frame.appearance?.colorBy) ? frame.appearance.colorBy : frame.mode === "guided" ? "category" : "semantic", sizeBy: frame.appearance?.sizeBy === "uniform" ? "uniform" : "file", terrain: ["density", "intensity", "off"].includes(frame.appearance?.terrain) ? frame.appearance.terrain : "density", regions: frame.appearance?.regions === true, labels: frame.appearance?.labels === true || frame.appearance?.regions === true, linkLines: frame.appearance?.linkLines === true }, visuals, categories: (frame.categories || []).map(normalizeCategory).filter((category) => category.name).slice(0, 12) }
         };
       }
       activeView(id2 = this.plugin.settings?.atlasHomeViewId) {
@@ -73769,32 +73800,52 @@ var init_atlas_engine = __esm({
         return { viewId: view.id, viewName: view.name, scope: copy2(view.scope), anchor, arrangement, scale, frame: copy2(view.frame), selection: overrides.selection || null };
       }
       resolveScope(state) {
-        const scope = state?.scope || DEFAULT_ATLAS_VIEW.scope, extensions = new Set(scope.extensions || DEFAULT_ATLAS_VIEW.scope.extensions), folders = scope.folders || [], excluded = scope.excludeFolders || [], tags = new Set((scope.tags || []).map((value) => String(value).replace(/^#/, ""))), properties = Object.entries(scope.properties || {}), files = this.plugin.app.vault.getFiles().filter((file) => {
+        const scope = state?.scope || DEFAULT_ATLAS_VIEW.scope, extensions = new Set(scope.extensions || DEFAULT_ATLAS_VIEW.scope.extensions), folders = scope.folders || [], excluded = scope.excludeFolders || [], tags = new Set((scope.tags || []).map((value) => String(value).replace(/^#/, ""))), properties = Object.entries(scope.properties || {}), rules2 = (scope.rules || []).map(normalizeScopeRule), resolved = this.plugin.app.metadataCache.resolvedLinks || {}, incoming = /* @__PURE__ */ new Map();
+        for (const [source, targets] of Object.entries(resolved)) for (const target of Object.keys(targets || {})) {
+          const values = incoming.get(target) || [];
+          values.push(source);
+          incoming.set(target, values);
+        }
+        const files = this.plugin.app.vault.getFiles().filter((file) => {
           if (!extensions.has(String(file.extension || "").toLowerCase())) return false;
           if (folders.length && !folders.some((folder) => pathWithin(file.path, folder))) return false;
           if (excluded.some((folder) => pathWithin(file.path, folder))) return false;
-          if (!tags.size && !properties.length) return true;
           const cache2 = this.plugin.app.metadataCache.getFileCache(file), fileTags = /* @__PURE__ */ new Set([...(cache2?.tags || []).map((value) => String(value.tag || "").replace(/^#/, "")), ...Object.keys(cache2?.frontmatter || {}).filter((key) => key === "tags").flatMap(() => {
             const value = cache2?.frontmatter?.tags;
             return Array.isArray(value) ? value : String(value || "").split(/[ ,]+/);
           }).map((value) => String(value).replace(/^#/, ""))]);
           if (tags.size && ![...tags].every((tag) => fileTags.has(tag))) return false;
-          return properties.every(([key, expected]) => {
+          if (!properties.every(([key, expected]) => {
             const actual = cache2?.frontmatter?.[key];
             return Array.isArray(expected) ? expected.includes(actual) : Array.isArray(actual) ? actual.includes(expected) : actual === expected;
+          })) return false;
+          const matches3 = rules2.map((rule) => {
+            let actual = "";
+            if (rule.field === "folder") actual = file.parent?.path || "";
+            else if (rule.field === "path") actual = file.path;
+            else if (rule.field === "name") actual = file.basename;
+            else if (rule.field === "extension") actual = file.extension;
+            else if (rule.field === "tag") actual = [...fileTags];
+            else if (rule.field === "property") actual = cache2?.frontmatter?.[rule.key];
+            else if (rule.field === "linksTo") actual = Object.keys(resolved[file.path] || {});
+            else if (rule.field === "linkedFrom") actual = incoming.get(file.path) || [];
+            else if (rule.field === "size") actual = file.stat?.size || 0;
+            else if (rule.field === "created") actual = file.stat?.ctime || 0;
+            else if (rule.field === "modified") actual = file.stat?.mtime || 0;
+            return compareRule(actual, rule.operator, rule.value);
           });
+          return !matches3.length || (scope.match === "any" ? matches3.some(Boolean) : matches3.every(Boolean));
         });
         return { files, paths: files.map((file) => file.path), signature: stableSignature(JSON.stringify([state.viewId, scope, files.map((file) => [file.path, file.stat?.mtime || 0])])) };
       }
       legendFor(state) {
-        const active = Object.entries(state.frame?.relationships || {}).filter(([, weight]) => Number(weight) > 0).map(([id2]) => TEXT_SIGNALS[id2]?.label || id2), common = [{ key: "distance", label: state.anchor?.type === "query" ? "Distance from center" : "Distance", meaning: state.anchor?.type === "query" ? "Relevance to the anchor" : active.length ? active.join(" + ") : "Relationship field" }, { key: "size", label: "Dot size", meaning: state.frame?.appearance?.sizeBy === "uniform" ? "Uniform" : "Relative file size" }];
-        if (state.frame?.mode === "guided") common.push({ key: "beacon", label: "Beacon", meaning: "Optional reference-frame attraction" });
-        if (state.frame?.appearance?.terrain === "intensity") common.push({ key: "terrain", label: "Terrain", meaning: "Strongest active profile" });
-        else if (state.frame?.appearance?.terrain !== "off") common.push({ key: "terrain", label: "Terrain", meaning: "Local note density" });
-        if (state.frame?.appearance?.colorBy === "emotion") common.push({ key: "color", label: "Color", meaning: "Emotional profile" });
-        if (state.arrangement === "topics") return [...common, { key: "color", label: "Color", meaning: "Topic direction" }, { key: "region", label: "Region", meaning: "Soft topical neighborhood" }];
-        if (state.arrangement === "links") return [...common, { key: "line", label: "Road", meaning: "Authored wikilink" }];
-        return state.frame?.appearance?.colorBy === "emotion" ? common : [...common, { key: "color", label: "Color", meaning: state.frame?.appearance?.colorBy === "none" ? "Monochrome" : state.frame?.appearance?.colorBy === "category" ? "Beacon affinity" : "Meaning direction" }];
+        const active = Object.entries(state.frame?.relationships || {}).filter(([, weight]) => Number(weight) > 0).map(([id2]) => TEXT_SIGNALS[id2]?.label || id2), mappings = (state.frame?.visuals || []).filter((rule) => rule.enabled !== false), sourceName = (source) => TEXT_SIGNALS[source]?.label || ({ fileSize: "Relative file size", density: "Local note density", relationship: "Distinctive relationship activity", community: "Community", links: "Authored wikilinks" }[source] || source), common = [{ key: "distance", label: state.anchor?.type === "query" ? "Distance from center" : "Distance", meaning: state.anchor?.type === "query" ? "Relevance to the anchor" : active.length ? active.join(" + ") : "Relationship field" }];
+        for (const mapping3 of mappings) {
+          const labels = { color: "Color", size: "Dot size", elevation: "Terrain", regions: "Zones", labels: "Labels", lines: "Lines" }, item = { key: mapping3.channel, label: labels[mapping3.channel] || mapping3.channel, meaning: sourceName(mapping3.source) };
+          if (!common.some((value) => value.key === item.key)) common.push(item);
+        }
+        if (state.frame?.mode === "guided" && !common.some((item) => item.key === "beacon")) common.push({ key: "beacon", label: "Gravity point", meaning: "A declared idea or pole" });
+        return common;
       }
       sceneKey(state, scope, results, options) {
         const index3 = this.plugin.search, indexSignature = `${index3.meta.length}:${index3.vectors.length}:${index3.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)}`;
@@ -73813,7 +73864,7 @@ var init_atlas_engine = __esm({
           profiles.set(signal, await this.plugin.search.textSignalProfiles(signal, files, state.frame?.reference || ""));
         }
         const linkPairs = new Set((roads || []).map((road) => edgeKey(road.source, road.target)));
-        return { weights, profiles, linkPairs, dynamics: { ...state.frame?.dynamics || {} }, reference: String(state.frame?.reference || "") };
+        return { weights, profiles, linkPairs, rules: copy2(state.frame?.forces || []), dynamics: { ...state.frame?.dynamics || {}, ...state.frame?.environment || {} }, reference: String(state.frame?.reference || "") };
       }
       applyRelationshipPresentation(state, nodes, field) {
         const colorBy = state.frame?.appearance?.colorBy || "semantic", preferredSignal = colorBy === "emotion" ? "emotion" : Object.entries(field.weights || {}).filter(([signal]) => !["semantic", "links"].includes(signal)).sort((a2, b) => Number(b[1]) - Number(a2[1]))[0]?.[0], signalProfiles = preferredSignal ? field.profiles.get(preferredSignal) : null, emotional = field.profiles.get("emotion");
@@ -75262,15 +75313,17 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   setForceRecipe(frame = {}) {
     if (!this.forceField) return false;
-    this.forceField.weights = { ...frame.relationships || this.forceField.weights || {} };
-    this.forceField.dynamics = { ...frame.dynamics || this.forceField.dynamics || {} };
-    this.center = { ...this.center || {}, dynamics: this.forceField.dynamics, appearance: { ...frame.appearance || this.center?.appearance || {} } };
-    const colorBy = this.center.appearance?.colorBy || "semantic", uniform = this.center.appearance?.sizeBy === "uniform", weightedSignals = Object.entries(this.forceField.weights).filter(([, weight]) => Number(weight) > 1e-3), totalWeight = weightedSignals.reduce((sum, [, weight]) => sum + Number(weight), 0) || 1;
+    const rules2 = (frame.forces || []).filter((rule) => rule.enabled !== false), relationshipRules = rules2.filter((rule) => TEXT_SIGNALS2[rule.source] && !["collision", "charge", "containment", "flow"].includes(rule.force)), weights = relationshipRules.length ? Object.fromEntries(Object.keys(TEXT_SIGNALS2).map((signal) => [signal, Math.max(0, ...relationshipRules.filter((rule) => rule.source === signal).map((rule) => Number(rule.strength || 0)))])) : { ...frame.relationships || this.forceField.weights || {} }, environment = frame.environment || {}, dynamics = { ...frame.dynamics || this.forceField.dynamics || {}, charge: Number(environment.charge ?? frame.dynamics?.charge ?? this.forceField.dynamics?.charge ?? 0.56), containment: Number(environment.containment ?? frame.dynamics?.containment ?? 0.62), physicsRate: Number(environment.physicsRate ?? frame.dynamics?.physicsRate ?? 0.5), damping: Number(environment.damping ?? 0.72), collision: Number(environment.collision ?? 0.7) };
+    this.forceField.weights = weights;
+    this.forceField.dynamics = dynamics;
+    this.forceField.rules = rules2;
+    this.center = { ...this.center || {}, dynamics, environment, appearance: { ...frame.appearance || this.center?.appearance || {} }, visuals: frame.visuals || this.center?.visuals || [] };
+    const colorMapping = (frame.visuals || []).find((rule) => rule.enabled !== false && rule.channel === "color"), sizeMapping = (frame.visuals || []).find((rule) => rule.enabled !== false && rule.channel === "size"), terrainMapping = (frame.visuals || []).find((rule) => rule.enabled !== false && rule.channel === "elevation"), colorBy = colorMapping?.source === "emotion" ? "emotion" : colorMapping?.source === "community" ? "category" : colorMapping ? "semantic" : this.center.appearance?.colorBy || "semantic", uniform = sizeMapping ? sizeMapping.source !== "fileSize" : this.center.appearance?.sizeBy === "uniform", weightedSignals = Object.entries(weights).filter(([, weight]) => Number(weight) > 1e-3), totalWeight = weightedSignals.reduce((sum, [, weight]) => sum + Number(weight), 0) || 1;
     for (const node of this.nodes) {
       node.topicHue = colorBy === "emotion" && Number.isFinite(node.emotionHue) ? node.emotionHue : colorBy === "category" && Number.isFinite(node.categoryHue) ? node.categoryHue : colorBy === "none" ? null : node.semanticHue ?? node.topicHue;
       node.fileScale = uniform ? 0.35 : Number(node.sourceFileScale ?? node.fileScale ?? 0.35);
       node.relationshipIntensity = weightedSignals.reduce((sum, [signal, weight]) => sum + Number(weight) * Number(signal === "semantic" ? node.uniqueness ?? node.relevance ?? 0.5 : node.signalIntensities?.[signal] ?? 0), 0) / totalWeight;
-      if (this.center.appearance?.terrain === "intensity") node.terrainValue = node.relationshipIntensity;
+      if (terrainMapping?.source === "relationship" || this.center.appearance?.terrain === "intensity") node.terrainValue = node.relationshipIntensity;
     }
     this.prepareRelationshipForces();
     this.lastTerrainAt = 0;
@@ -75300,12 +75353,15 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   prepareSparseRelationshipEdges() {
     const field = this.forceField, bodies = this.forceBodies || [];
     if (!field) return;
-    const dynamics = field.dynamics || {}, selectivity = Number(dynamics.selectivity ?? 0.45), threshold = 0.02 + selectivity * 0.24, weights = Object.entries(field.weights || {}).map(([signal, weight]) => [signal, Number(weight) * Number(field.reliability?.[signal] ?? 1)]).filter(([signal, weight]) => field.components[signal] && weight > 1e-3), total = weights.reduce((sum, [, weight]) => sum + weight, 0) || 1, edges = [], degrees = new Uint16Array(bodies.length);
+    const dynamics = field.dynamics || {}, selectivity = Number(dynamics.selectivity ?? 0.45), threshold = 0.02 + selectivity * 0.24, rules2 = field.rules || [], weights = Object.entries(field.weights || {}).map(([signal, weight]) => {
+      const rule = rules2.filter((value) => value.enabled !== false && value.source === signal).sort((a2, b) => Number(b.strength || 0) - Number(a2.strength || 0))[0];
+      return [signal, Number(weight) * Number(field.reliability?.[signal] ?? 1), rule?.force === "repulsion" ? -1 : 1];
+    }).filter(([signal, weight]) => field.components[signal] && weight > 1e-3), total = weights.reduce((sum, [, weight]) => sum + weight, 0) || 1, edges = [], degrees = new Uint16Array(bodies.length);
     for (let offset2 = 0; offset2 < field.sparsePairs.length; offset2 += 3) {
       const first = field.sparsePairs[offset2], second = field.sparsePairs[offset2 + 1], pair = field.sparsePairs[offset2 + 2];
       let distinctiveness = 0, mutualWeight = 0, positiveWeight = 0;
-      for (const [signal, weight] of weights) {
-        const component = Number(field.components[signal][pair] || 0);
+      for (const [signal, weight, polarity] of weights) {
+        const component = Number(field.components[signal][pair] || 0) * polarity;
         distinctiveness += component * weight;
         if (component > 0) {
           positiveWeight += component * weight;
@@ -75322,6 +75378,25 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     for (const edge of edges) edge.degreeScale = 1 / Math.sqrt(Math.max(1, Math.max(degrees[edge.first], degrees[edge.second])));
     this.forceEdges = edges;
+    const parent = Int32Array.from({ length: bodies.length }, (_2, index3) => index3), find9 = (value) => {
+      while (parent[value] !== value) {
+        parent[value] = parent[parent[value]];
+        value = parent[value];
+      }
+      return value;
+    }, join = (first, second) => {
+      first = find9(first);
+      second = find9(second);
+      if (first !== second) parent[second] = first;
+    };
+    for (const edge of edges) if (edge.sign > 0 && edge.strength > 0.18) join(edge.first, edge.second);
+    const groups = /* @__PURE__ */ new Map();
+    for (let index3 = 0; index3 < bodies.length; index3++) {
+      const root = find9(index3), members = groups.get(root) || [];
+      members.push(bodies[index3]);
+      groups.set(root, members);
+    }
+    this.forceGroups = [...groups.values()];
     for (const body of bodies) body.fieldActivity = 0;
     for (const edge of edges) {
       bodies[edge.first].fieldActivity = Math.max(Number(bodies[edge.first].fieldActivity || 0), edge.strength);
@@ -75329,10 +75404,29 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     for (const body of bodies) body.terrainValue = body.fieldActivity;
   }
+  applySoftContainment(nodes, alpha2) {
+    const strength = Number(this.forceField?.dynamics?.containment ?? 0.62);
+    if (!nodes?.length || strength <= 1e-3) return;
+    const active = new Set(nodes), groups = (this.forceGroups || []).map((group) => group.filter((node) => active.has(node))).filter((group) => group.length), limit = 0.92, gain = 18e-4 * strength * Math.max(0.12, alpha2);
+    for (const group of groups) {
+      const centerX2 = group.reduce((sum, node) => sum + node.x, 0) / group.length, centerY2 = group.reduce((sum, node) => sum + node.y, 0) / group.length, groupRadius = Math.max(0, ...group.map((node) => Math.hypot(node.x - centerX2, node.y - centerY2))), distance = Math.hypot(centerX2, centerY2), allowed = Math.max(0.34, limit - Math.min(0.38, groupRadius * 0.35));
+      if (distance <= allowed) continue;
+      const pressure = Math.tanh((distance - allowed) * 3), dx = centerX2 / Math.max(1e-3, distance), dy = centerY2 / Math.max(1e-3, distance);
+      for (const node of group) if (node !== this.dragging) {
+        node.vx -= dx * pressure * gain;
+        node.vy -= dy * pressure * gain;
+      }
+    }
+    const centerX = nodes.reduce((sum, node) => sum + node.x, 0) / nodes.length, centerY = nodes.reduce((sum, node) => sum + node.y, 0) / nodes.length;
+    for (const node of nodes) if (node !== this.dragging) {
+      node.vx -= centerX * gain * 0.35;
+      node.vy -= centerY * gain * 0.35;
+    }
+  }
   applyRelationshipForces(alpha2, querySettling = false) {
     const field = this.forceField, bodies = this.forceBodies, edges = this.forceEdges || [];
     if (!field || bodies.length < 2 || this.mapGroupingMode === "links") return;
-    const dynamics = field.dynamics || {}, contrast = Number(dynamics.contrast ?? 0.58), cohesion = Number(dynamics.cohesion ?? 0.62), spacing = Number(dynamics.spacing ?? 0.55), spring = Number(dynamics.spring ?? 0.68), separation = Number(dynamics.charge ?? 0.56), mutualBoost = Number(dynamics.mutuality ?? 0.7), bridgeStrength = Number(dynamics.bridges ?? 0.42), settling = Number(dynamics.settling ?? 0.68), temperature = Math.max(0.1, Number(alpha2) || 0) * (0.48 + settling * 1.35);
+    const dynamics = field.dynamics || {}, contrast = Number(dynamics.contrast ?? 0.58), cohesion = Number(dynamics.cohesion ?? 0.62), spacing = Number(dynamics.spacing ?? 0.55), spring = Number(dynamics.spring ?? 0.68), separation = Number(dynamics.charge ?? 0.56), mutualBoost = Number(dynamics.mutuality ?? 0.7), bridgeStrength = Number(dynamics.bridges ?? 0.42), settling = Number(dynamics.settling ?? 0.68), activeRules = (field.rules || []).filter((rule) => rule.enabled !== false), pairRules = activeRules.filter((rule) => TEXT_SIGNALS2[rule.source] && !["gravity", "axis"].includes(rule.force)), rangeScale = pairRules.length ? pairRules.reduce((sum, rule) => sum + Number(rule.range ?? 0.5) * Number(rule.strength || 0), 0) / Math.max(1e-3, pairRules.reduce((sum, rule) => sum + Number(rule.strength || 0), 0)) : 0.5, queryRule = activeRules.filter((rule) => rule.source === "query" && ["gravity", "attraction"].includes(rule.force)).sort((a2, b) => Number(b.strength || 0) - Number(a2.strength || 0))[0], queryStrength = queryRule ? Number(queryRule.strength || 0) : 1, temperature = Math.max(0.1, Number(alpha2) || 0) * (0.48 + settling * 1.35);
     for (const edge of edges) {
       const a2 = bodies[edge.first], b = bodies[edge.second], active = !this.hasQuery || this.pendingQuery || a2.matched && b.matched;
       if (!active || a2 === this.dragging && b === this.dragging) continue;
@@ -75342,10 +75436,10 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       const salience = edge.strength ** Math.max(0.56, 1.25 - contrast * 0.65);
       let force = 0;
       if (edge.sign > 0) {
-        const desired = 0.052 + (1 - salience) * (0.16 + spacing * 0.14), mutualGain = 1 + edge.mutual * mutualBoost * 1.25, bridgeGain = bridgeStrength + edge.mutual * (1 - bridgeStrength), error = Math.max(-0.2, Math.min(0.55, distance - desired));
+        const desired = 0.038 + rangeScale * 0.08 + (1 - salience) * (0.11 + spacing * 0.14), mutualGain = 1 + edge.mutual * mutualBoost * 1.25, bridgeGain = bridgeStrength + edge.mutual * (1 - bridgeStrength), error = Math.max(-0.2, Math.min(0.55, distance - desired));
         force = error * 0.018 * spring * (0.55 + cohesion) * salience * mutualGain * bridgeGain * edge.degreeScale * temperature;
       } else {
-        const desired = 0.42 + salience * (0.38 + spacing * 0.2), error = Math.min(0, distance - desired);
+        const desired = 0.3 + rangeScale * 0.28 + salience * (0.26 + spacing * 0.2), error = Math.min(0, distance - desired);
         force = error * 0.012 * separation * salience * edge.degreeScale * temperature;
       }
       force = Math.max(-9e-3, Math.min(9e-3, force));
@@ -75358,7 +75452,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         b.vy -= dy * force;
       }
     }
-    if (querySettling && field.relevance && this.queryPresence > 0.02) {
+    if (querySettling && field.relevance && this.queryPresence > 0.02 && queryStrength > 1e-3) {
       const query = this.queryNode, radialScale = 0.58 + spacing * 0.25;
       for (let index3 = 0; index3 < bodies.length; index3++) {
         const node = bodies[index3];
@@ -75366,7 +75460,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         let dx = query.x - node.x, dy = query.y - node.y, distance = Math.max(0.018, Math.hypot(dx, dy));
         dx /= distance;
         dy /= distance;
-        const relevance = Math.max(0, Math.min(1, Number(field.relevance[index3] || 0))), desired = 0.065 + (1 - relevance) * radialScale, force = Math.tanh((distance - desired) * 3.8) * 21e-4 * (0.45 + cohesion) * Math.max(alpha2, 0.12) * (0.65 + settling);
+        const relevance = Math.max(0, Math.min(1, Number(field.relevance[index3] || 0))), desired = 0.065 + (1 - relevance) * radialScale, force = Math.tanh((distance - desired) * 3.8) * 21e-4 * queryStrength * (0.45 + cohesion) * Math.max(alpha2, 0.12) * (0.65 + settling);
         node.vx += dx * force;
         node.vy += dy * force;
         if (query !== this.dragging) {
@@ -75443,7 +75537,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   collisionDistance(a2, b, queryMode = this.hasQuery) {
     if (a2?.isQuery || b?.isQuery) return 0.052 + Math.max(0, Math.min(1, Number((a2?.isQuery ? b : a2)?.fileScale ?? 0.35))) * 0.014;
-    return (queryMode ? 0.035 + (Number(a2.fileScale || 0) + Number(b.fileScale || 0)) * 0.022 : 0.016 + (Number(a2.fileScale || 0) + Number(b.fileScale || 0)) * 0.012) * (queryMode ? 1 : Number(this.tuning?.collisionSpacing || 1));
+    const collision = 0.55 + Number(this.forceField?.dynamics?.collision ?? 0.7) * 0.65;
+    return (queryMode ? 0.035 + (Number(a2.fileScale || 0) + Number(b.fileScale || 0)) * 0.022 : 0.016 + (Number(a2.fileScale || 0) + Number(b.fileScale || 0)) * 0.012) * (queryMode ? collision : Number(this.tuning?.collisionSpacing || 1) * collision);
   }
   resolveLayoutOverlaps(nodes, includeCenter) {
     const values = nodes || [];
@@ -75971,22 +76066,16 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     if (!linkMode) {
       const centeringBodies = querySettling ? [query, ...foreground] : this.queryPresence > 0.04 ? [query, ...activeNodes] : activeNodes;
-      if (centeringBodies.length) {
-        const centerX = centeringBodies.reduce((sum, body) => sum + body.x, 0) / centeringBodies.length, centerY = centeringBodies.reduce((sum, body) => sum + body.y, 0) / centeringBodies.length, centering = 12e-4 * alpha2;
-        for (const body of centeringBodies) if (body !== this.dragging) {
-          body.vx -= centerX * centering;
-          body.vy -= centerY * centering;
-        }
-      }
+      this.applySoftContainment(centeringBodies.filter((body) => !body.isQuery), alpha2);
     }
-    const bodies = this.queryPresence > 0.04 ? [query, ...this.nodes] : this.nodes;
+    const damping = 0.8 + Number(this.forceField?.dynamics?.damping ?? 0.72) * 0.13, bodies = this.queryPresence > 0.04 ? [query, ...this.nodes] : this.nodes;
     for (const body of bodies) {
       if (body === this.dragging) {
         body.vx = body.vy = 0;
         continue;
       }
-      body.vx *= 0.86;
-      body.vy *= 0.86;
+      body.vx *= damping;
+      body.vy *= damping;
       body.x += body.vx;
       body.y += body.vy;
     }
@@ -76012,7 +76101,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
       if (node === this.dragging) continue;
       const phase = stableMapAngle(node.id), speed = 12e-5 + phase / (Math.PI * 2) * 55e-6, orbit = 22e-4 + Math.max(0, Math.min(1, Number(node.fileScale || 0.35))) * 24e-4, angle = now * speed + phase;
       if (livingField) {
-        const flow = 18e-7 + orbit * 22e-5;
+        const configuredFlow = (this.forceField?.rules || []).filter((rule) => rule.enabled !== false && rule.force === "flow").reduce((sum, rule) => sum + Number(rule.strength || 0), 0), flow = (12e-7 + orbit * 16e-5) * (0.45 + configuredFlow);
         node.vx += Math.cos(angle) * flow;
         node.vy += Math.sin(angle * 0.83 + phase) * flow;
         node.vx *= 0.935;
@@ -76052,6 +76141,8 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     }
     this.alpha = Math.max(this.alpha, alpha2);
     if (this.simulationFrame) return;
+    this.lastRenderAt = 0;
+    this.lastPhysicsAt = 0;
     const tick = (now) => {
       this.simulationFrame = null;
       if (!this.canvas.isConnected) return;
@@ -76067,11 +76158,19 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         this.lastTerrainAt = 0;
         this.lastCommunityAt = 0;
       }
-      const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches, activePhysics = this.alpha > 0.012 || this.dragging || this.pendingQuery;
-      if (!reducedMotion) {
+      const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches, activePhysics = this.alpha > 0.012 || this.dragging || this.pendingQuery, physicsRate = 20 + Number(this.forceField?.dynamics?.physicsRate ?? 0.5) * 20, interval = 1e3 / physicsRate;
+      if (!this.lastPhysicsAt) this.lastPhysicsAt = now - interval;
+      if (!reducedMotion && now - this.lastPhysicsAt >= interval) {
+        const bodies = [this.queryNode, ...this.nodes];
+        for (const body of bodies) {
+          body.previousX = Number(body.x);
+          body.previousY = Number(body.y);
+        }
         if (activePhysics) this.physicsStep(Math.max(this.alpha, 0.025));
         else this.idlePhysicsStep(now);
-      } else {
+        this.lastPhysicsAt = now;
+        this.alpha = Math.max(0, this.alpha * (this.mapGroupingMode === "links" ? 0.986 : 0.978) - 18e-5);
+      } else if (reducedMotion) {
         this.viewportInsets = { ...this.targetViewportInsets };
         this.queryPresence = this.targetQueryPresence;
         this.cameraZoom = this.hasQuery ? 1.35 : 1;
@@ -76086,10 +76185,15 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
           node.y = node.layoutY;
         }
       }
-      this.alpha = Math.max(0, this.alpha * (this.mapGroupingMode === "links" ? 0.992 : 0.984) - 12e-5);
+      const blend = reducedMotion ? 1 : Math.max(0, Math.min(1, (now - this.lastPhysicsAt) / interval));
+      for (const body of [this.queryNode, ...this.nodes]) {
+        body.renderX = Number(body.previousX ?? body.x) + (Number(body.x) - Number(body.previousX ?? body.x)) * blend;
+        body.renderY = Number(body.previousY ?? body.y) + (Number(body.y) - Number(body.previousY ?? body.y)) * blend;
+      }
       this.ambientDrawing = !activePhysics;
       this.draw();
       this.ambientDrawing = false;
+      this.lastRenderAt = now;
       if (!reducedMotion && !document.hidden) this.simulationFrame = requestAnimationFrame(tick);
     };
     this.simulationFrame = requestAnimationFrame(tick);
@@ -76104,7 +76208,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
     return { x: originX + dx * cosine - dy * sine, y: originY + dx * sine + dy * cosine };
   }
   baseCoordinates(node, width, height) {
-    const point = node.isQuery || node.isCategoryAnchor ? { x: Number(node.x), y: Number(node.y) } : this.ambientPosition(node.x, node.y, false, node.id), frame = this.viewportFrame(width, height), scale = Math.max(20, Math.min(frame.width, frame.height) / 2 - 68) * this.cameraZoom * this.userZoom;
+    const displayX = Number(node.renderX ?? node.x), displayY = Number(node.renderY ?? node.y), point = node.isQuery || node.isCategoryAnchor ? { x: displayX, y: displayY } : this.ambientPosition(displayX, displayY, false, node.id), frame = this.viewportFrame(width, height), scale = Math.max(20, Math.min(frame.width, frame.height) / 2 - 68) * this.cameraZoom * this.userZoom;
     return [frame.centerX + (point.x - this.cameraX) * scale + this.panX, frame.centerY + (point.y - this.cameraY) * scale + this.panY];
   }
   coordinates(node, width, height) {
@@ -77550,114 +77654,148 @@ var GraphView = class extends ItemView {
       });
       return slider;
     };
-    const territory = section("Territory", "Which notes are on the map");
-    const folders = territory.createEl("label", { cls: "gib-atlas-control-field" });
-    folders.createSpan({ text: "Folders" });
-    const folderInput = folders.createEl("input", { type: "text", placeholder: "Whole vault" });
-    folderInput.value = draft.scope.folders.join(", ");
-    folderInput.addEventListener("change", () => {
-      draft.scope.folders = folderInput.value.split(",").map((value) => value.trim()).filter(Boolean);
-      this.scheduleViewUpdate(true);
-    });
-    const orient = section("Orientation", "What gives the map direction");
-    selectRow(orient, "Frame", draft.frame.referenceFrame, [["free", "Free landscape"], ["center", "One idea"], ["constellation", "Several beacons"]], (value) => {
-      draft.frame.referenceFrame = value;
-      draft.frame.mode = value === "constellation" ? "guided" : "natural";
-      draft.anchor = value === "center" ? { type: "query", value: draft.anchor?.value || "" } : { type: "default" };
-      this.viewDraft = draft;
-      this.scheduleViewUpdate(true);
-      this.renderViewControls(draft);
-    });
-    if (draft.frame.referenceFrame === "center") {
-      const anchor = orient.createEl("label", { cls: "gib-atlas-control-field" });
-      anchor.createSpan({ text: "Idea" });
-      const input = anchor.createEl("input", { type: "text", placeholder: "An idea or question" });
-      input.value = draft.anchor?.value || "";
-      input.addEventListener("change", () => {
-        draft.anchor = { type: "query", value: input.value.trim() };
-        this.scheduleViewUpdate(true);
-      });
-    }
-    selectRow(orient, "Arrangement", draft.frame.arrangement, [["meaning", "Relationship field"], ["topics", "Topic neighborhoods"], ["links", "Authored links"]], (value) => {
-      draft.frame.arrangement = value;
-      draft.frame.appearance.regions = value === "topics";
-      this.scheduleViewUpdate(true);
-    });
-    selectRow(orient, "Scale", draft.scale === "default" ? "overview" : draft.scale, [["overview", "Overview"], ["neighborhood", "Neighborhood"], ["detail", "Detail"]], (value) => {
-      draft.scale = value;
-      this.scheduleViewUpdate(true);
-    });
-    if (draft.frame.referenceFrame === "constellation") {
-      const beacons = orient.createEl("details", { cls: "gib-atlas-beacons" });
-      beacons.createEl("summary", { text: "Beacons" });
-      selectRow(beacons, "Measure", draft.frame.signal, [["semantic", "Meaning"], ["emotion", "Emotion"], ["purpose", "Purpose"], ["form", "Writing form"]], (value) => {
-        draft.frame.signal = value;
-        this.scheduleViewUpdate(true);
-      });
-      for (const category of draft.frame.categories) {
-        const row = beacons.createDiv({ cls: "gib-atlas-beacon" }), name = row.createEl("input", { type: "text", placeholder: "Beacon name" }), description = row.createEl("textarea", { placeholder: "What belongs near this beacon?" }), remove = row.createEl("button", { attr: { type: "button", "aria-label": "Remove beacon", title: "Remove beacon" } });
-        name.value = category.name;
-        description.value = category.description;
-        setIcon(remove, "x");
-        name.addEventListener("change", () => {
-          category.name = name.value.trim();
-          this.scheduleViewUpdate(true);
-        });
-        description.addEventListener("change", () => {
-          category.description = description.value.trim();
-          this.scheduleViewUpdate(true);
-        });
-        remove.addEventListener("click", () => {
-          draft.frame.categories = draft.frame.categories.filter((value) => value.id !== category.id);
-          this.viewDraft = draft;
-          this.renderViewControls(draft);
-          this.scheduleViewUpdate(true);
-        });
+    const updateForceRecipe = (rebuild = false) => {
+      const relationshipSources = ["semantic", "emotion", "purpose", "position", "form", "links"];
+      for (const source of relationshipSources) draft.frame.relationships[source] = Math.max(0, ...(draft.frame.forces || []).filter((rule) => rule.enabled !== false && rule.source === source && !["collision", "charge", "containment", "flow"].includes(rule.force)).map((rule) => Number(rule.strength || 0)));
+      const gravityRules = (draft.frame.forces || []).filter((rule) => rule.enabled !== false && ["gravity", "axis"].includes(rule.force) && String(rule.anchor || "").trim());
+      if (gravityRules.length) {
+        draft.frame.referenceFrame = "constellation";
+        draft.frame.mode = "guided";
+        draft.frame.geometry = gravityRules.some((rule) => rule.force === "axis") ? "radial" : "semantic";
+        draft.frame.signal = TEXT_SIGNALS2[gravityRules[0].source] ? gravityRules[0].source : "semantic";
+        draft.frame.categories = gravityRules.map((rule) => ({ id: `force-anchor-${rule.id}`, name: rule.anchor.trim(), description: rule.anchor.trim(), keywords: [], examples: [], weight: Number(rule.strength || 0.5), position: null }));
+      } else if (draft.frame.referenceFrame === "constellation" && draft.frame.categories.every((category) => String(category.id || "").startsWith("force-anchor-"))) {
+        draft.frame.referenceFrame = "free";
+        draft.frame.mode = "natural";
+        draft.frame.categories = [];
       }
-      const add = beacons.createEl("button", { cls: "gib-atlas-add-beacon", text: "Add beacon" });
-      add.addEventListener("click", () => {
-        draft.frame.categories.push({ id: atlasId("beacon"), name: "New beacon", description: "", keywords: [], examples: [], weight: 1, position: null });
+      const environment2 = draft.frame.environment || {};
+      draft.frame.dynamics.charge = Number(environment2.charge ?? draft.frame.dynamics.charge);
+      draft.frame.dynamics.containment = Number(environment2.containment ?? draft.frame.dynamics.containment);
+      draft.frame.dynamics.physicsRate = Number(environment2.physicsRate ?? draft.frame.dynamics.physicsRate);
+      const live = this.map?.setForceRecipe(draft.frame);
+      this.scheduleViewUpdate(rebuild || gravityRules.length > 0 || !live);
+    };
+    const scopeSection = section("Scope", "Which notes exist in this View");
+    selectRow(scopeSection, "Match", draft.scope.match || "all", [["all", "All rules"], ["any", "Any rule"]], (value) => {
+      draft.scope.match = value;
+      this.scheduleViewUpdate(true);
+    });
+    const scopeFields = [["folder", "Folder"], ["path", "Path"], ["name", "Filename"], ["extension", "Extension"], ["tag", "Tag"], ["property", "Property"], ["linksTo", "Links to"], ["linkedFrom", "Linked from"], ["size", "File size"], ["created", "Created"], ["modified", "Modified"]], scopeOperators = [["contains", "contains"], ["notContains", "does not contain"], ["is", "is"], ["isNot", "is not"], ["startsWith", "starts with"], ["endsWith", "ends with"], ["exists", "exists"], ["notExists", "does not exist"], ["greater", "greater than"], ["less", "less than"]];
+    for (const rule of draft.scope.rules || []) {
+      const row = scopeSection.createDiv({ cls: "gib-atlas-rule-row" }), field = row.createEl("select"), key = row.createEl("input", { type: "text", placeholder: "Property" }), operator = row.createEl("select"), value = row.createEl("input", { type: "text", placeholder: "Value" }), remove = row.createEl("button", { attr: { type: "button", title: "Remove rule", "aria-label": "Remove scope rule" } });
+      for (const [id2, label] of scopeFields) field.createEl("option", { value: id2, text: label });
+      for (const [id2, label] of scopeOperators) operator.createEl("option", { value: id2, text: label });
+      field.value = rule.field;
+      operator.value = rule.operator;
+      key.value = rule.key || "";
+      value.value = rule.value || "";
+      key.toggle(rule.field === "property");
+      const changed = () => {
+        rule.field = field.value;
+        rule.operator = operator.value;
+        rule.key = key.value.trim();
+        rule.value = value.value.trim();
+        key.toggle(rule.field === "property");
+        this.scheduleViewUpdate(true);
+      };
+      field.addEventListener("change", changed);
+      operator.addEventListener("change", changed);
+      key.addEventListener("change", changed);
+      value.addEventListener("change", changed);
+      setIcon(remove, "x");
+      remove.addEventListener("click", () => {
+        draft.scope.rules = draft.scope.rules.filter((candidate) => candidate.id !== rule.id);
         this.viewDraft = draft;
         this.renderViewControls(draft);
         this.scheduleViewUpdate(true);
       });
     }
-    const relationships = section("Relationships", "What makes notes gather");
-    for (const id2 of ["semantic", "emotion", "purpose", "form", "links"]) sliderRow(relationships, TEXT_SIGNALS2[id2].label, draft.frame.relationships[id2] || 0, (value) => {
-      draft.frame.relationships[id2] = value;
-      const live = this.map?.setForceRecipe(draft.frame);
-      this.scheduleViewUpdate(!live);
+    const addScope = scopeSection.createEl("button", { cls: "gib-atlas-add-rule", text: "Add filter" });
+    addScope.addEventListener("click", () => {
+      draft.scope.rules.push({ id: atlasId("scope"), field: "folder", operator: "contains", key: "", value: "" });
+      this.viewDraft = draft;
+      this.renderViewControls(draft);
     });
-    const feel = section("Feel", "How strongly the landscape settles");
-    for (const [id2, label] of [["contrast", "Contrast"], ["cohesion", "Cohesion"], ["spacing", "Spacing"]]) sliderRow(feel, label, draft.frame.dynamics[id2], (value) => {
-      draft.frame.dynamics[id2] = value;
-      const live = this.map?.setForceRecipe(draft.frame);
-      this.scheduleViewUpdate(!live);
+    const forces = section("Forces", "Map a quality or fact to motion");
+    const forceSources = [["semantic", "Meaning"], ["emotion", "Emotion"], ["purpose", "Purpose"], ["position", "Position"], ["form", "Writing form"], ["links", "Authored links"], ["query", "Active query"], ["fileSize", "File size"], ["inLinks", "Incoming links"], ["outLinks", "Outgoing links"], ["constant", "Constant"]], forceTypes = [["attraction", "Attraction"], ["spring", "Spring"], ["repulsion", "Repulsion"], ["gravity", "Gravity point"], ["axis", "Axis / poles"], ["collision", "Collision"], ["charge", "Charge"], ["containment", "Containment"], ["flow", "Gentle flow"]];
+    for (const rule of draft.frame.forces || []) {
+      const card = forces.createDiv({ cls: "gib-atlas-force-rule" }), top = card.createDiv({ cls: "gib-atlas-force-rule-main" }), source = top.createEl("select"), type = top.createEl("select"), remove = top.createEl("button", { attr: { type: "button", title: "Remove force", "aria-label": "Remove force" } });
+      for (const [id2, label] of forceSources) source.createEl("option", { value: id2, text: label });
+      for (const [id2, label] of forceTypes) type.createEl("option", { value: id2, text: label });
+      source.value = rule.source;
+      type.value = rule.force;
+      setIcon(remove, "x");
+      const strength = sliderRow(card, "Strength", rule.strength, (value) => {
+        rule.strength = value;
+        updateForceRecipe(false);
+      });
+      const range = sliderRow(card, "Range", rule.range, (value) => {
+        rule.range = value;
+        updateForceRecipe(false);
+      });
+      const anchor = card.createEl("input", { cls: "gib-atlas-force-anchor", type: "text", placeholder: "Anchor idea or pole (optional)" });
+      anchor.value = rule.anchor || "";
+      anchor.toggle(["gravity", "axis"].includes(rule.force));
+      source.addEventListener("change", () => {
+        rule.source = source.value;
+        updateForceRecipe(!["semantic", "links", "constant", "query", "fileSize", "inLinks", "outLinks"].includes(rule.source));
+      });
+      type.addEventListener("change", () => {
+        rule.force = type.value;
+        anchor.toggle(["gravity", "axis"].includes(rule.force));
+        updateForceRecipe(false);
+      });
+      anchor.addEventListener("change", () => {
+        rule.anchor = anchor.value.trim();
+        updateForceRecipe(Boolean(rule.anchor));
+      });
+      remove.addEventListener("click", () => {
+        draft.frame.forces = draft.frame.forces.filter((candidate) => candidate.id !== rule.id);
+        this.viewDraft = draft;
+        this.renderViewControls(draft);
+        updateForceRecipe(false);
+      });
+    }
+    const addForce = forces.createEl("button", { cls: "gib-atlas-add-rule", text: "Add force" });
+    addForce.addEventListener("click", () => {
+      draft.frame.forces.push({ id: atlasId("force"), source: "semantic", force: "attraction", strength: 0.5, range: 0.5, curve: "contrastive", anchor: "", enabled: true });
+      this.viewDraft = draft;
+      this.renderViewControls(draft);
     });
-    const physics = section("Physics", "How distinctive neighborhoods move");
-    for (const [id2, label] of [["spring", "Grouping"], ["charge", "Separation"], ["selectivity", "Selectivity"], ["mutuality", "Mutual boost"], ["bridges", "Bridge pull"], ["settling", "Response speed"]]) sliderRow(physics, label, draft.frame.dynamics[id2], (value) => {
-      draft.frame.dynamics[id2] = value;
-      const live = this.map?.setForceRecipe(draft.frame);
-      this.scheduleViewUpdate(!live);
-    });
-    const map2 = section("Map", "How the measurements are drawn");
-    selectRow(map2, "Color", draft.frame.appearance.colorBy, [["semantic", "Meaning"], ["emotion", "Emotion"], ["none", "Monochrome"]], (value) => {
+    const visuals = section("Visuals", "Turn measurements into a readable map and key");
+    selectRow(visuals, "Color", draft.frame.appearance.colorBy, [["semantic", "Meaning"], ["emotion", "Emotion"], ["category", "Community"], ["none", "Monochrome"]], (value) => {
       draft.frame.appearance.colorBy = value;
-      this.scheduleViewUpdate(true);
+      draft.frame.visuals = draft.frame.visuals.filter((rule) => rule.channel !== "color");
+      if (value !== "none") draft.frame.visuals.push({ id: atlasId("visual"), source: value === "category" ? "community" : value, channel: "color", enabled: true });
+      updateForceRecipe(value === "emotion");
     });
-    selectRow(map2, "Terrain", draft.frame.appearance.terrain, [["density", "Note density"], ["intensity", "Signal strength"], ["off", "Off"]], (value) => {
+    selectRow(visuals, "Elevation", draft.frame.appearance.terrain, [["density", "Note density"], ["intensity", "Relationship activity"], ["off", "Off"]], (value) => {
       draft.frame.appearance.terrain = value;
-      this.map?.setForceRecipe(draft.frame);
-      this.scheduleViewUpdate(false);
+      draft.frame.visuals = draft.frame.visuals.filter((rule) => rule.channel !== "elevation");
+      if (value !== "off") draft.frame.visuals.push({ id: atlasId("visual"), source: value === "intensity" ? "relationship" : "density", channel: "elevation", enabled: true });
+      updateForceRecipe(false);
     });
-    const lines = map2.createEl("label", { cls: "gib-atlas-control-toggle" });
-    lines.createSpan({ text: "Link lines" });
-    const lineToggle = lines.createEl("input", { type: "checkbox" });
-    lineToggle.checked = draft.frame.appearance.linkLines;
-    lineToggle.addEventListener("change", () => {
-      draft.frame.appearance.linkLines = lineToggle.checked;
-      this.map?.setShowLinks(lineToggle.checked);
-      this.scheduleViewUpdate(false);
+    const visualToggle = (label, key, source, channel, change) => {
+      const row = visuals.createEl("label", { cls: "gib-atlas-control-toggle" });
+      row.createSpan({ text: label });
+      const input = row.createEl("input", { type: "checkbox" });
+      input.checked = Boolean(draft.frame.appearance[key]);
+      input.addEventListener("change", () => {
+        draft.frame.appearance[key] = input.checked;
+        draft.frame.visuals = draft.frame.visuals.filter((rule) => rule.channel !== channel);
+        if (input.checked) draft.frame.visuals.push({ id: atlasId("visual"), source, channel, enabled: true });
+        change?.(input.checked);
+        this.scheduleViewUpdate(false);
+      });
+    };
+    visualToggle("Community zones", "regions", "community", "regions");
+    visualToggle("Community labels", "labels", "community", "labels");
+    visualToggle("Authored link lines", "linkLines", "links", "lines", (value) => this.map?.setShowLinks(value));
+    const environment = section("Environment", "Shared rules that keep the landscape legible");
+    for (const [id2, label] of [["collision", "Collision"], ["charge", "Open space"], ["containment", "Soft containment"], ["damping", "Damping"], ["physicsRate", "Physics rate"]]) sliderRow(environment, label, draft.frame.environment[id2], (value) => {
+      draft.frame.environment[id2] = value;
+      updateForceRecipe(false);
     });
     const actions = this.controls.createDiv({ cls: "gib-atlas-controls-actions" });
     const reset2 = actions.createEl("button", { text: "Reset preset" });

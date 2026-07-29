@@ -14,13 +14,12 @@ Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the esta
 
 The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Search score controls each result's preferred radius, while the active View determines the relationships and arrangement around it. Nonmatches remain as subdued spatial context, and ranked excerpts appear in the native Atlas Navigator pane.
 
-Saved Atlas Views are built as a readable map formula:
+Saved Atlas Views are built from four explicit primitives:
 
-- **Territory** selects which notes exist in the landscape.
-- **Reference frame** leaves the map free, centers it on an idea, orients it with a constellation or two-pole axis.
-- **Relationship field** blends Meaning, Emotion, Purpose, Form, and authored Links into one normalized note-to-note distance model.
-- **Dynamics** controls contrast, cohesion, spacing, grouping, separation, selectivity, mutual reinforcement, bridge pull, and response speed without inventing new relationships.
-- **Cartography** assigns color, dot size, terrain, and optional beacon regions independently from placement.
+- **Scope** uses composable filters for folders, paths, filenames, extensions, tags, properties, incoming and outgoing links, dates, and file size.
+- **Forces** map Meaning, Emotion, Purpose, Form, authored Links, constants, and active anchors to attraction, springs, repulsion, gravity points, axes, collision, containment, or flow.
+- **Visuals** map available measurements to color, dot size, terrain, community zones, labels, and link lines. The map key follows those mappings automatically.
+- **Environment** controls collision, open space, damping, simulation rate, and a soft boundary that moves whole neighborhoods without crushing their internal shape.
 
 The relationship field can use five measurements:
 
@@ -30,7 +29,7 @@ The relationship field can use five measurements:
 - **Form** combines local language inference with document structure to distinguish journals, essays, conversations, reference notes, narratives, and plans.
 - **Links** makes authored wikilinks contribute directly to distance alongside any analytical measurements.
 
-View controls live directly on the Atlas. Territory, orientation, scale, arrangement, relationship weights, dynamics, and cartography update the active landscape without opening a separate editor. Standard Views can be tuned or reset, and **Save as new view** creates a reusable custom View. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes.
+View controls live directly on the Atlas. Scope, force rules, visual mappings, and environment settings update the active landscape without opening a separate editor. Rendering remains smooth at the display refresh rate while the more expensive physics simulation runs independently at a bounded rate. Standard Views can be tuned or reset, and **Save as new view** creates a reusable custom View. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes.
 
 ## Install with BRAT
 
