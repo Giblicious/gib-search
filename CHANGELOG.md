@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.53.0
+
+- Temporarily disables Atlas, Search Map, Navigator, Companion, and View analysis while those features are redesigned.
+- Stops automatic graph-evidence, topic-label, and writing-quality preparation so search does not pay graph-related startup or indexing costs.
+- Keeps the Atlas implementation and saved settings intact for a later return.
+- Retains local BGE semantic search, ranking, snippets, highlighting, folder-path boosting, and mobile support.
+
 ## 0.52.0
 
 - Rebuilds map terrain as a multiscale relief model derived from the active View instead of drawing one rounded density hill around every note.

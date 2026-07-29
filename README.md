@@ -1,38 +1,12 @@
 # Gib Search
 
-Local semantic search and a similarity graph for Obsidian.
+Local semantic search for Obsidian.
 
-Gib Search indexes note content, headings, filenames, entities, and optional folder-path signals. Search results include compact source excerpts, semantic phrase emphasis, ranking controls, and a living graph of related notes.
+Gib Search indexes note content, headings, filenames, and optional folder-path signals. Results include compact source excerpts, semantic phrase emphasis, ranking controls, typo tolerance, and search-within-file support.
 
-Plugin settings are divided into Status, Search, Views, and Console pages. Status reports the Search index, Atlas-quality analysis, and local models independently; Console provides a bounded live account of current local work without logging note contents.
+The experimental Atlas and graph surfaces are temporarily disabled while they are redesigned. Their implementation and saved settings remain intact, but Gib Search does not load their views, run their analysis, or prepare graph caches in this release.
 
-One View definition now controls the Atlas, search map, and Atlas Companion. The included Views are **Meaning**, **Topics**, **Emotion**, **Purpose**, **Writing form**, and **Links**. Choose the same View anywhere without translating between separate lens, grouping, and graph-mode controls.
-
-The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. For each View and scope, Gib Search removes the ordinary relationship baseline and compiles the distinctive positive relationships into a sparse weighted graph. Standard spring forces draw related notes together; Barnes–Hut repulsion, weak gravity, collision, and damping keep the landscape open, stable, and responsive. The map settles quickly, then continues at a bounded low-energy cadence so the Atlas stays alive.
-
-The Atlas now treats a View as a landscape recipe. Coherent regions become broad ranges, locally distinctive notes become anchored summits, strong positive relationships become ridges, and weak or negative boundaries become valleys. Subtle hillshade, contour lines, rivers, and lakes are derived from that same field rather than added as decoration. WebGL 2 composites the terrain and nodes when available; devices without it retain the Canvas renderer.
-
-The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Search score controls each result's preferred radius, while the active View determines the relationships around it. The vault remains visible while a query is loading, then nonresults leave the active map as the result landscape forms. Ranked excerpts appear in the native Atlas Navigator pane.
-
-Saved Atlas Views are built from seven explicit parts:
-
-- **Scope** uses composable filters for folders, paths, filenames, extensions, tags, properties, incoming and outgoing links, dates, and file size.
-- **Arrange notes by** blends Meaning, Emotion, Purpose, Position, Form, and authored Links into weighted springs between notes.
-- **Landscape** independently chooses what becomes elevation and tunes regional scale, relief, local detail, ridges, valleys, cliffs, bridge passes, erosion, rivers, lakes, contours, and the ingredients of prominence.
-- **Anchors** optionally add declared ideas or questions as gravity points.
-- **Map marks** control color and authored-link lines.
-- **Territories** control membership confidence, minimum region size, separation, internal cohesion, boundary padding, and label detail. The expandable map key names the visible regions, colors, and note counts.
-- **Physics** controls spring strength and length, many-body repulsion, weak gravity, collision, damping, neighbor selectivity, and simulation rate.
-
-The relationship field can use five measurements:
-
-- **Meaning** maps what the writing is about using semantic embeddings.
-- **Emotion** reads a continuous profile across 24 affective landmarks, including joy, gratitude, awe, longing, grief, despondency, anxiety, frustration, indignation, guilt, and determination. A note can express several at once.
-- **Purpose** distinguishes questioning, explaining, reflecting, persuading, comparing, planning, and summarizing.
-- **Form** combines local language inference with document structure to distinguish journals, essays, conversations, reference notes, narratives, and plans.
-- **Links** makes authored wikilinks contribute directly to distance alongside any analytical measurements.
-
-View controls live directly on the Atlas. Scope, relationship weights, anchors, visual mappings, territory behavior, and physics settings update the active landscape without opening a separate editor. Selecting a note lets Atlas Companion show its local map, related-note list, territory identity, and an Atlas signature summarizing its Meaning, Emotion, Purpose, Form, and Links. Rendering remains smooth at the display refresh rate while the more expensive physics simulation runs independently at a bounded rate. Standard Views can be tuned or reset, and **Save as new view** creates a reusable custom View. Nonsemantic Views analyze representative passages in bounded batches, save progress between batches, and reuse content-fingerprinted profiles until a note changes.
+Plugin settings are divided into Status, Search, and Console pages. Status reports the search index and local model independently; Console provides a bounded live account of local work without logging note contents.
 
 ## Install with BRAT
 
@@ -50,7 +24,6 @@ Each device builds its own local index. The first index can take several minutes
 - Notes, queries, embeddings, and indexes remain on the local device.
 - Inference runs directly inside Obsidian using the bundled WebAssembly engine.
 - BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached.
-- MobileBERT MNLI is downloaded the first time a nonsemantic View needs it. It runs locally and its judgments and text profiles are cached on the device.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 
@@ -58,12 +31,11 @@ On desktop, the model, index, and diagnostic logs are stored inside the Gib Sear
 
 ## Model
 
-Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. A quantized **MobileBERT MNLI** model handles passage-level relationship, emotion, purpose, position, and form judgments. Form analysis also uses local document structure. Work is bounded and cached so ordinary search and indexing do not wait for analytical Views.
+Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements.
 
 ## Commands
 
 - **Semantic search**
-- **Open Gib Search map**
 
 ## Development
 
