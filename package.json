@@ -1,11 +1,11 @@
 {
   "name": "gib-search",
-  "version": "0.51.0",
+  "version": "0.52.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node scripts/check.mjs"
+    "check": "node scripts/check.mjs && node scripts/terrain-check.mjs"
   },
   "devDependencies": {
     "@huggingface/transformers": "^3.8.1",

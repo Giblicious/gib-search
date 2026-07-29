@@ -10,16 +10,17 @@ One View definition now controls the Atlas, search map, and Atlas Companion. The
 
 The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. For each View and scope, Gib Search removes the ordinary relationship baseline and compiles the distinctive positive relationships into a sparse weighted graph. Standard spring forces draw related notes together; Barnes–Hut repulsion, weak gravity, collision, and damping keep the landscape open, stable, and responsive. The map settles quickly, then continues at a bounded low-energy cadence so the Atlas stays alive.
 
-Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the established flat topographic design. Devices without WebGL 2 automatically retain the Canvas renderer.
+The Atlas now treats a View as a landscape recipe. Coherent regions become broad ranges, locally distinctive notes become anchored summits, strong positive relationships become ridges, and weak or negative boundaries become valleys. Subtle hillshade, contour lines, rivers, and lakes are derived from that same field rather than added as decoration. WebGL 2 composites the terrain and nodes when available; devices without it retain the Canvas renderer.
 
 The dedicated Atlas begins with the full vault and includes its own semantic search bar. Once a query reaches three characters, the query becomes a temporary center particle. Search score controls each result's preferred radius, while the active View determines the relationships around it. The vault remains visible while a query is loading, then nonresults leave the active map as the result landscape forms. Ranked excerpts appear in the native Atlas Navigator pane.
 
-Saved Atlas Views are built from six explicit parts:
+Saved Atlas Views are built from seven explicit parts:
 
 - **Scope** uses composable filters for folders, paths, filenames, extensions, tags, properties, incoming and outgoing links, dates, and file size.
-- **Relationships** blend Meaning, Emotion, Purpose, Position, Form, and authored Links into weighted springs between notes.
+- **Arrange notes by** blends Meaning, Emotion, Purpose, Position, Form, and authored Links into weighted springs between notes.
+- **Landscape** independently chooses what becomes elevation and tunes regional scale, relief, local detail, ridges, valleys, cliffs, bridge passes, erosion, rivers, lakes, contours, and the ingredients of prominence.
 - **Anchors** optionally add declared ideas or questions as gravity points.
-- **Visuals** map available measurements to color, dot size, terrain, territories, labels, and link lines. Territories can be drawn as quiet boundaries or tinted topographic landforms.
+- **Map marks** control color and authored-link lines.
 - **Territories** control membership confidence, minimum region size, separation, internal cohesion, boundary padding, and label detail. The expandable map key names the visible regions, colors, and note counts.
 - **Physics** controls spring strength and length, many-body repulsion, weak gravity, collision, damping, neighbor selectivity, and simulation rate.
 

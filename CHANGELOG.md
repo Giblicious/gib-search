@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.52.0
+
+- Rebuilds map terrain as a multiscale relief model derived from the active View instead of drawing one rounded density hill around every note.
+- Makes coherent regions form broad ranges, distinctive notes form anchored summits, positive relationships form ridges, and weak or negative boundaries form valleys and cliffs.
+- Adds restrained hillshade, natural relief color, configurable contours, and terrain-derived rivers and lakes.
+- Separates note arrangement from landscape elevation, so Meaning, Emotion, Purpose, Position, Form, Links, relevance, density, and distinctiveness can each shape a View without hijacking its layout.
+- Reorganizes the View builder around Scope, Arrange notes by, Landscape, Anchors, Map marks, Territories, and Physics, with live controls for regional scale, relief, local detail, ridges, valleys, cliffs, passes, erosion, water, contours, and prominence.
+- Builds terrain in stable world coordinates, uses adaptive working and settled resolutions, skips unchanged fields, and crossfades updates so pan, zoom, and live searches remain responsive.
+- Adds numerical regression coverage for ridges, valleys, summit alignment, deterministic terrain, edge cases, basins, downhill drainage, and acyclic rivers.
+
 ## 0.51.0
 
 - Replaces decorative community outlines with configurable topographic territories that participate in the force layout.
