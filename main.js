@@ -72132,7 +72132,8 @@ var init_mobile_runtime = __esm({
           this.packedVectors = all4;
           this.vectors = this.meta.map((_2, index3) => all4.subarray(index3 * DIMENSION, (index3 + 1) * DIMENSION));
           this.refreshLexical();
-          await Promise.all([this.loadHighlightPhraseCache(), this.loadRelationCache(), this.loadTopicLabelCache(), this.loadAnalysisCache(), this.loadGraphEvidenceCache()]);
+          await this.loadHighlightPhraseCache();
+          if (this.plugin.atlasEnabled) await Promise.all([this.loadRelationCache(), this.loadTopicLabelCache(), this.loadAnalysisCache(), this.loadGraphEvidenceCache()]);
           if (stored.legacyHighlights || stored.needsMetaCompaction || Object.prototype.hasOwnProperty.call(stored, "highlightVectors")) await this.databasePut({ meta: this.meta, vectors: all4.buffer.slice(all4.byteOffset, all4.byteOffset + all4.byteLength), lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
         } catch (error) {
           this.plugin.logDiagnostic(`Index load failed: ${error?.message || String(error)}`, true);
@@ -72346,7 +72347,7 @@ var init_mobile_runtime = __esm({
             this.setState("starting", "Waiting for the vault to finish loading\u2026");
             await this.waitForVaultSettled();
             await this.updateIndex();
-            this.warmGraphEvidence();
+            if (this.plugin.atlasEnabled) this.warmGraphEvidence();
           } catch (error) {
             this.setState("error", error.message);
             this.plugin.reportOnce(error.message);
@@ -72396,7 +72397,7 @@ var init_mobile_runtime = __esm({
           this.startPromise = (async () => {
             try {
               await this.updateIndex(true);
-              this.warmGraphEvidence();
+              if (this.plugin.atlasEnabled) this.warmGraphEvidence();
             } catch (error) {
               this.setState("error", error.message);
             } finally {
@@ -74443,6 +74444,7 @@ function loadDesktopModules() {
 var GRAPH_VIEW = "gib-search-graph";
 var NAVIGATOR_VIEW = "gib-search-navigator";
 var NEIGHBORHOOD_VIEW = "gib-search-neighborhood";
+var ATLAS_ENABLED = false;
 var MODEL_PROFILES = {
   bge: { label: "BGE Small English v1.5", indexFolder: "bge-small-en-v1.5" }
 };
@@ -77178,9 +77180,9 @@ var SemanticSearchModal = class extends SuggestModal {
           this.updateSuggestions();
           window.setTimeout(() => {
             this.renderShowMore();
-            this.updateMap();
+            if (this.plugin.atlasEnabled) this.updateMap();
           }, 0);
-          this.applyView();
+          if (this.plugin.atlasEnabled) this.applyView();
         }
       } catch (error) {
         if (error?.name !== "AbortError") this.plugin.reportOnce(error.message);
@@ -77333,7 +77335,7 @@ var SemanticSearchModal = class extends SuggestModal {
   }
   onOpen() {
     super.onOpen();
-    this.setupMap();
+    if (this.plugin.atlasEnabled) this.setupMap();
     this.navigationHandler = (event) => {
       if (event.key === "Tab") {
         event.preventDefault();
@@ -78460,9 +78462,11 @@ var SearchSettings = class extends PluginSettingTab {
     this.containerEl.addClass("gib-settings");
     const header = this.containerEl.createDiv({ cls: "gib-settings-header" });
     header.createEl("h2", { text: "Gib Search" });
-    header.createSpan({ text: "Local semantic search and Atlas" });
+    header.createSpan({ text: "Local semantic search" });
+    if (!this.plugin.atlasEnabled && this.page === "views") this.page = "status";
+    const availableTabs = [["status", "Status", "activity"], ["search", "Search", "search"], ...this.plugin.atlasEnabled ? [["views", "Views", "map"]] : [], ["console", "Console", "terminal"]];
     const tabs = this.containerEl.createDiv({ cls: "gib-settings-tabs", attr: { role: "tablist", "aria-label": "Gib Search settings" } });
-    for (const [id2, label, iconName] of [["status", "Status", "activity"], ["search", "Search", "search"], ["views", "Views", "map"], ["console", "Console", "terminal"]]) {
+    for (const [id2, label, iconName] of availableTabs) {
       const button = tabs.createEl("button", { attr: { type: "button", role: "tab", "aria-selected": String(this.page === id2) } });
       const icon = button.createSpan();
       setIcon(icon, iconName);
@@ -78510,20 +78514,22 @@ var SearchSettings = class extends PluginSettingTab {
         this.refreshHealth();
       }
     }));
-    new Setting(this.pageEl).setName("Atlas").setHeading();
-    new Setting(this.pageEl).setName("Magic graph intelligence").setDesc("Combine semantic, topical, entity, and View relationships in the Atlas.").addToggle((t3) => t3.setValue(this.plugin.settings.magicGraphEnabled).onChange(async (value) => {
-      this.plugin.settings.magicGraphEnabled = value;
-      await this.plugin.save();
-    }));
-    new Setting(this.pageEl).setName("Semantic color compass").setDesc("Give similar semantic directions related colors.").addToggle((t3) => t3.setValue(this.plugin.settings.graphSemanticColors).onChange(async (value) => {
-      this.plugin.settings.graphSemanticColors = value;
-      await this.plugin.save();
-    }));
-    new Setting(this.pageEl).setName("Generated topic labels").setDesc("Use the local labeler to name Atlas communities.").addToggle((t3) => t3.setValue(this.plugin.settings.generatedTopicLabels).onChange(async (value) => {
-      this.plugin.settings.generatedTopicLabels = value;
-      this.plugin.search.clearStarfieldCaches();
-      await this.plugin.save();
-    }));
+    if (this.plugin.atlasEnabled) {
+      new Setting(this.pageEl).setName("Atlas").setHeading();
+      new Setting(this.pageEl).setName("Magic graph intelligence").setDesc("Combine semantic, topical, entity, and View relationships in the Atlas.").addToggle((t3) => t3.setValue(this.plugin.settings.magicGraphEnabled).onChange(async (value) => {
+        this.plugin.settings.magicGraphEnabled = value;
+        await this.plugin.save();
+      }));
+      new Setting(this.pageEl).setName("Semantic color compass").setDesc("Give similar semantic directions related colors.").addToggle((t3) => t3.setValue(this.plugin.settings.graphSemanticColors).onChange(async (value) => {
+        this.plugin.settings.graphSemanticColors = value;
+        await this.plugin.save();
+      }));
+      new Setting(this.pageEl).setName("Generated topic labels").setDesc("Use the local labeler to name Atlas communities.").addToggle((t3) => t3.setValue(this.plugin.settings.generatedTopicLabels).onChange(async (value) => {
+        this.plugin.settings.generatedTopicLabels = value;
+        this.plugin.search.clearStarfieldCaches();
+        await this.plugin.save();
+      }));
+    }
     new Setting(this.pageEl).setName("Maintenance").setHeading();
     new Setting(this.pageEl).setName("Rebuild semantic index").setDesc("Replace generated vectors and metadata. Notes and local models are untouched.").addButton((b) => b.setButtonText("Rebuild").setWarning().onClick(() => {
       if (!window.confirm("Rebuild the entire semantic index? Generated vectors will be replaced; vault notes are not changed.")) return;
@@ -78670,9 +78676,10 @@ var SearchSettings = class extends PluginSettingTab {
     this.healthRetry = head.createEl("button", { text: "Retry", attr: { type: "button" } });
     this.healthRetry.hide();
     this.healthRetry.addEventListener("click", () => this.retry(true));
+    const services = [["search", "Search index", "database"], ...this.plugin.atlasEnabled ? [["atlas", "Atlas qualities", "sparkles"]] : [], ["models", "Local models", "cpu"]];
     const tracks = this.healthEl.createDiv({ cls: "gib-health-tracks" });
     this.healthTracks = {};
-    for (const [id2, label, iconName] of [["search", "Search index", "database"], ["atlas", "Atlas qualities", "sparkles"], ["models", "Local models", "cpu"]]) {
+    for (const [id2, label, iconName] of services) {
       const row = tracks.createDiv({ cls: "gib-health-track", attr: { "data-state": "waiting" } }), icon = row.createSpan({ cls: "gib-health-track-icon" });
       setIcon(icon, iconName);
       const body = row.createDiv({ cls: "gib-health-track-body" }), line = body.createDiv({ cls: "gib-health-track-line" });
@@ -78709,18 +78716,18 @@ var SearchSettings = class extends PluginSettingTab {
     const phase = String(local.phase || "offline");
     const updatedAt = Number(local.updatedAt || 0);
     const statusAge = updatedAt ? Date.now() - updatedAt : Infinity;
-    const stale = Number(remote?.staleFiles || 0), total = Number(local.totalFiles || remote?.vaultFiles || 0), done = Number(local.processedFiles ?? remote?.indexedFiles ?? 0), searchWorking = Boolean(remote?.isIndexing) || ["starting", "loading_model", "downloading_model", "indexing"].includes(phase), stoppedResponding = !remote && searchWorking && statusAge > 15e3, searchReady = phase === "ready" && !remote?.isIndexing && stale === 0, analysis = local.analysisStatus || remote?.analysisStatus || {}, relationshipWorking = /^(loading|downloading|reading)/i.test(String(local.relationMessage || "")), atlasWorking = Boolean(analysis.active || local.graphPreparing || remote?.graphPreparing || local.topicLabelsPreparing || relationshipWorking), modelWorking = Boolean(local.modelPreparing || local.relationModelPreparing || local.topicLabelModelPreparing || remote?.modelPreparing || remote?.relationModelPreparing || remote?.topicLabelModelPreparing || [local.modelMessage, local.relationMessage, local.topicLabelMessage].some((message) => /^(loading|downloading)/i.test(String(message || "")))), failed = stoppedResponding || phase === "error" || Boolean(error && !remote), disabled = !this.plugin.settings.enabled;
+    const stale = Number(remote?.staleFiles || 0), total = Number(local.totalFiles || remote?.vaultFiles || 0), done = Number(local.processedFiles ?? remote?.indexedFiles ?? 0), searchWorking = Boolean(remote?.isIndexing) || ["starting", "loading_model", "downloading_model", "indexing"].includes(phase), stoppedResponding = !remote && searchWorking && statusAge > 15e3, searchReady = phase === "ready" && !remote?.isIndexing && stale === 0, analysis = local.analysisStatus || remote?.analysisStatus || {}, relationshipWorking = this.plugin.atlasEnabled && /^(loading|downloading|reading)/i.test(String(local.relationMessage || "")), atlasWorking = this.plugin.atlasEnabled && Boolean(analysis.active || local.graphPreparing || remote?.graphPreparing || local.topicLabelsPreparing || relationshipWorking), modelWorking = Boolean(local.modelPreparing || remote?.modelPreparing || /^(loading|downloading)/i.test(String(local.modelMessage || ""))), failed = stoppedResponding || phase === "error" || Boolean(error && !remote), disabled = !this.plugin.settings.enabled;
     const state = failed ? "error" : disabled ? "disabled" : searchWorking || atlasWorking || modelWorking ? "working" : searchReady ? "healthy" : "working";
     this.healthEl.dataset.state = state;
     this.healthTitle.textContent = state === "healthy" ? "Gib Search is ready" : state === "working" ? "Gib Search is working" : state === "disabled" ? "Gib Search is paused" : "Gib Search needs attention";
-    this.healthMessage.textContent = state === "healthy" ? "Search and Atlas services are current." : failed ? stoppedResponding ? `No response for ${formatElapsed(statusAge)}.` : error || local.message || "A local service failed." : atlasWorking && searchReady ? "Search is ready while Atlas finishes preparing." : local.message || this.plugin.indexer.lastEvent;
+    this.healthMessage.textContent = state === "healthy" ? "Semantic search services are current." : failed ? stoppedResponding ? `No response for ${formatElapsed(statusAge)}.` : error || local.message || "A local service failed." : atlasWorking && searchReady ? "Search is ready while Atlas finishes preparing." : local.message || this.plugin.indexer.lastEvent;
     const indexed = Number(remote?.indexedFiles ?? local.indexedFiles ?? 0), chunks2 = Number(remote?.totalChunks ?? local.totalChunks ?? 0), searchProgress = total ? done / total * 100 : null;
     this.setHealthTrack("search", failed ? "error" : searchReady ? "ready" : searchWorking ? "working" : disabled ? "waiting" : "working", searchReady ? "Ready" : searchWorking ? `${done}/${total || "\u2026"}` : disabled ? "Paused" : "Waiting", `${indexed} notes \xB7 ${chunks2} passages \xB7 ${formatBytes(this.plugin.search.storageBytes?.() || 0)}`, searchWorking ? searchProgress : null);
     const qualityDone = Number(analysis.done || 0), qualityTotal = Number(analysis.total || 0), qualitySignal = analysis.signal ? `${analysis.signal[0].toUpperCase()}${analysis.signal.slice(1)}` : "", graphReady = Boolean(remote?.graphCacheReady), atlasValue = analysis.active ? `${qualityDone}/${qualityTotal}` : local.graphPreparing || remote?.graphPreparing ? "Preparing" : graphReady ? "Ready" : searchReady ? "On demand" : "Waiting", atlasDetail = analysis.active ? `${qualitySignal} qualities` : `${Number(remote?.cachedTextAnalyses || 0)} profiles \xB7 ${Number(remote?.cachedTopicLabels || 0)} topic labels`;
     this.setHealthTrack("atlas", atlasWorking ? "working" : graphReady || searchReady ? "ready" : "waiting", atlasValue, atlasDetail, analysis.active && qualityTotal ? qualityDone / qualityTotal * 100 : null);
-    const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || "BGE Small", semanticModel = remote?.modelLoaded ? "BGE ready" : "BGE on demand", textModel = remote?.relationModelLoaded ? "Analyzer ready" : "Analyzer on demand", topicModel = !this.plugin.settings.generatedTopicLabels ? "Labels off" : remote?.topicLabelModelLoaded ? "Labeler ready" : "Labeler on demand";
-    this.setHealthTrack("models", modelWorking ? "working" : failed ? "error" : "ready", modelWorking ? "Loading" : "Available", `${modelLabel} \xB7 ${semanticModel} \xB7 ${textModel} \xB7 ${topicModel}${this.plugin.isMobile ? "" : ` \xB7 ${formatBytes(this.plugin.runtime.storageBytes?.() || 0)}`}`);
-    const current = analysis.active ? `Atlas: ${local.analysisMessage}` : local.currentFile ? `Indexing: ${local.currentFile}` : local.graphPreparing || remote?.graphPreparing ? "Atlas: preparing relationship cache" : local.topicLabelsPreparing ? `Topics: ${local.topicLabelMessage || "generating labels"}` : relationshipWorking ? `Atlas: ${local.relationMessage}` : local.modelMessage && modelWorking ? `Models: ${local.modelMessage}` : `Last completed: ${formatWhen(local.lastSuccessfulIndexAt)}`;
+    const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || "BGE Small", semanticModel = remote?.modelLoaded ? "BGE ready" : "BGE on demand";
+    this.setHealthTrack("models", modelWorking ? "working" : failed ? "error" : "ready", modelWorking ? "Loading" : "Available", `${modelLabel} \xB7 ${semanticModel}${this.plugin.isMobile ? "" : ` \xB7 ${formatBytes(this.plugin.runtime.storageBytes?.() || 0)}`}`);
+    const current = local.currentFile ? `Indexing: ${local.currentFile}` : local.modelMessage && modelWorking ? `Models: ${local.modelMessage}` : `Last completed: ${formatWhen(local.lastSuccessfulIndexAt)}`;
     this.healthEvent.textContent = current;
     this.healthRetry.toggle(state === "error");
     if (showNotice) new Notice(state === "healthy" ? "Gib Search is ready" : state === "working" ? this.healthMessage.textContent : state === "disabled" ? "Gib Search is paused" : `Gib Search needs attention: ${this.healthMessage.textContent}`);
@@ -78761,6 +78768,7 @@ module.exports = class GibSearch extends Plugin {
     const loaded = await this.loadData() || {};
     this.activityLog = [];
     this.activityListeners = /* @__PURE__ */ new Set();
+    this.atlasEnabled = ATLAS_ENABLED;
     this.settings = Object.assign({}, DEFAULTS, loaded);
     delete this.settings.mapProjection;
     delete this.settings.defaultSearchLens;
@@ -78818,14 +78826,18 @@ module.exports = class GibSearch extends Plugin {
     this.atlas = new AtlasEngine2(this);
     this.runtime = { ready: () => true, install: async () => true, stop: () => this.desktopEmbedder?.stop(), storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) };
     this.indexer.watch();
-    this.registerView(GRAPH_VIEW, (leaf) => new GraphView(leaf, this));
-    this.registerView(NAVIGATOR_VIEW, (leaf) => new AtlasNavigatorView(leaf, this));
-    this.registerView(NEIGHBORHOOD_VIEW, (leaf) => new NeighborhoodView(leaf, this));
+    if (this.atlasEnabled) {
+      this.registerView(GRAPH_VIEW, (leaf) => new GraphView(leaf, this));
+      this.registerView(NAVIGATOR_VIEW, (leaf) => new AtlasNavigatorView(leaf, this));
+      this.registerView(NEIGHBORHOOD_VIEW, (leaf) => new NeighborhoodView(leaf, this));
+    }
     this.addRibbonIcon("search", "Gib Search", () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: "semantic-search", name: "Semantic search", callback: () => new SemanticSearchModal(this.app, this).open() });
-    this.addCommand({ id: "atlas-navigator", name: "Open Atlas Navigator", callback: () => this.openNavigator(true) });
-    this.addCommand({ id: "note-neighborhood", name: "Open Atlas Companion", callback: () => this.openNeighborhood(this.app.workspace.getActiveFile()?.path) });
-    this.addCommand({ id: "semantic-graph", name: "Open Gib Search Atlas", callback: () => this.openGraph() });
+    if (this.atlasEnabled) {
+      this.addCommand({ id: "atlas-navigator", name: "Open Atlas Navigator", callback: () => this.openNavigator(true) });
+      this.addCommand({ id: "note-neighborhood", name: "Open Atlas Companion", callback: () => this.openNeighborhood(this.app.workspace.getActiveFile()?.path) });
+      this.addCommand({ id: "semantic-graph", name: "Open Gib Search Atlas", callback: () => this.openGraph() });
+    }
     this.addSettingTab(new SearchSettings(this.app, this));
     this.logDiagnostic(`Gib Search ${this.manifest.version} loaded on ${this.isMobile ? "mobile" : process.platform}`);
     this.indexer.start();
