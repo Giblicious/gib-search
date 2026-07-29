@@ -71397,6 +71397,7 @@ var init_mobile_runtime = __esm({
         this.analysisSave = Promise.resolve();
         this.analysisRuns = /* @__PURE__ */ new Map();
         this.analysisMessage = "";
+        this.analysisStatus = { active: false, signal: "", done: 0, total: 0 };
         this.pipe = null;
         this.modelPromise = null;
         this.startPromise = null;
@@ -71447,16 +71448,17 @@ var init_mobile_runtime = __esm({
         this.message = message;
         this.lastEvent = message;
         this.lastError = phase === "error" ? message : "";
+        this.plugin.recordActivity?.("Search", message, phase === "error" ? "error" : phase === "ready" ? "success" : ["offline"].includes(phase) ? "neutral" : "working");
         this.changed();
       }
       highlightPhraseCount() {
         return this.highlightPhraseVectors.size;
       }
       workerStatus() {
-        return { phase: this.phase, message: this.message, modelMessage: this.modelMessage || "", relationMessage: this.relationMessage || "", topicLabelMessage: this.topicLabelMessage || "", analysisMessage: this.analysisMessage || "", pid: "mobile", startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt };
+        return { phase: this.phase, message: this.message, modelMessage: this.modelMessage || "", relationMessage: this.relationMessage || "", topicLabelMessage: this.topicLabelMessage || "", analysisMessage: this.analysisMessage || "", analysisStatus: { ...this.analysisStatus }, graphPreparing: Boolean(this.graphWarmPromise), topicLabelsPreparing: Boolean(this.topicLabelRefreshes?.size), modelPreparing: Boolean(this.modelPromise) || this.phase === "loading_model", relationModelPreparing: Boolean(this.relationModelPromise), topicLabelModelPreparing: Boolean(this.topicLabelModelPromise), pid: "mobile", startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt };
       }
       async health() {
-        return { indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), graphEntities: new Set(this.meta.flatMap((item) => item.entities || [])).size, graphCacheReady: Boolean(this.graphEvidenceCache?.rootGraph), graphCacheBuiltAt: this.graphEvidenceCache?.builtAt || null, cachedRelationships: this.relationCache.size, cachedTopicLabels: this.topicLabelCache.size, cachedTextAnalyses: this.analysisCache.size, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === "indexing", modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), relationModelLoaded: Boolean(this.relationPipe || this.plugin.desktopEmbedder?.relationReady), topicLabelModelLoaded: Boolean(this.topicLabelPipe || this.plugin.desktopEmbedder?.topicLabelReady), modelProfile: "bge", modelId: MODEL_ID, modelBackend: this.isMobile ? this.modelBackend : "web-worker-wasm" };
+        return { indexedFiles: new Set(this.meta.map((item) => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), graphEntities: new Set(this.meta.flatMap((item) => item.entities || [])).size, graphCacheReady: Boolean(this.graphEvidenceCache?.rootGraph), graphPreparing: Boolean(this.graphWarmPromise), graphCacheBuiltAt: this.graphEvidenceCache?.builtAt || null, cachedRelationships: this.relationCache.size, cachedTopicLabels: this.topicLabelCache.size, cachedTextAnalyses: this.analysisCache.size, analysisStatus: { ...this.analysisStatus }, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === "indexing", modelPreparing: Boolean(this.modelPromise) || this.phase === "loading_model", relationModelPreparing: Boolean(this.relationModelPromise), topicLabelModelPreparing: Boolean(this.topicLabelModelPromise), modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), relationModelLoaded: Boolean(this.relationPipe || this.plugin.desktopEmbedder?.relationReady), topicLabelModelLoaded: Boolean(this.topicLabelPipe || this.plugin.desktopEmbedder?.topicLabelReady), modelProfile: "bge", modelId: MODEL_ID, modelBackend: this.isMobile ? this.modelBackend : "web-worker-wasm" };
       }
       async openDatabase() {
         if (this.database) return this.database;
@@ -71742,6 +71744,7 @@ var init_mobile_runtime = __esm({
       }
       modelActivity(message = "") {
         this.modelMessage = message;
+        this.plugin.recordActivity?.("Model", message, "working");
         if (this.indexRun || this.phase === "indexing" || this.startPromise && this.phase !== "ready") this.setState("loading_model", message);
         else {
           this.lastEvent = message;
@@ -71750,6 +71753,7 @@ var init_mobile_runtime = __esm({
       }
       modelReady() {
         this.modelMessage = "Semantic model ready";
+        this.plugin.recordActivity?.("Model", this.modelMessage, "success");
         if (this.phase === "loading_model" && !this.indexRun && this.totalFiles > 0 && this.processedFiles >= this.totalFiles) this.setState("ready", `Ready (${new Set(this.meta.map((item) => item.file)).size} files, ${this.meta.length} passages)`);
         else this.changed();
       }
@@ -71821,10 +71825,12 @@ var init_mobile_runtime = __esm({
       }
       relationActivity(message = "") {
         this.relationMessage = message;
+        this.plugin.recordActivity?.("Relationships", message, /ready/i.test(message) ? "success" : "working");
         this.changed();
       }
       topicLabelActivity(message = "") {
         this.topicLabelMessage = message;
+        this.plugin.recordActivity?.("Topics", message, /ready|cached/i.test(message) ? "success" : /unavailable/i.test(message) ? "error" : "working");
         this.changed();
       }
       async initializeTopicLabelModel() {
@@ -71895,6 +71901,7 @@ var init_mobile_runtime = __esm({
       }
       analysisActivity(message = "") {
         this.analysisMessage = message;
+        this.plugin.recordActivity?.("Atlas", message, this.analysisStatus.active ? "working" : /ready/i.test(message) ? "success" : "neutral");
         this.changed();
       }
       async classifyEmotionTexts(texts) {
@@ -71985,8 +71992,9 @@ var init_mobile_runtime = __esm({
         const run = (async () => {
           const batchSize = this.isMobile ? 8 : 24;
           for (let offset2 = 0; offset2 < missing.length; offset2 += batchSize) {
-            const batch = missing.slice(offset2, offset2 + batchSize);
-            this.analysisActivity(`Analyzing ${Math.min(offset2 + batch.length, missing.length)} of ${missing.length} notes by ${signal}`);
+            const batch = missing.slice(offset2, offset2 + batchSize), done = Math.min(offset2 + batch.length, missing.length);
+            this.analysisStatus = { active: true, signal, done, total: missing.length };
+            this.analysisActivity(`Analyzing ${done} of ${missing.length} notes by ${signal}`);
             await this.analyzeTextSignalBatch(signal, categories, batch, reference, output);
             try {
               await this.saveAnalysisCache();
@@ -71995,8 +72003,13 @@ var init_mobile_runtime = __esm({
             }
             await yieldToUi();
           }
+          this.analysisStatus = { active: false, signal, done: missing.length, total: missing.length };
           this.analysisActivity(`${signal[0].toUpperCase()}${signal.slice(1)} profiles ready (${uniqueFiles.length} notes)`);
-        })().finally(() => this.analysisRuns.delete(runKey));
+        })().catch((error) => {
+          this.analysisStatus = { active: false, signal, done: Number(this.analysisStatus.done || 0), total: missing.length };
+          this.analysisActivity(`${signal[0].toUpperCase()}${signal.slice(1)} analysis stopped`);
+          throw error;
+        }).finally(() => this.analysisRuns.delete(runKey));
         this.analysisRuns.set(runKey, run);
         await run;
         return output;
@@ -73252,15 +73265,22 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
             if (evidence.signature !== this.graphEvidenceSignature(tuning).signature) return;
           }
           if (configuredSignals.size) this.analysisActivity(`Atlas qualities ready (${evidence.files.length} notes)`);
+          this.plugin.recordActivity?.("Atlas", "Atlas relationship cache ready", "success");
           for (const listener of this.graphCacheListeners) listener();
-        })().catch((error) => this.plugin.logDiagnostic?.(`Graph cache preparation failed: ${error?.message || error}`)).finally(() => {
+        })().catch((error) => {
+          this.plugin.recordActivity?.("Atlas", `Atlas preparation failed: ${error?.message || error}`, "error");
+          this.plugin.logDiagnostic?.(`Graph cache preparation failed: ${error?.message || error}`);
+        }).finally(() => {
           if (this.graphWarmPromise === pending) {
             this.graphWarmPromise = null;
             this.graphWarmSignature = "";
+            this.changed();
           }
         });
         this.graphWarmPromise = pending;
         this.graphWarmSignature = signature;
+        this.plugin.recordActivity?.("Atlas", "Preparing Atlas relationship cache", "working");
+        this.changed();
         return pending;
       }
       async semanticStarfield(query, files = null, focusFiles = [], options = {}) {
@@ -74239,7 +74259,7 @@ var DesktopEmbedder = class {
     }
     if (message.type === "relation-ready") {
       this.relationReady = true;
-      this.plugin.search?.changed();
+      this.plugin.search?.relationActivity?.("Relationship intelligence ready");
       return;
     }
     if (message.type === "topic-label-ready") {
@@ -77694,34 +77714,64 @@ var SearchSettings = class extends PluginSettingTab {
     this.plugin = plugin6;
     this.timer = null;
     this.unsubscribe = null;
+    this.activityOff = null;
     this.busy = false;
+    this.page = "status";
   }
   display() {
+    clearInterval(this.timer);
+    this.timer = null;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    this.activityOff?.();
+    this.activityOff = null;
     this.containerEl.empty();
-    this.containerEl.createEl("h2", { text: "Gib Search" });
-    new Setting(this.containerEl).setName("Status").setHeading();
+    this.containerEl.addClass("gib-settings");
+    const header = this.containerEl.createDiv({ cls: "gib-settings-header" });
+    header.createEl("h2", { text: "Gib Search" });
+    header.createSpan({ text: "Local semantic search and Atlas" });
+    const tabs = this.containerEl.createDiv({ cls: "gib-settings-tabs", attr: { role: "tablist", "aria-label": "Gib Search settings" } });
+    for (const [id2, label, iconName] of [["status", "Status", "activity"], ["search", "Search", "search"], ["views", "Views", "map"], ["console", "Console", "terminal"]]) {
+      const button = tabs.createEl("button", { attr: { type: "button", role: "tab", "aria-selected": String(this.page === id2) } });
+      const icon = button.createSpan();
+      setIcon(icon, iconName);
+      button.createSpan({ text: label });
+      button.toggleClass("is-active", this.page === id2);
+      button.addEventListener("click", () => {
+        if (this.page === id2) return;
+        this.page = id2;
+        this.display();
+      });
+    }
+    this.pageEl = this.containerEl.createDiv({ cls: "gib-settings-page", attr: { role: "tabpanel" } });
+    if (this.page === "search") this.renderSearchPage();
+    else if (this.page === "views") this.renderViewsPage();
+    else if (this.page === "console") this.renderConsolePage();
+    else this.renderStatusPage();
+  }
+  renderStatusPage() {
     this.renderHealth();
-    new Setting(this.containerEl).setName("Indexer").setHeading();
-    new Setting(this.containerEl).setName("Semantic index").setDesc("Run the local embedding indexer and continuously watch the vault for note changes.").addToggle((t3) => t3.setValue(this.plugin.settings.enabled).onChange(async (value) => {
+    new Setting(this.pageEl).setName("Semantic index").setDesc("Keep the local search index current as notes change.").addToggle((t3) => t3.setValue(this.plugin.settings.enabled).onChange(async (value) => {
       this.plugin.settings.enabled = value;
       await this.plugin.save();
       value ? this.plugin.indexer.start() : this.plugin.indexer.stop();
       this.refreshHealth();
     }));
-    new Setting(this.containerEl).setName("Index actions").setDesc("Start, pause, or restart local indexing. Pausing stops the current run without deleting completed work.").addButton((b) => b.setButtonText("Start").onClick(() => this.retry(false))).addButton((b) => b.setButtonText("Pause").onClick(() => {
+    new Setting(this.pageEl).setName("Index controls").setDesc("Pause preserves completed work. Restart resumes from the latest checkpoint.").addButton((b) => b.setButtonText("Start").onClick(() => this.retry(false))).addButton((b) => b.setButtonText("Pause").onClick(() => {
       const stopped = this.plugin.indexer.stop();
       new Notice(stopped ? "Gib Search indexing paused" : this.plugin.indexer.lastEvent);
       this.refreshHealth();
     })).addButton((b) => b.setButtonText("Restart").setCta().onClick(() => this.retry(true)));
-    new Setting(this.containerEl).setName("Diagnostics").setHeading();
-    new Setting(this.containerEl).setName("Health check").setDesc("Refresh live health data or run a real semantic query against the index.").addButton((b) => b.setButtonText("Refresh").onClick(() => this.refreshHealth(true))).addButton((b) => b.setButtonText("Test search").onClick(async () => {
+    new Setting(this.pageEl).setName("Verify").setDesc("Refresh health data or run a real local semantic query.").addButton((b) => b.setButtonText("Refresh").onClick(() => this.refreshHealth(true))).addButton((b) => b.setButtonText("Test search").onClick(async () => {
       if (this.busy) return;
       this.busy = true;
       b.setButtonText("Testing\u2026").setDisabled(true);
       try {
         const results = await this.plugin.search.search("test", 1, 0);
+        this.plugin.recordActivity("Search", `Health test returned ${results.length} result${results.length === 1 ? "" : "s"}`, "success");
         new Notice(`Semantic search is working (${results.length} result${results.length === 1 ? "" : "s"} returned)`);
       } catch (error) {
+        this.plugin.recordActivity("Search", `Health test failed: ${error.message}`, "error");
         new Notice(`Semantic search test failed: ${error.message}`, 8e3);
       } finally {
         this.busy = false;
@@ -77729,92 +77779,122 @@ var SearchSettings = class extends PluginSettingTab {
         this.refreshHealth();
       }
     }));
-    new Setting(this.containerEl).setName("Verbose diagnostic logging").setDesc("Record indexing lifecycle, every indexed note path, byte and chunk counts, embedding time, and errors. Note contents are not logged.").addToggle((t3) => t3.setValue(this.plugin.settings.verboseLogging).onChange(async (value) => {
-      this.plugin.settings.verboseLogging = value;
+    new Setting(this.pageEl).setName("Atlas").setHeading();
+    new Setting(this.pageEl).setName("Magic graph intelligence").setDesc("Combine semantic, topical, entity, and View relationships in the Atlas.").addToggle((t3) => t3.setValue(this.plugin.settings.magicGraphEnabled).onChange(async (value) => {
+      this.plugin.settings.magicGraphEnabled = value;
       await this.plugin.save();
-      await this.plugin.logDiagnostic(`Verbose logging ${value ? "enabled" : "disabled"}`, true);
-      if (this.plugin.settings.enabled) this.plugin.indexer.restart();
-      new Notice(`Verbose logging ${value ? "enabled; indexer restarting" : "disabled"}`);
     }));
-    new Setting(this.containerEl).setName("Diagnostic log").setDesc(this.plugin.diagnosticLogPath()).addButton((b) => b.setButtonText("Copy path").onClick(async () => {
-      await navigator.clipboard.writeText(this.plugin.diagnosticLogPath());
-      new Notice("Diagnostic log path copied");
-    })).addButton((b) => b.setButtonText("Clear").setWarning().onClick(async () => {
-      await this.plugin.clearDiagnosticLog();
-      new Notice("Diagnostic log cleared");
+    new Setting(this.pageEl).setName("Semantic color compass").setDesc("Give similar semantic directions related colors.").addToggle((t3) => t3.setValue(this.plugin.settings.graphSemanticColors).onChange(async (value) => {
+      this.plugin.settings.graphSemanticColors = value;
+      await this.plugin.save();
     }));
-    new Setting(this.containerEl).setName("Maintenance").setHeading();
-    new Setting(this.containerEl).setName("Rebuild semantic index").setDesc("Clear generated vectors and metadata, then re-index every note. Vault notes and the local model are untouched.").addButton((b) => b.setButtonText("Rebuild").setWarning().onClick(() => {
+    new Setting(this.pageEl).setName("Generated topic labels").setDesc("Use the local labeler to name Atlas communities.").addToggle((t3) => t3.setValue(this.plugin.settings.generatedTopicLabels).onChange(async (value) => {
+      this.plugin.settings.generatedTopicLabels = value;
+      this.plugin.search.clearStarfieldCaches();
+      await this.plugin.save();
+    }));
+    new Setting(this.pageEl).setName("Maintenance").setHeading();
+    new Setting(this.pageEl).setName("Rebuild semantic index").setDesc("Replace generated vectors and metadata. Notes and local models are untouched.").addButton((b) => b.setButtonText("Rebuild").setWarning().onClick(() => {
       if (!window.confirm("Rebuild the entire semantic index? Generated vectors will be replaced; vault notes are not changed.")) return;
       this.plugin.indexer.rebuild();
       new Notice("Gib Search started a full index rebuild");
       this.refreshHealth();
     }));
+    this.unsubscribe = this.plugin.indexer.onChange(() => this.refreshHealth());
+    this.timer = window.setInterval(() => this.refreshHealth(), 2e3);
+    this.refreshHealth();
+  }
+  renderSearchPage() {
     const tweaks = activeTweaks(this.plugin);
-    new Setting(this.containerEl).setName("Tweaks").setHeading();
-    new Setting(this.containerEl).setName("Minimum score").setDesc("Hide weak semantic matches (0\u20131).").addSlider((s3) => s3.setLimits(0, 1, 0.01).setValue(tweaks.minScore).setDynamicTooltip().onChange(async (value) => {
+    new Setting(this.pageEl).setName("Ranking").setHeading();
+    new Setting(this.pageEl).setName("Minimum score").setDesc("Hide weak semantic matches (0\u20131).").addSlider((s3) => s3.setLimits(0, 1, 0.01).setValue(tweaks.minScore).setDynamicTooltip().onChange(async (value) => {
       tweaks.minScore = value;
       await this.plugin.save();
     }));
-    new Setting(this.containerEl).setName("Score window").setDesc("Keep results within this distance of the strongest match. Smaller values filter ambiguous lower-ranked results.").addSlider((s3) => s3.setLimits(0.05, 1, 0.01).setValue(tweaks.scoreWindow).setDynamicTooltip().onChange(async (value) => {
+    new Setting(this.pageEl).setName("Score window").setDesc("Keep results this close to the strongest match.").addSlider((s3) => s3.setLimits(0.05, 1, 0.01).setValue(tweaks.scoreWindow).setDynamicTooltip().onChange(async (value) => {
       tweaks.scoreWindow = value;
       await this.plugin.save();
     }));
-    new Setting(this.containerEl).setName("Results").addSlider((s3) => s3.setLimits(5, 50, 5).setValue(tweaks.topK).setDynamicTooltip().onChange(async (value) => {
+    new Setting(this.pageEl).setName("Initial results").addSlider((s3) => s3.setLimits(5, 50, 5).setValue(tweaks.topK).setDynamicTooltip().onChange(async (value) => {
       tweaks.topK = value;
       await this.plugin.save();
     }));
-    new Setting(this.containerEl).setName("Boost folder path matches").setDesc("Give notes a modest ranking boost when the query matches words in their folder path.").addToggle((t3) => t3.setValue(this.plugin.settings.folderPathBoostEnabled).onChange(async (value) => {
+    new Setting(this.pageEl).setName("Boost folder path matches").setDesc("Give matching folder words a modest ranking boost.").addToggle((t3) => t3.setValue(this.plugin.settings.folderPathBoostEnabled).onChange(async (value) => {
       this.plugin.settings.folderPathBoostEnabled = value;
       await this.plugin.save();
     }));
-    new Setting(this.containerEl).setName("Load external image thumbnails").setDesc("Allow search results to request images from web URLs found in notes. Local vault images are always available. Disabled by default for privacy and performance.").addToggle((t3) => t3.setValue(this.plugin.settings.allowExternalImageThumbnails).onChange(async (value) => {
+    new Setting(this.pageEl).setName("Results").setHeading();
+    new Setting(this.pageEl).setName("External image thumbnails").setDesc("Allow web images found in notes. Local vault images remain available.").addToggle((t3) => t3.setValue(this.plugin.settings.allowExternalImageThumbnails).onChange(async (value) => {
       this.plugin.settings.allowExternalImageThumbnails = value;
       await this.plugin.save();
     }));
-    new Setting(this.containerEl).setName("Enable semantic highlighting").setDesc("Color compact concepts that the local model identifies as related to the query.").addToggle((t3) => t3.setValue(tweaks.semanticHighlights).onChange(async (value) => {
+    new Setting(this.pageEl).setName("Semantic highlighting").setDesc("Emphasize compact concepts related to the query.").addToggle((t3) => t3.setValue(tweaks.semanticHighlights).onChange(async (value) => {
       tweaks.semanticHighlights = value;
       await this.plugin.save();
       this.display();
     }));
     if (tweaks.semanticHighlights) {
-      new Setting(this.containerEl).setName("Result confidence").setDesc("Only attribute phrases inside results at or above this similarity. Higher values reduce misleading highlights.").addSlider((s3) => s3.setLimits(0.4, 0.9, 0.01).setValue(tweaks.highlightResultMinScore).setDynamicTooltip().onChange(async (value) => {
+      new Setting(this.pageEl).setName("Result confidence").setDesc("Minimum result similarity before concepts are emphasized.").addSlider((s3) => s3.setLimits(0.4, 0.9, 0.01).setValue(tweaks.highlightResultMinScore).setDynamicTooltip().onChange(async (value) => {
         tweaks.highlightResultMinScore = value;
         await this.plugin.save();
       }));
-      new Setting(this.containerEl).setName("Single-word sensitivity").setDesc("Minimum similarity for a single highlighted concept. Higher is more conservative.").addSlider((s3) => s3.setLimits(0.4, 0.9, 0.01).setValue(tweaks.highlightSingleWordMinScore).setDynamicTooltip().onChange(async (value) => {
+      new Setting(this.pageEl).setName("Single-word sensitivity").addSlider((s3) => s3.setLimits(0.4, 0.9, 0.01).setValue(tweaks.highlightSingleWordMinScore).setDynamicTooltip().onChange(async (value) => {
         tweaks.highlightSingleWordMinScore = value;
         await this.plugin.save();
       }));
-      new Setting(this.containerEl).setName("Phrase sensitivity").setDesc("Minimum similarity for highlighted two- or three-word phrases. Higher is more conservative.").addSlider((s3) => s3.setLimits(0.2, 0.8, 0.01).setValue(tweaks.highlightPhraseMinScore).setDynamicTooltip().onChange(async (value) => {
+      new Setting(this.pageEl).setName("Phrase sensitivity").addSlider((s3) => s3.setLimits(0.2, 0.8, 0.01).setValue(tweaks.highlightPhraseMinScore).setDynamicTooltip().onChange(async (value) => {
         tweaks.highlightPhraseMinScore = value;
         await this.plugin.save();
       }));
-      new Setting(this.containerEl).setName("Concepts per passage").setDesc("Maximum semantic concepts colored in each passage.").addSlider((s3) => s3.setLimits(1, 5, 1).setValue(tweaks.highlightMaxPhrases).setDynamicTooltip().onChange(async (value) => {
+      new Setting(this.pageEl).setName("Concepts per passage").addSlider((s3) => s3.setLimits(1, 5, 1).setValue(tweaks.highlightMaxPhrases).setDynamicTooltip().onChange(async (value) => {
         tweaks.highlightMaxPhrases = value;
         await this.plugin.save();
       }));
     }
+  }
+  renderViewsPage() {
     this.renderAtlasViewSettings();
-    new Setting(this.containerEl).setName("Graph").setHeading();
-    new Setting(this.containerEl).setName("Magic graph intelligence").setDesc("Combine topic direction, entities, communities, residual meaning, and relationships into a query-conditioned dimensional layout.").addToggle((t3) => t3.setValue(this.plugin.settings.magicGraphEnabled).onChange(async (value) => {
-      this.plugin.settings.magicGraphEnabled = value;
+    this.pageEl.createDiv({ cls: "gib-settings-note", text: "Tune standard Views or create custom Views directly on the Atlas. Every View is shared by Atlas, Search, Navigator, and Companion." });
+  }
+  renderConsolePage() {
+    const toolbar = this.pageEl.createDiv({ cls: "gib-console-toolbar" }), copy3 = toolbar.createEl("button", { text: "Copy", attr: { type: "button" } }), clear = toolbar.createEl("button", { text: "Clear", attr: { type: "button" } }), pathButton = toolbar.createEl("button", { text: "Log path", attr: { type: "button" } });
+    toolbar.createSpan({ text: "Live session activity" });
+    copy3.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(this.plugin.activityText());
+      new Notice("Gib Search console copied");
+    });
+    clear.addEventListener("click", async () => {
+      this.plugin.clearActivity();
+      await this.plugin.clearDiagnosticLog();
+      new Notice("Gib Search console cleared");
+    });
+    pathButton.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(this.plugin.diagnosticLogPath());
+      new Notice("Diagnostic log path copied");
+    });
+    new Setting(this.pageEl).setName("Detailed file log").setDesc("Persist note paths, byte and chunk counts, timings, and errors. Note contents are never logged.").addToggle((t3) => t3.setValue(this.plugin.settings.verboseLogging).onChange(async (value) => {
+      this.plugin.settings.verboseLogging = value;
       await this.plugin.save();
+      await this.plugin.logDiagnostic(`Detailed file logging ${value ? "enabled" : "disabled"}`, true);
+      this.renderConsole();
     }));
-    new Setting(this.containerEl).setName("Semantic color compass").setDesc("Color notes by their direction on the vault-wide semantic compass. Similar directions share a hue.").addToggle((t3) => t3.setValue(this.plugin.settings.graphSemanticColors).onChange(async (value) => {
-      this.plugin.settings.graphSemanticColors = value;
-      await this.plugin.save();
-    }));
-    new Setting(this.containerEl).setName("Generated topic labels").setDesc("Use a small local language model to name full-vault topic communities from representative passages. The first use downloads it; labels are cached and statistical labels remain available as a fallback.").addToggle((t3) => t3.setValue(this.plugin.settings.generatedTopicLabels).onChange(async (value) => {
-      this.plugin.settings.generatedTopicLabels = value;
-      this.plugin.search.clearStarfieldCaches();
-      await this.plugin.save();
-    }));
-    this.unsubscribe?.();
-    this.unsubscribe = this.plugin.indexer.onChange(() => this.refreshHealth());
-    clearInterval(this.timer);
-    this.timer = window.setInterval(() => this.refreshHealth(), 2e3);
-    this.refreshHealth();
+    this.consoleEl = this.pageEl.createDiv({ cls: "gib-console", attr: { role: "log", "aria-live": "polite" } });
+    this.renderConsole();
+    this.activityOff = this.plugin.onActivity(() => this.renderConsole(true));
+  }
+  renderConsole(follow = false) {
+    if (!this.consoleEl?.isConnected) return;
+    const nearBottom = this.consoleEl.scrollHeight - this.consoleEl.scrollTop - this.consoleEl.clientHeight < 48;
+    this.consoleEl.empty();
+    const entries = this.plugin.activityLog.slice(-250);
+    if (!entries.length) this.consoleEl.createDiv({ cls: "gib-console-empty", text: "No activity recorded in this session." });
+    for (const entry of entries) {
+      const row = this.consoleEl.createDiv({ cls: "gib-console-row", attr: { "data-level": entry.level } });
+      row.createEl("time", { text: new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) });
+      row.createSpan({ cls: "gib-console-channel", text: entry.channel });
+      row.createSpan({ cls: "gib-console-message", text: entry.message });
+    }
+    if (follow || nearBottom) this.consoleEl.scrollTop = this.consoleEl.scrollHeight;
   }
   async saveAtlasViews(redraw = true) {
     this.plugin.atlas.clear();
@@ -77822,8 +77902,8 @@ var SearchSettings = class extends PluginSettingTab {
     if (redraw) for (const leaf of this.app.workspace.getLeavesOfType(GRAPH_VIEW)) leaf.view?.refreshViews?.();
   }
   renderAtlasViewSettings() {
-    new Setting(this.containerEl).setName("Views").setHeading();
-    new Setting(this.containerEl).setName("Starting view").setDesc("Views are shared by Atlas, Search, and Companion. Tune or create them directly on the Atlas.").addDropdown((dropdown) => {
+    new Setting(this.pageEl).setName("Views").setHeading();
+    new Setting(this.pageEl).setName("Starting view").setDesc("The View selected when Atlas or Search opens.").addDropdown((dropdown) => {
       for (const view of this.plugin.atlas.views()) dropdown.addOption(view.id, view.name);
       dropdown.setValue(this.plugin.settings.atlasHomeViewId).onChange(async (value) => {
         this.plugin.settings.atlasHomeViewId = value;
@@ -77832,7 +77912,7 @@ var SearchSettings = class extends PluginSettingTab {
     });
     const custom = this.plugin.settings.atlasViews.filter((view) => !STANDARD_ATLAS_VIEWS2.some((preset) => preset.id === view.id));
     if (custom.length) {
-      const list4 = this.containerEl.createDiv({ cls: "gib-settings-view-list" });
+      const list4 = this.pageEl.createDiv({ cls: "gib-settings-view-list" });
       for (const view of custom) {
         const row = list4.createDiv({ cls: "gib-settings-view-row" }), text = row.createDiv({ cls: "gib-settings-view-copy" });
         text.createDiv({ cls: "gib-settings-view-name", text: view.name });
@@ -77850,27 +77930,39 @@ var SearchSettings = class extends PluginSettingTab {
     }
   }
   renderHealth() {
-    const status = new Setting(this.containerEl).setName("Indexer status");
-    this.healthEl = status.settingEl;
-    this.healthEl.addClass("gib-health-status-row");
-    this.healthMessage = status.descEl.createDiv({ text: "Reading index status" });
-    this.healthGrid = status.descEl.createDiv({ cls: "gib-health-inline" });
-    this.healthProgress = status.descEl.createEl("progress", { cls: "gib-health-progress" });
-    this.healthProgress.max = 100;
-    this.healthProgress.value = 0;
-    this.healthProgress.style.display = "none";
-    this.healthEvent = status.descEl.createDiv({ cls: "gib-health-event" });
-    this.healthDot = status.controlEl.createSpan({ cls: "gib-health-dot" });
-    this.healthTitle = status.controlEl.createSpan({ cls: "gib-health-label", text: "Checking\u2026" });
-    status.addButton((button) => {
-      this.retryButton = button;
-      button.setButtonText("Retry").setCta().onClick(() => this.retry(true));
-      button.buttonEl.addClass("gib-health-retry");
-      button.buttonEl.style.display = "none";
-    });
+    this.healthEl = this.pageEl.createDiv({ cls: "gib-health-overview", attr: { "data-state": "working" } });
+    const head = this.healthEl.createDiv({ cls: "gib-health-overview-head" }), identity = head.createDiv({ cls: "gib-health-overview-identity" });
+    this.healthDot = identity.createSpan({ cls: "gib-health-dot" });
+    const copy3 = identity.createDiv();
+    this.healthTitle = copy3.createEl("strong", { text: "Checking Gib Search\u2026" });
+    this.healthMessage = copy3.createSpan({ text: "Reading local service state" });
+    this.healthRetry = head.createEl("button", { text: "Retry", attr: { type: "button" } });
+    this.healthRetry.hide();
+    this.healthRetry.addEventListener("click", () => this.retry(true));
+    const tracks = this.healthEl.createDiv({ cls: "gib-health-tracks" });
+    this.healthTracks = {};
+    for (const [id2, label, iconName] of [["search", "Search index", "database"], ["atlas", "Atlas qualities", "sparkles"], ["models", "Local models", "cpu"]]) {
+      const row = tracks.createDiv({ cls: "gib-health-track", attr: { "data-state": "waiting" } }), icon = row.createSpan({ cls: "gib-health-track-icon" });
+      setIcon(icon, iconName);
+      const body = row.createDiv({ cls: "gib-health-track-body" }), line = body.createDiv({ cls: "gib-health-track-line" });
+      line.createSpan({ text: label });
+      const value = line.createSpan({ text: "Checking\u2026" }), detail = body.createDiv({ cls: "gib-health-track-detail" }), progress = body.createEl("progress");
+      progress.max = 100;
+      progress.hide();
+      this.healthTracks[id2] = { row, value, detail, progress };
+    }
+    this.healthEvent = this.healthEl.createDiv({ cls: "gib-health-current", text: "Waiting for activity" });
   }
-  field(label, value) {
-    this.healthFields.push(`${label}: ${value ?? "\u2014"}`);
+  setHealthTrack(id2, state, value, detail, progress = null) {
+    const track = this.healthTracks?.[id2];
+    if (!track) return;
+    track.row.dataset.state = state;
+    track.value.textContent = value;
+    track.detail.textContent = detail;
+    if (Number.isFinite(progress)) {
+      track.progress.show();
+      track.progress.value = Math.max(0, Math.min(100, progress));
+    } else track.progress.hide();
   }
   async refreshHealth(showNotice = false) {
     if (!this.healthEl?.isConnected) return;
@@ -77886,45 +77978,21 @@ var SearchSettings = class extends PluginSettingTab {
     const phase = String(local.phase || "offline");
     const updatedAt = Number(local.updatedAt || 0);
     const statusAge = updatedAt ? Date.now() - updatedAt : Infinity;
-    const stale = Number(remote?.staleFiles || 0);
-    const healthy = phase === "ready" && !remote?.isIndexing && stale === 0;
-    const working = Boolean(remote?.isIndexing) || ["starting", "loading_model", "downloading_model", "indexing"].includes(phase);
-    const stoppedResponding = !remote && working && statusAge > 15e3;
-    const activelyWorking = working && !stoppedResponding;
-    const state = healthy ? "healthy" : activelyWorking ? "working" : this.plugin.settings.enabled ? "error" : "disabled";
+    const stale = Number(remote?.staleFiles || 0), total = Number(local.totalFiles || remote?.vaultFiles || 0), done = Number(local.processedFiles ?? remote?.indexedFiles ?? 0), searchWorking = Boolean(remote?.isIndexing) || ["starting", "loading_model", "downloading_model", "indexing"].includes(phase), stoppedResponding = !remote && searchWorking && statusAge > 15e3, searchReady = phase === "ready" && !remote?.isIndexing && stale === 0, analysis = local.analysisStatus || remote?.analysisStatus || {}, relationshipWorking = /^(loading|downloading|reading)/i.test(String(local.relationMessage || "")), atlasWorking = Boolean(analysis.active || local.graphPreparing || remote?.graphPreparing || local.topicLabelsPreparing || relationshipWorking), modelWorking = Boolean(local.modelPreparing || local.relationModelPreparing || local.topicLabelModelPreparing || remote?.modelPreparing || remote?.relationModelPreparing || remote?.topicLabelModelPreparing || [local.modelMessage, local.relationMessage, local.topicLabelMessage].some((message) => /^(loading|downloading)/i.test(String(message || "")))), failed = stoppedResponding || phase === "error" || Boolean(error && !remote), disabled = !this.plugin.settings.enabled;
+    const state = failed ? "error" : disabled ? "disabled" : searchWorking || atlasWorking || modelWorking ? "working" : searchReady ? "healthy" : "working";
     this.healthEl.dataset.state = state;
-    this.healthTitle.textContent = healthy ? "Healthy and watching your vault" : activelyWorking ? "Indexing in progress" : this.plugin.settings.enabled ? "Indexer needs attention" : "Indexer disabled";
-    this.healthMessage.textContent = healthy ? `The semantic index is current and note changes are being watched.${remote?.modelLoaded ? "" : " The model will load when it is needed."}` : stoppedResponding ? `The indexer stopped responding ${formatElapsed(statusAge)} ago. Retry will resume from the latest checkpoint.` : activelyWorking ? local.message || this.plugin.indexer.lastEvent : this.plugin.indexer.lastError || error || local.message || "The semantic index is unavailable";
-    const total = Number(local.totalFiles || local.vaultFiles || remote?.vaultFiles || 0), done = Number(local.processedFiles ?? local.fileCount ?? local.indexedFiles ?? remote?.indexedFiles ?? 0);
-    const elapsedFrom = Number(local.phaseStartedAt || local.startedAt || 0);
-    const indexBytes = this.plugin.search.storageBytes?.() || 0;
-    const modelBytes = this.plugin.runtime.storageBytes?.() || 0;
-    this.healthFields = [];
-    this.field("Phase", stoppedResponding ? "stopped" : phase.replaceAll("_", " "));
-    this.field("Progress", total ? `${done}/${total}` : "Waiting");
-    this.field("Indexed", remote?.indexedFiles ?? local.indexedFiles ?? 0);
-    this.field("Chunks", remote?.totalChunks ?? local.totalChunks ?? 0);
-    this.field("Cached highlight phrases", remote?.highlightPhrases ?? local.highlightPhrases ?? 0);
-    this.field("Graph entities", remote?.graphEntities ?? 0);
-    this.field("Graph cache", remote?.graphCacheReady ? "Ready" : remote?.isIndexing ? "Waiting for index" : "Preparing");
-    this.field("Cached topic labels", remote?.cachedTopicLabels ?? 0);
-    this.field("Cached text profiles", remote?.cachedTextAnalyses ?? local.cachedTextAnalyses ?? 0);
-    const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || remote?.modelId || "Loaded";
-    this.field("Model", remote?.modelLoaded ? `${modelLabel} (${String(remote.modelBackend || "WASM").toUpperCase()})` : healthy ? "Loads on demand" : "Not ready");
-    this.field("Topic labeler", remote?.topicLabelModelLoaded ? "Loaded" : this.plugin.settings.generatedTopicLabels ? "Loads on demand" : "Disabled");
-    this.field("Text analyzer", remote?.relationModelLoaded ? "Loaded" : "Loads with analytical Views");
-    this.field("Index size", formatBytes(indexBytes));
-    if (!this.plugin.isMobile) this.field("Model cache", formatBytes(modelBytes));
-    this.field("Last success", formatWhen(local.lastSuccessfulIndexAt));
-    if (activelyWorking && elapsedFrom) this.field("Elapsed", formatElapsed(Date.now() - elapsedFrom));
-    this.healthGrid.textContent = this.healthFields.join(" \xB7 ");
-    if (activelyWorking && total > 0) {
-      this.healthProgress.style.display = "";
-      this.healthProgress.value = Math.min(100, done / total * 100);
-    } else this.healthProgress.style.display = "none";
-    this.healthEvent.textContent = local.currentFile ? `Current file: ${local.currentFile}` : local.analysisMessage ? `Text analysis: ${local.analysisMessage}` : local.topicLabelMessage ? `Topic labels: ${local.topicLabelMessage}` : local.relationMessage ? `Graph intelligence: ${local.relationMessage}` : local.modelMessage ? `Semantic model: ${local.modelMessage}` : `Latest activity: ${this.plugin.indexer.lastEvent}`;
-    if (this.retryButton?.buttonEl) this.retryButton.buttonEl.style.display = state === "error" ? "" : "none";
-    if (showNotice) new Notice(healthy ? "Gib Search is healthy" : activelyWorking ? "Gib Search is currently indexing" : `Gib Search health check failed: ${stoppedResponding ? "indexer stopped responding" : error || local.message || "index unavailable"}`);
+    this.healthTitle.textContent = state === "healthy" ? "Gib Search is ready" : state === "working" ? "Gib Search is working" : state === "disabled" ? "Gib Search is paused" : "Gib Search needs attention";
+    this.healthMessage.textContent = state === "healthy" ? "Search and Atlas services are current." : failed ? stoppedResponding ? `No response for ${formatElapsed(statusAge)}.` : error || local.message || "A local service failed." : atlasWorking && searchReady ? "Search is ready while Atlas finishes preparing." : local.message || this.plugin.indexer.lastEvent;
+    const indexed = Number(remote?.indexedFiles ?? local.indexedFiles ?? 0), chunks2 = Number(remote?.totalChunks ?? local.totalChunks ?? 0), searchProgress = total ? done / total * 100 : null;
+    this.setHealthTrack("search", failed ? "error" : searchReady ? "ready" : searchWorking ? "working" : disabled ? "waiting" : "working", searchReady ? "Ready" : searchWorking ? `${done}/${total || "\u2026"}` : disabled ? "Paused" : "Waiting", `${indexed} notes \xB7 ${chunks2} passages \xB7 ${formatBytes(this.plugin.search.storageBytes?.() || 0)}`, searchWorking ? searchProgress : null);
+    const qualityDone = Number(analysis.done || 0), qualityTotal = Number(analysis.total || 0), qualitySignal = analysis.signal ? `${analysis.signal[0].toUpperCase()}${analysis.signal.slice(1)}` : "", graphReady = Boolean(remote?.graphCacheReady), atlasValue = analysis.active ? `${qualityDone}/${qualityTotal}` : local.graphPreparing || remote?.graphPreparing ? "Preparing" : graphReady ? "Ready" : searchReady ? "On demand" : "Waiting", atlasDetail = analysis.active ? `${qualitySignal} qualities` : `${Number(remote?.cachedTextAnalyses || 0)} profiles \xB7 ${Number(remote?.cachedTopicLabels || 0)} topic labels`;
+    this.setHealthTrack("atlas", atlasWorking ? "working" : graphReady || searchReady ? "ready" : "waiting", atlasValue, atlasDetail, analysis.active && qualityTotal ? qualityDone / qualityTotal * 100 : null);
+    const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || "BGE Small", semanticModel = remote?.modelLoaded ? "BGE ready" : "BGE on demand", textModel = remote?.relationModelLoaded ? "Analyzer ready" : "Analyzer on demand", topicModel = !this.plugin.settings.generatedTopicLabels ? "Labels off" : remote?.topicLabelModelLoaded ? "Labeler ready" : "Labeler on demand";
+    this.setHealthTrack("models", modelWorking ? "working" : failed ? "error" : "ready", modelWorking ? "Loading" : "Available", `${modelLabel} \xB7 ${semanticModel} \xB7 ${textModel} \xB7 ${topicModel}${this.plugin.isMobile ? "" : ` \xB7 ${formatBytes(this.plugin.runtime.storageBytes?.() || 0)}`}`);
+    const current = analysis.active ? `Atlas: ${local.analysisMessage}` : local.currentFile ? `Indexing: ${local.currentFile}` : local.graphPreparing || remote?.graphPreparing ? "Atlas: preparing relationship cache" : local.topicLabelsPreparing ? `Topics: ${local.topicLabelMessage || "generating labels"}` : relationshipWorking ? `Atlas: ${local.relationMessage}` : local.modelMessage && modelWorking ? `Models: ${local.modelMessage}` : `Last completed: ${formatWhen(local.lastSuccessfulIndexAt)}`;
+    this.healthEvent.textContent = current;
+    this.healthRetry.toggle(state === "error");
+    if (showNotice) new Notice(state === "healthy" ? "Gib Search is ready" : state === "working" ? this.healthMessage.textContent : state === "disabled" ? "Gib Search is paused" : `Gib Search needs attention: ${this.healthMessage.textContent}`);
   }
   async retry(restart) {
     if (this.busy) return;
@@ -77952,12 +78020,16 @@ var SearchSettings = class extends PluginSettingTab {
     this.timer = null;
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.activityOff?.();
+    this.activityOff = null;
     for (const leaf of this.app.workspace.getLeavesOfType(GRAPH_VIEW)) leaf.view?.refreshViews?.();
   }
 };
 module.exports = class GibSearch extends Plugin {
   async onload() {
     const loaded = await this.loadData() || {};
+    this.activityLog = [];
+    this.activityListeners = /* @__PURE__ */ new Set();
     this.settings = Object.assign({}, DEFAULTS, loaded);
     delete this.settings.mapProjection;
     delete this.settings.defaultSearchLens;
@@ -78027,10 +78099,38 @@ module.exports = class GibSearch extends Plugin {
   async save() {
     await this.saveData(this.settings);
   }
+  recordActivity(channel, message, level = "info") {
+    const clean2 = String(message || "").replace(/\s+/g, " ").trim();
+    if (!clean2) return;
+    this.activityLog || (this.activityLog = []);
+    this.activityListeners || (this.activityListeners = /* @__PURE__ */ new Set());
+    const at = Date.now(), last = this.activityLog.at(-1);
+    if (last && last.channel === channel && last.message === clean2 && at - last.at < 1500) {
+      last.at = at;
+      last.level = level;
+    } else {
+      this.activityLog.push({ at, channel: String(channel || "System"), message: clean2, level });
+      if (this.activityLog.length > 500) this.activityLog.splice(0, this.activityLog.length - 500);
+    }
+    for (const listener of this.activityListeners) listener(this.activityLog.at(-1));
+  }
+  onActivity(listener) {
+    this.activityListeners || (this.activityListeners = /* @__PURE__ */ new Set());
+    this.activityListeners.add(listener);
+    return () => this.activityListeners.delete(listener);
+  }
+  clearActivity() {
+    this.activityLog = [];
+    for (const listener of this.activityListeners || []) listener(null);
+  }
+  activityText() {
+    return (this.activityLog || []).map((entry) => `[${new Date(entry.at).toISOString()}] [${entry.channel}] ${entry.message}`).join("\n");
+  }
   diagnosticLogPath() {
     return this.isMobile ? `gib-search-diagnostics:${this.app.vault.getName()}` : path.join(this.pluginDir, "logs", "gib-search.log");
   }
   async logDiagnostic(message, force = false) {
+    this.recordActivity("System", message, /error|failed|could not|unavailable/i.test(String(message)) ? "error" : "info");
     if (!force && !this.settings.verboseLogging) return;
     const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${String(message).replace(/\r?\n/g, "\n")}
 `;

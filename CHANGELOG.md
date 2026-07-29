@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.45.0
+
+- Splits plugin settings into compact Status, Search, Views, and Console pages.
+- Replaces the ambiguous single health indicator with separate Search index, Atlas qualities, and Local models states.
+- Shows structured Atlas-analysis progress so active quality work keeps the overall state visibly in progress.
+- Adds a bounded live Console for indexing, model, Atlas-analysis, topic-label, relationship, and error activity.
+
 ## 0.44.0
 
 - Replaces the separate Atlas View editor with compact, live controls directly on the Atlas.

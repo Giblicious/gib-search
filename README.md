@@ -4,6 +4,8 @@ Local semantic search and a similarity graph for Obsidian.
 
 Gib Search indexes note content, headings, filenames, entities, and optional folder-path signals. Search results include compact source excerpts, semantic phrase emphasis, ranking controls, and a living graph of related notes.
 
+Plugin settings are divided into Status, Search, Views, and Console pages. Status reports the Search index, Atlas-quality analysis, and local models independently; Console provides a bounded live account of current local work without logging note contents.
+
 One View definition now controls the Atlas, search map, and Atlas Companion. The included Views are **Meaning**, **Topics**, **Emotion**, **Purpose**, **Writing form**, and **Links**. Choose the same View anywhere without translating between separate lens, grouping, and graph-mode controls.
 
 The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. Every note remains a particle, and all note pairs participate across short rolling sweeps. Views change the mixture of measured relationships; they do not rerun a global projection or replace the vault with a fixed neighbor sample.
