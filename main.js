@@ -70597,8 +70597,8 @@ function calibratedAffinities(source) {
   return { values, reliability };
 }
 function contrastiveAffinities(source, size) {
-  const count = Math.max(0, Number(size) || 0), values = new Float32Array(source?.length || 0), activity = new Float32Array(count);
-  if (!source?.length || count < 2) return { values, activity, reliability: 0 };
+  const count = Math.max(0, Number(size) || 0), values = new Float32Array(source?.length || 0), mutual = new Uint8Array(source?.length || 0), activity = new Float32Array(count);
+  if (!source?.length || count < 2) return { values, mutual, activity, reliability: 0 };
   const rowSums = new Float64Array(count);
   let cursor = 0, total = 0;
   for (let first = 0; first < count; first++) for (let second = first + 1; second < count; second++, cursor++) {
@@ -70624,16 +70624,17 @@ function contrastiveAffinities(source, size) {
   let active = 0;
   cursor = 0;
   for (let first = 0; first < count; first++) for (let second = first + 1; second < count; second++, cursor++) {
-    const residual = residuals[cursor], magnitude = Math.abs(residual), localCutoff = residual >= 0 ? Math.min(cutoffs[first], cutoffs[second]) : Math.max(cutoffs[first], cutoffs[second]);
+    const residual = residuals[cursor], magnitude = Math.abs(residual), mutualCutoff = Math.max(cutoffs[first], cutoffs[second]), localCutoff = residual >= 0 ? Math.min(cutoffs[first], cutoffs[second]) : mutualCutoff;
     if (magnitude <= deadZone || magnitude < localCutoff) continue;
     const normalized = Math.max(0, Math.min(1, (magnitude - deadZone) / span)), strength = normalized * normalized * (3 - 2 * normalized);
     values[cursor] = Math.sign(residual) * strength;
+    mutual[cursor] = magnitude >= mutualCutoff ? 1 : 0;
     activity[first] = Math.max(activity[first], strength);
     activity[second] = Math.max(activity[second], strength);
     active++;
   }
   const activeRatio = active / Math.max(1, source.length), reliability = Math.max(0.18, Math.min(1, span / Math.max(0.018, upper) * Math.min(1, activeRatio / 0.025)));
-  return { values, activity, reliability };
+  return { values, mutual, activity, reliability };
 }
 function dotPacked(query, packed, offset2) {
   let score = 0;
@@ -72821,7 +72822,7 @@ ${item.text || ""}`;
         return [...spanning, ...remaining];
       }
       async relationshipForceField(query, nodes, relationshipField = {}, options = {}) {
-        const values = [...new Map((nodes || []).filter((node) => node?.id).map((node) => [node.id, node])).values()], ids = values.map((node) => node.id), profileSignals = [...relationshipField.profiles?.keys?.() || []].sort(), centerFile = String(options.centerFile || ""), vectors = this.fileVectors(centerFile ? [...ids, centerFile] : ids), trimmed = String(query || "").trim(), conditioned = Boolean(trimmed || centerFile), reference = String(relationshipField.reference || ""), linkSignature = [...relationshipField.linkPairs || []].sort(), signature = contentFingerprint(JSON.stringify(["force-field-v3", ids.map((id2) => [id2, this.fileFingerprint(id2)]), trimmed.toLowerCase(), centerFile, profileSignals, reference, linkSignature])), cached = this.relationshipForceCaches.get(signature);
+        const values = [...new Map((nodes || []).filter((node) => node?.id).map((node) => [node.id, node])).values()], ids = values.map((node) => node.id), profileSignals = [...relationshipField.profiles?.keys?.() || []].sort(), centerFile = String(options.centerFile || ""), vectors = this.fileVectors(centerFile ? [...ids, centerFile] : ids), trimmed = String(query || "").trim(), conditioned = Boolean(trimmed || centerFile), reference = String(relationshipField.reference || ""), linkSignature = [...relationshipField.linkPairs || []].sort(), signature = contentFingerprint(JSON.stringify(["force-field-v4", ids.map((id2) => [id2, this.fileFingerprint(id2)]), trimmed.toLowerCase(), centerFile, profileSignals, reference, linkSignature])), cached = this.relationshipForceCaches.get(signature);
         if (cached) return { ...cached, weights: { ...relationshipField.weights || {} }, dynamics: { ...relationshipField.dynamics || {} } };
         const pairCount = ids.length * Math.max(0, ids.length - 1) / 2, raw = { semantic: new Float32Array(pairCount) };
         for (const signal of profileSignals) raw[signal] = new Float32Array(pairCount);
@@ -72846,22 +72847,28 @@ ${item.text || ""}`;
           }
           if (first % 12 === 11) await yieldToUi();
         }
-        const components = {}, activity = {}, reliability = {};
+        const components = {}, mutuality = {}, activity = {}, reliability = {};
         for (const [signal, scores] of Object.entries(raw)) {
           if (signal === "links") {
-            const component = Float32Array.from(scores, (value) => value > 0.5 ? 1 : 0), nodeActivity = new Float32Array(ids.length);
-            let pair = 0;
-            for (let first = 0; first < ids.length; first++) for (let second = first + 1; second < ids.length; second++, pair++) if (component[pair]) nodeActivity[first] = nodeActivity[second] = 1;
+            const component = Float32Array.from(scores, (value) => value > 0.5 ? 1 : 0), mutual = Uint8Array.from(component, (value) => value ? 1 : 0), nodeActivity = new Float32Array(ids.length);
+            let pair2 = 0;
+            for (let first = 0; first < ids.length; first++) for (let second = first + 1; second < ids.length; second++, pair2++) if (component[pair2]) nodeActivity[first] = nodeActivity[second] = 1;
             components[signal] = component;
+            mutuality[signal] = mutual;
             activity[signal] = nodeActivity;
             reliability[signal] = 1;
           } else {
             const contrastive = contrastiveAffinities(scores, ids.length);
             components[signal] = contrastive.values;
+            mutuality[signal] = contrastive.mutual;
             activity[signal] = contrastive.activity;
             reliability[signal] = contrastive.reliability;
           }
         }
+        const sparse = [], componentValues = Object.values(components);
+        let pair = 0;
+        for (let first = 0; first < ids.length; first++) for (let second = first + 1; second < ids.length; second++, pair++) if (componentValues.some((component) => component[pair] !== 0)) sparse.push(first, second, pair);
+        const sparsePairs = Uint32Array.from(sparse);
         let relevance = null;
         if (queryScores) {
           relevance = calibratedAffinities(queryScores).values;
@@ -72870,7 +72877,7 @@ ${item.text || ""}`;
             if (Number.isFinite(supplied)) relevance[index3] = Math.max(0, Math.min(1, supplied));
           }
         }
-        const built = { version: 3, signature, ids, pairCount, components, activity, reliability, relevance, conditioned };
+        const built = { version: 4, signature, ids, pairCount, sparsePairs, components, mutuality, activity, reliability, relevance, conditioned };
         this.relationshipForceCaches.set(signature, built);
         while (this.relationshipForceCaches.size > 8) this.relationshipForceCaches.delete(this.relationshipForceCaches.keys().next().value);
         return { ...built, weights: { ...relationshipField.weights || {} }, dynamics: { ...relationshipField.dynamics || {} } };
@@ -73625,7 +73632,7 @@ function normalizeRelationships(value, legacySignal = "semantic") {
   return output;
 }
 function normalizeDynamics(value = {}) {
-  return { contrast: clamp(value.contrast ?? 0.58), cohesion: clamp(value.cohesion ?? 0.62), spacing: clamp(value.spacing ?? 0.55) };
+  return { contrast: clamp(value.contrast ?? 0.58), cohesion: clamp(value.cohesion ?? 0.62), spacing: clamp(value.spacing ?? 0.55), spring: clamp(value.spring ?? 0.68), charge: clamp(value.charge ?? 0.56), selectivity: clamp(value.selectivity ?? 0.45), mutuality: clamp(value.mutuality ?? 0.7), bridges: clamp(value.bridges ?? 0.42), settling: clamp(value.settling ?? 0.68) };
 }
 function categoryAnchorLayout(categories, vectors, geometry) {
   const count = categories.length, radial = categories.map((category, index3) => {
@@ -73698,7 +73705,7 @@ var init_atlas_engine = __esm({
       scope: { folders: [], excludeFolders: [], tags: [], properties: {}, extensions: ["md", "txt", "markdown"] },
       anchor: { type: "default" },
       scale: "default",
-      frame: { mode: "natural", referenceFrame: "free", arrangement: "meaning", signal: "semantic", reference: "", geometry: "semantic", relationships: { semantic: 1, emotion: 0, purpose: 0, position: 0, form: 0, links: 0 }, dynamics: { contrast: 0.58, cohesion: 0.62, spacing: 0.55 }, categoryPull: 0.78, localCohesion: 0.26, sensitivity: 0.58, unclaimedThreshold: 0.34, appearance: { colorBy: "semantic", sizeBy: "file", terrain: "density", regions: false, linkLines: false }, categories: [] }
+      frame: { mode: "natural", referenceFrame: "free", arrangement: "meaning", signal: "semantic", reference: "", geometry: "semantic", relationships: { semantic: 1, emotion: 0, purpose: 0, position: 0, form: 0, links: 0 }, dynamics: { contrast: 0.58, cohesion: 0.62, spacing: 0.55, spring: 0.68, charge: 0.56, selectivity: 0.45, mutuality: 0.7, bridges: 0.42, settling: 0.68 }, categoryPull: 0.78, localCohesion: 0.26, sensitivity: 0.58, unclaimedThreshold: 0.34, appearance: { colorBy: "semantic", sizeBy: "file", terrain: "density", regions: false, linkLines: false }, categories: [] }
     };
     ATLAS_VIEW_TEMPLATES = {
       meaning: { id: "all-notes", name: "Meaning", signal: "semantic", arrangement: "meaning", frameMode: "natural", relationships: { semantic: 1 }, description: "See the vault by similarity of ideas.", categories: [] },
@@ -75273,101 +75280,83 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   prepareRelationshipForces() {
     const field = this.center?.forceField;
-    if (!field?.ids?.length || !field?.pairCount || !field.components?.semantic) {
+    if (!field?.ids?.length || !field?.sparsePairs || !field.components?.semantic) {
       this.forceField = null;
       this.forceBodies = [];
+      this.forceEdges = [];
       return;
     }
     const bodies = field.ids.map((id2) => this.byId.get(id2));
     if (bodies.some((body) => !body)) {
       this.forceField = null;
       this.forceBodies = [];
+      this.forceEdges = [];
       return;
     }
     this.forceField = field;
     this.forceBodies = bodies;
-    this.forcePairCursor = 0;
-    this.forcePairFirst = 0;
-    this.forcePairSecond = 1;
-    this.fieldSweepX = new Float32Array(bodies.length);
-    this.fieldSweepY = new Float32Array(bodies.length);
-    this.fieldSweepCounts = new Uint32Array(bodies.length);
-    this.fieldForceX = new Float32Array(bodies.length);
-    this.fieldForceY = new Float32Array(bodies.length);
-    this.updateFieldActivity();
+    this.prepareSparseRelationshipEdges();
   }
-  updateFieldActivity() {
+  prepareSparseRelationshipEdges() {
     const field = this.forceField, bodies = this.forceBodies || [];
     if (!field) return;
-    const weights = Object.entries(field.weights || {}).map(([signal, weight]) => [signal, Number(weight) * Number(field.reliability?.[signal] ?? 1)]).filter(([signal, weight]) => field.activity?.[signal] && weight > 1e-3), total = weights.reduce((sum, [, weight]) => sum + weight, 0) || 1;
-    for (let index3 = 0; index3 < bodies.length; index3++) {
-      const activity = weights.reduce((sum, [signal, weight]) => sum + Number(field.activity[signal][index3] || 0) * weight, 0) / total;
-      bodies[index3].fieldActivity = activity;
-      bodies[index3].terrainValue = activity;
+    const dynamics = field.dynamics || {}, selectivity = Number(dynamics.selectivity ?? 0.45), threshold = 0.02 + selectivity * 0.24, weights = Object.entries(field.weights || {}).map(([signal, weight]) => [signal, Number(weight) * Number(field.reliability?.[signal] ?? 1)]).filter(([signal, weight]) => field.components[signal] && weight > 1e-3), total = weights.reduce((sum, [, weight]) => sum + weight, 0) || 1, edges = [], degrees = new Uint16Array(bodies.length);
+    for (let offset2 = 0; offset2 < field.sparsePairs.length; offset2 += 3) {
+      const first = field.sparsePairs[offset2], second = field.sparsePairs[offset2 + 1], pair = field.sparsePairs[offset2 + 2];
+      let distinctiveness = 0, mutualWeight = 0, positiveWeight = 0;
+      for (const [signal, weight] of weights) {
+        const component = Number(field.components[signal][pair] || 0);
+        distinctiveness += component * weight;
+        if (component > 0) {
+          positiveWeight += component * weight;
+          mutualWeight += component * weight * Number(field.mutuality?.[signal]?.[pair] || 0);
+        }
+      }
+      distinctiveness = Math.max(-1, Math.min(1, distinctiveness / total));
+      const magnitude = Math.abs(distinctiveness);
+      if (magnitude <= threshold) continue;
+      const strength = Math.max(0, Math.min(1, (magnitude - threshold) / Math.max(1e-3, 1 - threshold))), mutual = positiveWeight > 1e-4 ? mutualWeight / positiveWeight : 1;
+      edges.push({ first, second, sign: Math.sign(distinctiveness), strength, mutual });
+      degrees[first]++;
+      degrees[second]++;
     }
+    for (const edge of edges) edge.degreeScale = 1 / Math.sqrt(Math.max(1, Math.max(degrees[edge.first], degrees[edge.second])));
+    this.forceEdges = edges;
+    for (const body of bodies) body.fieldActivity = 0;
+    for (const edge of edges) {
+      bodies[edge.first].fieldActivity = Math.max(Number(bodies[edge.first].fieldActivity || 0), edge.strength);
+      bodies[edge.second].fieldActivity = Math.max(Number(bodies[edge.second].fieldActivity || 0), edge.strength);
+    }
+    for (const body of bodies) body.terrainValue = body.fieldActivity;
   }
   applyRelationshipForces(alpha2, querySettling = false) {
-    const field = this.forceField, bodies = this.forceBodies;
+    const field = this.forceField, bodies = this.forceBodies, edges = this.forceEdges || [];
     if (!field || bodies.length < 2 || this.mapGroupingMode === "links") return;
-    const weights = Object.entries(field.weights || {}).map(([signal, weight]) => [signal, Number(weight) * Number(field.reliability?.[signal] ?? 1)]).filter(([signal, weight]) => field.components[signal] && weight > 1e-3), total = weights.reduce((sum, [, weight]) => sum + weight, 0) || 1, dynamics = field.dynamics || {}, contrast = Number(dynamics.contrast ?? 0.58), cohesion = Number(dynamics.cohesion ?? 0.62), spacing = Number(dynamics.spacing ?? 0.55), pairCount = Number(field.pairCount || 0), idle = alpha2 < 0.08, budget = weights.length ? Math.min(pairCount, idle ? Platform.isMobile ? 1200 : 5e3 : Platform.isMobile ? 9e3 : 45e3) : 0;
-    let first = this.forcePairFirst, second = this.forcePairSecond, cursor = this.forcePairCursor;
-    for (let processed = 0; processed < budget; processed++) {
-      const a2 = bodies[first], b = bodies[second], active = !this.hasQuery || this.pendingQuery || a2.matched && b.matched;
-      if (active && a2 !== this.dragging && b !== this.dragging) {
-        let distinctiveness = 0;
-        for (const [signal, weight] of weights) distinctiveness += Number(field.components[signal][cursor] || 0) * weight;
-        distinctiveness = Math.max(-1, Math.min(1, distinctiveness / total));
-        const magnitude = Math.abs(distinctiveness);
-        if (magnitude > 0.025) {
-          const normalized = Math.max(0, Math.min(1, (magnitude - 0.025) / 0.975)), salience = normalized ** Math.max(0.58, 1.35 - contrast * 0.7);
-          let dx = b.x - a2.x, dy = b.y - a2.y, currentDistance = Math.max(0.014, Math.hypot(dx, dy));
-          dx /= currentDistance;
-          dy /= currentDistance;
-          let stress = 0;
-          if (distinctiveness > 0) {
-            const desired = 0.055 + (1 - salience) * (0.18 + spacing * 0.16), error = Math.max(-0.26, Math.min(0.62, currentDistance - desired));
-            stress = error * salience * (0.7 + cohesion);
-          } else {
-            const desired = 0.36 + salience * (0.38 + spacing * 0.24), error = Math.min(0, currentDistance - desired);
-            stress = error * salience * (0.62 + contrast);
-          }
-          this.fieldSweepX[first] += dx * stress;
-          this.fieldSweepY[first] += dy * stress;
-          this.fieldSweepX[second] -= dx * stress;
-          this.fieldSweepY[second] -= dy * stress;
-          this.fieldSweepCounts[first]++;
-          this.fieldSweepCounts[second]++;
-        }
+    const dynamics = field.dynamics || {}, contrast = Number(dynamics.contrast ?? 0.58), cohesion = Number(dynamics.cohesion ?? 0.62), spacing = Number(dynamics.spacing ?? 0.55), spring = Number(dynamics.spring ?? 0.68), separation = Number(dynamics.charge ?? 0.56), mutualBoost = Number(dynamics.mutuality ?? 0.7), bridgeStrength = Number(dynamics.bridges ?? 0.42), settling = Number(dynamics.settling ?? 0.68), temperature = Math.max(0.1, Number(alpha2) || 0) * (0.48 + settling * 1.35);
+    for (const edge of edges) {
+      const a2 = bodies[edge.first], b = bodies[edge.second], active = !this.hasQuery || this.pendingQuery || a2.matched && b.matched;
+      if (!active || a2 === this.dragging && b === this.dragging) continue;
+      let dx = b.x - a2.x, dy = b.y - a2.y, distance = Math.max(0.014, Math.hypot(dx, dy));
+      dx /= distance;
+      dy /= distance;
+      const salience = edge.strength ** Math.max(0.56, 1.25 - contrast * 0.65);
+      let force = 0;
+      if (edge.sign > 0) {
+        const desired = 0.052 + (1 - salience) * (0.16 + spacing * 0.14), mutualGain = 1 + edge.mutual * mutualBoost * 1.25, bridgeGain = bridgeStrength + edge.mutual * (1 - bridgeStrength), error = Math.max(-0.2, Math.min(0.55, distance - desired));
+        force = error * 0.018 * spring * (0.55 + cohesion) * salience * mutualGain * bridgeGain * edge.degreeScale * temperature;
+      } else {
+        const desired = 0.42 + salience * (0.38 + spacing * 0.2), error = Math.min(0, distance - desired);
+        force = error * 0.012 * separation * salience * edge.degreeScale * temperature;
       }
-      cursor++;
-      second++;
-      if (second >= bodies.length) {
-        first++;
-        second = first + 1;
+      force = Math.max(-9e-3, Math.min(9e-3, force));
+      if (a2 !== this.dragging) {
+        a2.vx += dx * force;
+        a2.vy += dy * force;
       }
-      if (first >= bodies.length - 1) {
-        for (let index3 = 0; index3 < bodies.length; index3++) {
-          const divisor = Math.max(1, this.fieldSweepCounts[index3]), nextX = this.fieldSweepX[index3] / divisor, nextY = this.fieldSweepY[index3] / divisor;
-          this.fieldForceX[index3] = this.fieldForceX[index3] * 0.32 + nextX * 0.68;
-          this.fieldForceY[index3] = this.fieldForceY[index3] * 0.32 + nextY * 0.68;
-        }
-        this.fieldSweepX.fill(0);
-        this.fieldSweepY.fill(0);
-        this.fieldSweepCounts.fill(0);
-        first = 0;
-        second = 1;
-        cursor = 0;
+      if (b !== this.dragging) {
+        b.vx -= dx * force;
+        b.vy -= dy * force;
       }
-    }
-    this.forcePairFirst = first;
-    this.forcePairSecond = second;
-    this.forcePairCursor = cursor;
-    const fieldScale = (45e-4 + cohesion * 9e-3) * Math.max(0.1, alpha2) / Math.sqrt(Math.max(1, bodies.length / 140));
-    for (let index3 = 0; index3 < bodies.length; index3++) {
-      const node = bodies[index3];
-      if (node === this.dragging || this.hasQuery && !this.pendingQuery && !node.matched) continue;
-      node.vx += this.fieldForceX[index3] * fieldScale;
-      node.vy += this.fieldForceY[index3] * fieldScale;
     }
     if (querySettling && field.relevance && this.queryPresence > 0.02) {
       const query = this.queryNode, radialScale = 0.58 + spacing * 0.25;
@@ -75377,7 +75366,7 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
         let dx = query.x - node.x, dy = query.y - node.y, distance = Math.max(0.018, Math.hypot(dx, dy));
         dx /= distance;
         dy /= distance;
-        const relevance = Math.max(0, Math.min(1, Number(field.relevance[index3] || 0))), desired = 0.065 + (1 - relevance) * radialScale, force = Math.tanh((distance - desired) * 3.8) * 21e-4 * (0.45 + cohesion) * Math.max(alpha2, 0.12);
+        const relevance = Math.max(0, Math.min(1, Number(field.relevance[index3] || 0))), desired = 0.065 + (1 - relevance) * radialScale, force = Math.tanh((distance - desired) * 3.8) * 21e-4 * (0.45 + cohesion) * Math.max(alpha2, 0.12) * (0.65 + settling);
         node.vx += dx * force;
         node.vy += dy * force;
         if (query !== this.dragging) {
@@ -75389,34 +75378,45 @@ var LivingSemanticMapCanvas = class extends SemanticMapCanvas {
   }
   applyFieldCharge(nodes, alpha2) {
     if (!nodes?.length) return;
-    const spacing = Number(this.forceField?.dynamics?.spacing ?? 0.55), reach = 0.14 + spacing * 0.1, cellSize = reach, cells = /* @__PURE__ */ new Map(), key = (x, y) => `${x},${y}`, temperature = Math.max(0.1, Number(alpha2) || 0);
-    for (const body of nodes) {
-      const cellX = Math.floor(body.x / cellSize), cellY = Math.floor(body.y / cellSize);
-      for (let offsetX = -1; offsetX <= 1; offsetX++) for (let offsetY = -1; offsetY <= 1; offsetY++) for (const other of cells.get(key(cellX + offsetX, cellY + offsetY)) || []) {
-        let dx = body.x - other.x, dy = body.y - other.y, distance = Math.hypot(dx, dy);
-        if (distance >= reach) continue;
-        if (distance < 1e-4) {
-          const angle = stableMapAngle(`${other.id}\0${body.id}`);
-          dx = Math.cos(angle);
-          dy = Math.sin(angle);
-          distance = 1e-4;
-        } else {
-          dx /= distance;
-          dy /= distance;
-        }
-        const activity = Math.max(Number(body.fieldActivity || 0), Number(other.fieldActivity || 0)), force = ((reach - distance) / reach) ** 2 * 72e-5 * (0.22 + activity * 0.78) * temperature;
-        if (body !== this.dragging) {
-          body.vx += dx * force;
-          body.vy += dy * force;
-        }
-        if (other !== this.dragging) {
-          other.vx -= dx * force;
-          other.vy -= dy * force;
-        }
+    const dynamics = this.forceField?.dynamics || {}, charge = Number(dynamics.charge ?? 0.56), settling = Number(dynamics.settling ?? 0.68), temperature = Math.max(0.1, Number(alpha2) || 0) * (0.5 + settling), bounds = nodes.reduce((value, node) => ({ left: Math.min(value.left, node.x), right: Math.max(value.right, node.x), top: Math.min(value.top, node.y), bottom: Math.max(value.bottom, node.y) }), { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity }), size = Math.max(0.1, bounds.right - bounds.left, bounds.bottom - bounds.top) * 1.04, centerX = (bounds.left + bounds.right) / 2, centerY = (bounds.top + bounds.bottom) / 2, massOf = (body) => 0.3 + Math.max(0, Math.min(1, Number(body.fieldActivity || 0))) * 0.7, build = (members, x, y, span, depth = 0) => {
+      let mass = 0, weightedX = 0, weightedY = 0;
+      for (const body of members) {
+        const value = massOf(body);
+        mass += value;
+        weightedX += body.x * value;
+        weightedY += body.y * value;
       }
-      const values = cells.get(key(cellX, cellY)) || [];
-      values.push(body);
-      cells.set(key(cellX, cellY), values);
+      const cell = { x, y, span, mass, centerX: weightedX / Math.max(1e-4, mass), centerY: weightedY / Math.max(1e-4, mass), members, children: null };
+      if (members.length <= 2 || depth >= 12) return cell;
+      const buckets = [[], [], [], []];
+      for (const body of members) buckets[(body.x >= x ? 1 : 0) + (body.y >= y ? 2 : 0)].push(body);
+      const half = span / 2, quarter = span / 4;
+      cell.children = buckets.map((bucket, index3) => bucket.length ? build(bucket, x + (index3 & 1 ? quarter : -quarter), y + (index3 & 2 ? quarter : -quarter), half, depth + 1) : null).filter(Boolean);
+      cell.members = null;
+      return cell;
+    }, root = build(nodes, centerX, centerY, size), theta = 0.78, base = 32e-7 * (0.22 + charge * 1.5) * temperature;
+    for (const body of nodes) {
+      if (body === this.dragging) continue;
+      const bodyMass = massOf(body), visit = (cell) => {
+        let dx = body.x - cell.centerX, dy = body.y - cell.centerY, distance = Math.max(0.025, Math.hypot(dx, dy)), contains = Math.abs(body.x - cell.x) <= cell.span / 2 && Math.abs(body.y - cell.y) <= cell.span / 2;
+        if (cell.members) {
+          for (const other of cell.members) {
+            if (other === body) continue;
+            let localX = body.x - other.x, localY = body.y - other.y, localDistance = Math.max(0.025, Math.hypot(localX, localY)), force = Math.min(45e-4, base * bodyMass * massOf(other) / (localDistance * localDistance + 6e-3));
+            body.vx += localX / localDistance * force;
+            body.vy += localY / localDistance * force;
+          }
+          return;
+        }
+        if (!contains && cell.span / distance < theta) {
+          const force = Math.min(45e-4, base * bodyMass * cell.mass / (distance * distance + 8e-3));
+          body.vx += dx / distance * force;
+          body.vy += dy / distance * force;
+          return;
+        }
+        for (const child of cell.children || []) visit(child);
+      };
+      visit(root);
     }
   }
   setIntelligenceStatus(value = "") {
@@ -77630,6 +77630,12 @@ var GraphView = class extends ItemView {
     });
     const feel = section("Feel", "How strongly the landscape settles");
     for (const [id2, label] of [["contrast", "Contrast"], ["cohesion", "Cohesion"], ["spacing", "Spacing"]]) sliderRow(feel, label, draft.frame.dynamics[id2], (value) => {
+      draft.frame.dynamics[id2] = value;
+      const live = this.map?.setForceRecipe(draft.frame);
+      this.scheduleViewUpdate(!live);
+    });
+    const physics = section("Physics", "How distinctive neighborhoods move");
+    for (const [id2, label] of [["spring", "Grouping"], ["charge", "Separation"], ["selectivity", "Selectivity"], ["mutuality", "Mutual boost"], ["bridges", "Bridge pull"], ["settling", "Response speed"]]) sliderRow(physics, label, draft.frame.dynamics[id2], (value) => {
       draft.frame.dynamics[id2] = value;
       const live = this.map?.setForceRecipe(draft.frame);
       this.scheduleViewUpdate(!live);

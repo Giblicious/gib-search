@@ -8,7 +8,7 @@ Plugin settings are divided into Status, Search, Views, and Console pages. Statu
 
 One View definition now controls the Atlas, search map, and Atlas Companion. The included Views are **Meaning**, **Topics**, **Emotion**, **Purpose**, **Writing form**, and **Links**. Choose the same View anywhere without translating between separate lens, grouping, and graph-mode controls.
 
-The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. For each View and scope, Gib Search subtracts the ordinary relationship baseline and retains only locally distinctive attraction or separation. The unremarkable middle exerts no force, while real neighborhoods, bridges, and outliers remain free to emerge. Deterministic sweeps settle the structure, then continue at a bounded low-energy cadence so the Atlas stays alive.
+The living map combines semantic relationships, authored links, and local writing analysis in a cached particle field. For each View and scope, Gib Search subtracts the ordinary relationship baseline and compiles the remainder into a sparse network of mutual springs, weaker bridges, and targeted separation. Barnes–Hut charge keeps independent neighborhoods legible without repeated all-pair work. The map settles quickly, then continues at a bounded low-energy cadence so the Atlas stays alive.
 
 Map terrain and nodes are GPU-accelerated with WebGL 2 while preserving the established flat topographic design. Devices without WebGL 2 automatically retain the Canvas renderer.
 
@@ -19,7 +19,7 @@ Saved Atlas Views are built as a readable map formula:
 - **Territory** selects which notes exist in the landscape.
 - **Reference frame** leaves the map free, centers it on an idea, orients it with a constellation or two-pole axis.
 - **Relationship field** blends Meaning, Emotion, Purpose, Form, and authored Links into one normalized note-to-note distance model.
-- **Dynamics** controls contrast, cohesion, and spacing without inventing new relationships.
+- **Dynamics** controls contrast, cohesion, spacing, grouping, separation, selectivity, mutual reinforcement, bridge pull, and response speed without inventing new relationships.
 - **Cartography** assigns color, dot size, terrain, and optional beacon regions independently from placement.
 
 The relationship field can use five measurements:

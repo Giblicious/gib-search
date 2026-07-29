@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.48.0
+
+- Compiles contrastive relationship matrices into compact spring, bridge, and targeted-separation edges before animation.
+- Replaces repeated all-pair and local-only spacing work with Barnes–Hut global charge for faster, clearer neighborhood formation.
+- Reinforces mutually distinctive relationships while retaining weaker one-sided bridges and degree-safe organic motion.
+- Adds per-View Grouping, Separation, Selectivity, Mutual boost, Bridge pull, and Response speed controls directly to the Atlas.
+
 ## 0.47.0
 
 - Replaces raw pair distances with a scope-relative contrastive field that removes each note's ordinary relationship baseline.
