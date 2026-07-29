@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.46.0
+
+- Rebuilds non-Link View placement as a continuous pair-distance stress field instead of thresholded attraction and short-range repulsion.
+- Blends every enabled quality into one desired note-to-note distance and applies complete, deterministic force sweeps.
+- Preserves weak or uniform signals as weak evidence rather than stretching them into artificial extremes.
+- Treats missing wikilinks as neutral and removes the circular corral that packed unrelated Views into evenly spaced disks.
+
 ## 0.45.1
 
 - Fixes non-Link Atlas Views continuing to apply full relationship forces after settling, which made completed quality-aware maps appear to boil.
