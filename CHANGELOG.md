@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.0
+
+- Rebuilds the semantic index one note and one inference passage at a time instead of retaining the contents of every changed note in memory.
+- Yields indexing work to Obsidian's idle periods, backs off while the user is typing or touching the interface, and pauses expensive progress while the app is in the background.
+- Serializes mobile inference and gives interactive searches priority over background indexing to prevent overlapping model work.
+- Makes pause and cancellation responsive between passages, coalesces vault changes into quieter update windows, and reduces high-frequency progress updates.
+- Keeps completed checkpoint work private until a consistent index snapshot is ready, then retries notes that encounter transient read or inference failures.
+
 ## 0.53.0
 
 - Temporarily disables Atlas, Search Map, Navigator, Companion, and View analysis while those features are redesigned.

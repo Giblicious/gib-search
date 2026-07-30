@@ -71160,8 +71160,15 @@ function staleSearchError() {
   error.name = "AbortError";
   return error;
 }
+function sleep(milliseconds = 0) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, milliseconds)));
+}
 function yieldToUi() {
-  return typeof requestAnimationFrame === "function" && typeof document !== "undefined" && !document.hidden ? new Promise((resolve) => requestAnimationFrame(() => resolve())) : new Promise((resolve) => setTimeout(resolve, 0));
+  return typeof requestAnimationFrame === "function" && typeof document !== "undefined" && !document.hidden ? new Promise((resolve) => requestAnimationFrame(() => resolve())) : sleep(0);
+}
+function yieldForIdle(timeout = 500) {
+  if (typeof window !== "undefined" && typeof document !== "undefined" && !document.hidden && typeof window.requestIdleCallback === "function") return new Promise((resolve) => window.requestIdleCallback(() => resolve(), { timeout }));
+  return yieldToUi();
 }
 function sampleEvenly(items, maximum) {
   if (items.length <= maximum) return items;
@@ -71457,6 +71464,9 @@ var init_mobile_runtime = __esm({
         this.indexStable = false;
         this.startedAt = Date.now();
         this.phaseStartedAt = this.startedAt;
+        this.lastUserActivityAt = 0;
+        this.lastIndexProgressAt = 0;
+        this.mobileEmbedQueue = Promise.resolve();
         this.processedFiles = 0;
         this.totalFiles = 0;
         this.currentFile = "";
@@ -71782,6 +71792,55 @@ var init_mobile_runtime = __esm({
           this.modelPromise = null;
         }
       }
+      async runMobileEmbedding(task) {
+        const previous = this.mobileEmbedQueue.catch(() => {
+        });
+        let release;
+        this.mobileEmbedQueue = new Promise((resolve) => {
+          release = resolve;
+        });
+        await previous;
+        try {
+          return await task();
+        } finally {
+          release();
+        }
+      }
+      indexingCancelled() {
+        return this.cancelRequested || !this.enabled;
+      }
+      async indexingTurn() {
+        if (typeof document === "undefined") {
+          await yieldToUi();
+          return;
+        }
+        while (document.hidden && !this.indexingCancelled()) await sleep(500);
+        if (this.indexingCancelled()) return;
+        const quietWindow = this.isMobile ? 900 : 450;
+        const quietRemaining = quietWindow - (Date.now() - this.lastUserActivityAt);
+        if (quietRemaining > 0) await sleep(quietRemaining);
+        while ((this.liveRunning || this.livePending) && !this.indexingCancelled()) await sleep(this.isMobile ? 80 : 40);
+        if (this.indexingCancelled()) return;
+        await yieldForIdle(this.isMobile ? 900 : 500);
+        const scheduling = typeof navigator !== "undefined" ? navigator.scheduling : null;
+        if (scheduling?.isInputPending?.({ includeContinuous: true })) await sleep(this.isMobile ? 120 : 60);
+        await sleep(this.isMobile ? 32 : 12);
+      }
+      setIndexProgress(message) {
+        const now = Date.now(), interval = this.isMobile ? 650 : 350;
+        if (now - this.lastIndexProgressAt < interval) return;
+        this.lastIndexProgressAt = now;
+        this.setState("indexing", message);
+      }
+      async embedIndexChunks(texts) {
+        const results = [];
+        for (const text of texts) {
+          if (this.indexingCancelled()) return null;
+          results.push(...await this.embedBatch([text], false, 1));
+          await this.indexingTurn();
+        }
+        return results;
+      }
       modelActivity(message = "") {
         this.modelMessage = message;
         this.plugin.recordActivity?.("Model", message, "working");
@@ -71845,20 +71904,22 @@ var init_mobile_runtime = __esm({
         if (!texts.length) return [];
         const batchSize = preferredBatchSize || (query ? 8 : 2);
         if (!this.isMobile && this.plugin.desktopEmbedder) {
-          const results2 = [];
-          for (let i3 = 0; i3 < texts.length; i3 += batchSize) results2.push(...await this.plugin.desktopEmbedder.embedBatch(texts.slice(i3, i3 + batchSize), query));
-          return results2;
+          const results = [];
+          for (let i3 = 0; i3 < texts.length; i3 += batchSize) results.push(...await this.plugin.desktopEmbedder.embedBatch(texts.slice(i3, i3 + batchSize), query));
+          return results;
         }
         await this.initializeModel();
-        const results = [];
-        for (let i3 = 0; i3 < texts.length; i3 += batchSize) {
-          const batch = texts.slice(i3, i3 + batchSize).map((text) => query ? `${QUERY_PREFIX}${text}` : text);
-          const output = await this.pipe(batch, { pooling: "mean", normalize: true });
-          const dim2 = output.dims.at(-1);
-          for (let j2 = 0; j2 < batch.length; j2++) results.push(new Float32Array(output.data.slice(j2 * dim2, (j2 + 1) * dim2)));
-          await yieldToUi();
-        }
-        return results;
+        return this.runMobileEmbedding(async () => {
+          const results = [];
+          for (let i3 = 0; i3 < texts.length; i3 += batchSize) {
+            const batch = texts.slice(i3, i3 + batchSize).map((text) => query ? `${QUERY_PREFIX}${text}` : text);
+            const output = await this.pipe(batch, { pooling: "mean", normalize: true });
+            const dim2 = output.dims.at(-1);
+            for (let j2 = 0; j2 < batch.length; j2++) results.push(new Float32Array(output.data.slice(j2 * dim2, (j2 + 1) * dim2)));
+            await yieldToUi();
+          }
+          return results;
+        });
       }
       async embed(text, query = false) {
         return (await this.embedBatch([text], query))[0];
@@ -72145,9 +72206,21 @@ var init_mobile_runtime = __esm({
           this.refreshLexical();
         }
       }
+      async packVectors(vectors) {
+        const packed = new Float32Array(vectors.length * DIMENSION);
+        for (let index3 = 0; index3 < vectors.length; index3++) {
+          packed.set(vectors[index3], index3 * DIMENSION);
+          if (index3 % 128 === 127) await yieldForIdle();
+        }
+        return packed;
+      }
+      async saveCheckpoint(meta, vectors) {
+        const packed = await this.packVectors(vectors);
+        await yieldForIdle();
+        await this.databasePut({ meta, vectors: packed.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
+      }
       async saveIndex() {
-        const packed = new Float32Array(this.vectors.length * DIMENSION);
-        this.vectors.forEach((vector, index3) => packed.set(vector, index3 * DIMENSION));
+        const packed = await this.packVectors(this.vectors);
         this.packedVectors = packed;
         this.vectors = this.meta.map((_2, index3) => packed.subarray(index3 * DIMENSION, (index3 + 1) * DIMENSION));
         this.queryCache.clear();
@@ -72165,14 +72238,17 @@ var init_mobile_runtime = __esm({
         return this.plugin.app.vault.getFiles().filter((file) => INDEXABLE.has(file.extension.toLowerCase()));
       }
       async waitForVaultSettled() {
-        const minimumUntil = Date.now() + 4e3;
+        const minimumUntil = Date.now() + (this.isMobile ? 12e3 : 8e3);
         let previous = -1;
         let stable = 0;
-        for (let attempt = 0; attempt < 30; attempt++) {
+        for (let attempt = 0; attempt < 40; attempt++) {
           const count = this.files().length;
           stable = count === previous ? stable + 1 : 0;
           previous = count;
-          if (Date.now() >= minimumUntil && stable >= 3) return;
+          if (Date.now() >= minimumUntil && stable >= 4) {
+            await this.indexingTurn();
+            return;
+          }
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
       }
@@ -72238,13 +72314,25 @@ var init_mobile_runtime = __esm({
           indexed.set(item.file, group);
         });
         const changed = [];
-        const contentByPath = /* @__PURE__ */ new Map();
         let metadataChanged = false;
         for (const file of files) {
           const previous = indexed.get(file.path);
           const currentHighlights = previous?.every((item) => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)), currentGraphMetadata = previous?.every((item) => item.graphVersion === GRAPH_METADATA_VERSION && Array.isArray(item.entities));
           if (!force && currentHighlights && currentGraphMetadata && previous?.every((item) => item.mtime === file.stat.mtime && item.contentHash)) continue;
-          const content = await this.plugin.app.vault.read(file);
+          if (force) {
+            changed.push(file);
+            await this.indexingTurn();
+            continue;
+          }
+          let content;
+          try {
+            content = await this.plugin.app.vault.read(file);
+          } catch (error) {
+            this.plugin.logDiagnostic(`Could not verify ${file.path}; scheduling it for indexing: ${error?.message || error}`);
+            changed.push(file);
+            await this.indexingTurn();
+            continue;
+          }
           const fingerprint = contentFingerprint(content);
           const previousFingerprint = previous?.find((item) => item.contentHash)?.contentHash;
           const unchanged = !force && currentHighlights && previous && (previousFingerprint === fingerprint || !previousFingerprint && sameChunks(previous, chunkMarkdown(content)));
@@ -72256,11 +72344,8 @@ var init_mobile_runtime = __esm({
               item.entities = extractGraphEntities(`${basename(file.path)} ${item.heading || ""} ${item.text || ""}`);
             });
             metadataChanged = true;
-          } else {
-            changed.push(file);
-            contentByPath.set(file.path, content);
-          }
-          await yieldToUi();
+          } else changed.push(file);
+          await this.indexingTurn();
         }
         const present2 = new Set(files.map((file) => file.path));
         const deleted = new Set(this.meta.filter((item) => !present2.has(item.file)).map((item) => item.file));
@@ -72278,6 +72363,7 @@ var init_mobile_runtime = __esm({
         }
         let meta = [];
         let vectors = [];
+        const failedFiles = [];
         let checkpointAt = Date.now();
         for (let i3 = 0; i3 < this.meta.length; i3++) if (!deleted.has(this.meta[i3].file)) {
           meta.push(this.meta[i3]);
@@ -72288,13 +72374,13 @@ var init_mobile_runtime = __esm({
           const file = changed[fileIndex];
           const fileStartedAt = Date.now();
           this.currentFile = file.path;
-          this.setState("indexing", `Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
+          this.setIndexProgress(`Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
           try {
-            const content = contentByPath.get(file.path) ?? await this.plugin.app.vault.read(file);
+            const content = await this.plugin.app.vault.read(file);
             const fingerprint = contentFingerprint(content);
             const chunks2 = chunkMarkdown(content);
-            const embedded = await this.embedBatch(chunks2.map((chunk) => embeddingText(file.path, chunk)));
-            const highlightCandidates = chunks2.map((chunk) => buildHighlightCandidates(file.path, chunk));
+            const embedded = await this.embedIndexChunks(chunks2.map((chunk) => embeddingText(file.path, chunk)));
+            if (!embedded) return;
             const retainedMeta = [];
             const retainedVectors = [];
             for (let i3 = 0; i3 < meta.length; i3++) if (meta[i3].file !== file.path) {
@@ -72303,34 +72389,47 @@ var init_mobile_runtime = __esm({
             }
             meta = retainedMeta;
             vectors = retainedVectors;
-            chunks2.forEach((chunk, index3) => {
-              meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: highlightCandidates[index3], graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ""} ${chunk.text}`) });
+            let highlightCount = 0;
+            for (let index3 = 0; index3 < chunks2.length; index3++) {
+              if (this.indexingCancelled()) return;
+              const chunk = chunks2[index3], highlightCandidates = buildHighlightCandidates(file.path, chunk);
+              highlightCount += highlightCandidates.length;
+              meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates, graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ""} ${chunk.text}`) });
               vectors.push(embedded[index3]);
-            });
-            this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks2.length} chunks, ${highlightCandidates.flat().length} highlight candidates in ${Date.now() - fileStartedAt} ms`);
+              await this.indexingTurn();
+            }
+            this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks2.length} chunks, ${highlightCount} highlight candidates in ${Date.now() - fileStartedAt} ms`);
           } catch (error) {
-            this.plugin.reportOnce(`Could not index ${file.path}: ${error.message}`);
+            failedFiles.push({ file: file.path, message: error?.message || String(error) });
+            this.plugin.logDiagnostic(`Could not index ${file.path}: ${error?.message || error}`, true);
           }
           this.processedFiles++;
-          if (Date.now() - checkpointAt >= 3e4) {
-            this.meta = meta;
-            this.vectors = vectors;
-            await this.saveIndex();
+          if (Date.now() - checkpointAt >= (this.isMobile ? 9e4 : 6e4)) {
+            await this.saveCheckpoint(meta, vectors);
             checkpointAt = Date.now();
             this.plugin.logDiagnostic(`Saved index checkpoint: ${this.processedFiles}/${files.length} files`);
           }
-          await yieldToUi();
+          await this.indexingTurn();
         }
         if (this.cancelRequested || !this.enabled) return;
         this.meta = meta;
         this.vectors = vectors;
-        this.lastSuccessfulIndexAt = Date.now();
+        if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now();
         await this.saveIndex();
-        this.staleFiles = 0;
+        this.staleFiles = failedFiles.length;
         this.currentFile = "";
-        this.processedFiles = files.length;
-        this.indexStable = true;
-        this.setState("ready", `Ready (${files.length} files, ${this.meta.length} passages)`);
+        this.processedFiles = files.length - failedFiles.length;
+        this.indexStable = !failedFiles.length;
+        if (failedFiles.length) {
+          const delay = this.isMobile ? 6e4 : 3e4;
+          this.setState("ready", `Search ready; ${failedFiles.length} ${failedFiles.length === 1 ? "note" : "notes"} pending retry`);
+          clearTimeout(this.updateTimer);
+          this.updateTimer = setTimeout(() => {
+            this.updateTimer = null;
+            if (this.enabled && !this.cancelRequested) this.updateIndex();
+          }, delay);
+          this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? "note" : "notes"} after a temporary failure`);
+        } else this.setState("ready", `Ready (${files.length} files, ${this.meta.length} passages)`);
       }
       start() {
         if (!this.plugin.settings.enabled) {
@@ -72409,13 +72508,22 @@ var init_mobile_runtime = __esm({
         return true;
       }
       watch() {
+        const noteActivity = () => {
+          this.lastUserActivityAt = Date.now();
+        };
+        if (typeof document !== "undefined" && this.plugin.registerDomEvent) {
+          this.plugin.registerDomEvent(document, "keydown", noteActivity, true);
+          this.plugin.registerDomEvent(document, "pointerdown", noteActivity, true);
+          this.plugin.registerDomEvent(document, "touchstart", noteActivity, { capture: true, passive: true });
+          this.plugin.registerDomEvent(document, "wheel", noteActivity, { capture: true, passive: true });
+        }
         const schedule = (file) => {
           if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || "").toLowerCase())) return;
           clearTimeout(this.updateTimer);
           this.updateTimer = setTimeout(() => {
             this.updateTimer = null;
             this.updateIndex();
-          }, 1800);
+          }, this.isMobile ? 8e3 : 5e3);
         };
         this.plugin.registerEvent(this.plugin.app.vault.on("create", schedule));
         this.plugin.registerEvent(this.plugin.app.vault.on("modify", schedule));

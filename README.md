@@ -19,6 +19,8 @@ Gib Search supports Obsidian on desktop and mobile. Its WebAssembly inference en
 
 Each device builds its own local index. The first index can take several minutes, so keep Obsidian open until Settings reports that Gib Search is healthy.
 
+Indexing runs cooperatively: it processes bounded passages, yields to Obsidian between work units, backs off during active interaction, and pauses while the app is in the background. Completed checkpoints are retained so interrupted work can resume safely.
+
 ## Privacy and network use
 
 - Notes, queries, embeddings, and indexes remain on the local device.
