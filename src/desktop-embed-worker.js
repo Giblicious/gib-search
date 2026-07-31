@@ -43,7 +43,7 @@ async function initializeModel() {
   if (pipe) return pipe;
   if (modelPromise) return modelPromise;
   modelPromise = (async () => {
-    env.allowRemoteModels = true; env.allowLocalModels = false; env.useCustomCache = true; env.customCache = modelCache; env.useBrowserCache = false; env.useFSCache = false;
+    const mobile = Boolean(configuration.mobile); env.allowRemoteModels = true; env.allowLocalModels = false; env.useCustomCache = !mobile; env.customCache = mobile ? null : modelCache; env.useBrowserCache = mobile; env.useFSCache = false;
     if (env.backends?.onnx?.wasm) {
       env.backends.onnx.wasm.numThreads = 1; env.backends.onnx.wasm.proxy = false;
       const moduleSource = await gunzipBase64(configuration.wasmModuleGzip, true);
