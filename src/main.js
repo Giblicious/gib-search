@@ -133,15 +133,17 @@ class DesktopIndexStore {
   async putGraphEvidence(value) { fs.mkdirSync(this.directory, { recursive: true }); const metadataTarget = path.join(this.directory, 'index.graph.json'), binaryTarget = path.join(this.directory, 'index.graph.bin'), metadataTemporary = `${metadataTarget}.download`, binaryTemporary = `${binaryTarget}.download`, scores = Buffer.from(value.scores), entities = Buffer.from(value.entities); await fs.promises.writeFile(metadataTemporary, JSON.stringify({ version: value.version, signature: value.signature, files: value.files, fingerprints: value.fingerprints, tuning: value.tuning, builtAt: value.builtAt, rootTopology: value.rootTopology || null, rootGraph: value.rootGraph || null })); await fs.promises.writeFile(binaryTemporary, Buffer.concat([scores, entities])); await fs.promises.rename(binaryTemporary, binaryTarget); await fs.promises.rename(metadataTemporary, metadataTarget); }
 }
 class DesktopEmbedder {
-  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.topicLabelReady = false; }
+  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.topicLabelReady = false; this.disabled = false; }
   start() {
-    if (this.worker) return;
-    this.workerUrl = URL.createObjectURL(new Blob([EMBEDDED_DESKTOP_WORKER], { type: 'text/javascript' }));
-    const worker = new window.Worker(this.workerUrl, { name: 'gib-search-bge' }); this.worker = worker;
-    worker.onmessage = event => this.receive(event.data);
-    worker.onerror = event => this.fail(new Error(event.message || 'Desktop embedding worker failed'));
-    worker.onmessageerror = () => this.fail(new Error('Desktop embedding worker sent an unreadable message'));
-    worker.postMessage({ type: 'init', wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP });
+    if (this.worker) return true; if (this.disabled || typeof window === 'undefined' || typeof window.Worker !== 'function' || typeof DecompressionStream !== 'function') return false;
+    try {
+      this.workerUrl = URL.createObjectURL(new Blob([EMBEDDED_DESKTOP_WORKER], { type: 'text/javascript' }));
+      const worker = new window.Worker(this.workerUrl, { name: 'gib-search-bge' }); this.worker = worker;
+      worker.onmessage = event => this.receive(event.data);
+      worker.onerror = event => this.fail(new Error(event.message || 'Background embedding worker failed'));
+      worker.onmessageerror = () => this.fail(new Error('Background embedding worker sent an unreadable message'));
+      worker.postMessage({ type: 'init', mobile: this.plugin.isMobile, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP }); return true;
+    } catch (error) { this.disabled = true; if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; this.plugin.logDiagnostic(`Background embedding worker unavailable: ${error?.message || error}`, true); return false; }
   }
   async receive(message) {
     if (message.type === 'cache') { await this.cache(message); return; }
@@ -167,13 +169,13 @@ class DesktopEmbedder {
       }
     } catch (error) { this.worker?.postMessage({ type: 'cache-result', id: message.id, error: error?.message || String(error) }); }
   }
-  fail(error) { const worker = this.worker; this.worker = null; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); this.ready = false; this.plugin.reportOnce(`Desktop embedding worker failed: ${error.message}`); }
+  fail(error) { const worker = this.worker; this.worker = null; this.disabled = true; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); this.ready = false; this.plugin.logDiagnostic(`Background embedding worker failed: ${error.message}`, true); if (!this.plugin.isMobile) this.plugin.reportOnce(`Desktop embedding worker failed: ${error.message}`); }
   embedBatch(texts, query = false) {
-    this.start(); const id = this.nextId++;
+    if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++;
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'embed', id, texts, query }); } catch (error) { this.pending.delete(id); reject(error); } });
   }
-  classifyRelations(pairs) { this.start(); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'relations', id, pairs }); } catch (error) { this.pending.delete(id); reject(error); } }); }
-  generateTopicLabels(prompts) { this.start(); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'topic-labels', id, prompts }); } catch (error) { this.pending.delete(id); reject(error); } }); }
+  classifyRelations(pairs) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'relations', id, pairs }); } catch (error) { this.pending.delete(id); reject(error); } }); }
+  generateTopicLabels(prompts) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'topic-labels', id, prompts }); } catch (error) { this.pending.delete(id); reject(error); } }); }
   stop() { const worker = this.worker; this.worker = null; this.ready = false; this.relationReady = false; this.topicLabelReady = false; for (const pending of this.pending.values()) pending.reject(new Error('Desktop embedding worker stopped')); this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
 }
 function activeTweaks(plugin) {
@@ -1143,8 +1145,9 @@ module.exports = class GibSearch extends Plugin {
     this.embeddedWasmModuleGzip = EMBEDDED_WASM_MODULE_GZIP;
     if (!this.isMobile) {
       loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id); this.cacheRoot = desktopCacheRoot(); this.vaultCacheKey = vaultCacheKey(this.vaultPath); restoreDesktopData(this);
-      this.modelDir = path.join(this.pluginDir, 'models'); this.modelCache = new FileModelCache(this.modelDir); this.desktopIndexStore = new DesktopIndexStore(activeIndexDir(this)); this.desktopEmbedder = new DesktopEmbedder(this);
+      this.modelDir = path.join(this.pluginDir, 'models'); this.modelCache = new FileModelCache(this.modelDir); this.desktopIndexStore = new DesktopIndexStore(activeIndexDir(this));
     }
+    this.desktopEmbedder = new DesktopEmbedder(this);
     this.search = this.indexer = new MobileSearchRuntime(this); this.atlas = new AtlasEngine(this); this.runtime = { ready: () => true, install: async () => true, stop: () => this.desktopEmbedder?.stop(), storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) }; this.indexer.watch();
     if (this.atlasEnabled) { this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this)); this.registerView(NAVIGATOR_VIEW, leaf => new AtlasNavigatorView(leaf, this)); this.registerView(NEIGHBORHOOD_VIEW, leaf => new NeighborhoodView(leaf, this)); }
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());

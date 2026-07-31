@@ -6,6 +6,7 @@ const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
 const TOPIC_LABEL_MODEL_ID = 'Xenova/flan-t5-base';
 const DIMENSION = 384;
+const MOBILE_PASSAGE_INDEX_VERSION = 2;
 const HIGHLIGHT_INDEX_VERSION = 1;
 const GRAPH_METADATA_VERSION = 1;
 const GRAPH_EVIDENCE_VERSION = 3;
@@ -143,7 +144,12 @@ function sameChunks(items, chunks) {
   return items.length === chunks.length && items.every((item, index) => item.text === chunks[index].text && item.heading === chunks[index].heading && item.lineStart === chunks[index].lineStart && item.lineEnd === chunks[index].lineEnd);
 }
 function staleSearchError() { const error = new Error('Superseded by a newer semantic query'); error.name = 'AbortError'; return error; }
-function yieldToUi() { return typeof requestAnimationFrame === 'function' && typeof document !== 'undefined' && !document.hidden ? new Promise(resolve => requestAnimationFrame(() => resolve())) : new Promise(resolve => setTimeout(resolve, 0)); }
+function sleep(milliseconds = 0) { return new Promise(resolve => setTimeout(resolve, Math.max(0, milliseconds))); }
+function yieldToUi() { return typeof requestAnimationFrame === 'function' && typeof document !== 'undefined' && !document.hidden ? new Promise(resolve => requestAnimationFrame(() => resolve())) : sleep(0); }
+function yieldForIdle(timeout = 500) {
+  if (typeof window !== 'undefined' && typeof document !== 'undefined' && !document.hidden && typeof window.requestIdleCallback === 'function') return new Promise(resolve => window.requestIdleCallback(() => resolve(), { timeout }));
+  return yieldToUi();
+}
 function sampleEvenly(items, maximum) { if (items.length <= maximum) return items; return Array.from({ length: maximum }, (_, index) => items[Math.round(index * (items.length - 1) / (maximum - 1))]); }
 function contentProfileSimilarity(first, second, coverageWeight = .72) { if (!first?.length || !second?.length) return -1; const directional = (source, target) => { let total = 0, weights = 0; for (const passage of source) { const best = Math.max(...target.map(other => dot(passage.vector, other.vector))); total += best * passage.weight; weights += passage.weight; } return total / Math.max(.001, weights); }, coverage = (directional(first, second) + directional(second, first)) / 2, strongest = []; for (const a of first) for (const b of second) strongest.push({ score: dot(a.vector, b.vector), weight: Math.sqrt(a.weight * b.weight) }); strongest.sort((a, b) => b.score * b.weight - a.score * a.weight); const selected = strongest.slice(0, 3), peak = selected.reduce((sum, item) => sum + item.score * item.weight, 0) / Math.max(.001, selected.reduce((sum, item) => sum + item.weight, 0)), blend = Math.max(0, Math.min(1, Number(coverageWeight))); return Math.max(-1, Math.min(1, coverage * blend + peak * (1 - blend))); }
 
@@ -162,13 +168,18 @@ function parseSections(content) {
   }
   flush(lines.length - 1); return sections;
 }
-function chunkMarkdown(content) {
+function splitOversizedText(source, maximum) {
+  const values = []; let remaining = String(source || '').trim();
+  while (remaining.length > maximum) { let end = remaining.lastIndexOf(' ', maximum); if (end < maximum * .55) end = maximum; values.push(remaining.slice(0, end).trim()); remaining = remaining.slice(end).trim(); }
+  if (remaining) values.push(remaining); return values;
+}
+function chunkMarkdown(content, maximum = 2400) {
   const cleaned = stripFrontmatter(String(content || '')).trim(); if (!cleaned) return [];
-  const max = 2400; if (cleaned.length <= 1600) return [{ text: cleaned, heading: '', lineStart: 0, lineEnd: cleaned.split('\n').length - 1 }];
+  const max = Math.max(600, Number(maximum) || 2400); if (cleaned.length <= Math.min(1600, max)) return [{ text: cleaned, heading: '', lineStart: 0, lineEnd: cleaned.split('\n').length - 1 }];
   const split = [];
   for (const section of parseSections(cleaned)) {
     if (section.text.length <= max) { split.push(section); continue; }
-    const paragraphs = section.text.split(/\n\n+/); let current = []; let length = 0; let start = section.lineStart;
+    const paragraphs = section.text.split(/\n\n+/).flatMap(paragraph => splitOversizedText(paragraph, max)); let current = []; let length = 0; let start = section.lineStart;
     const flush = end => { if (!current.length) return; const text = current.join('\n\n').trim(); split.push({ heading: section.heading, text, lineStart: start, lineEnd: end }); start = end + 1; current = []; length = 0; };
     for (const paragraph of paragraphs) { if (length + paragraph.length > max && current.length) flush(start + current.join('\n\n').split('\n').length - 1); current.push(paragraph); length += paragraph.length + 2; }
     flush(section.lineEnd);
@@ -255,7 +266,7 @@ export class MobileSearchRuntime {
   constructor(plugin) {
     this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.metaStorageBytes = 0; this.fileVectorCache = null; this.fileEntityCache = null; this.passageIndicesByFile = null; this.highlightPhraseVectors = new Map(); this.highlightCacheLoaded = false; this.highlightCacheSave = Promise.resolve(); this.packedVectors = new Float32Array(); this.lexical = []; this.spellingVocabulary = new Map(); this.spellingByLength = new Map(); this.starfieldCache = null; this.starfieldCaches = new Map(); this.topicBasisCache = null; this.contentProfileCache = null; this.graphEvidenceCache = null; this.graphEvidencePromise = null; this.graphEvidencePromiseSignature = ''; this.graphEvidenceGeneration = 0; this.graphWarmPromise = null; this.graphWarmSignature = ''; this.relationshipForceCaches = new Map(); this.relationCache = new Map(); this.relationPipe = null; this.relationModelPromise = null; this.topicLabelPipe = null; this.topicLabelModelPromise = null; this.topicLabelCache = new Map(); this.topicLabelUnavailable = false; this.analysisCache = new Map(); this.analysisSave = Promise.resolve(); this.analysisRuns = new Map(); this.analysisMessage = ''; this.analysisStatus = { active: false, signal: '', done: 0, total: 0 };
     this.pipe = null; this.modelPromise = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Semantic search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
-    this.listeners = new Set(); this.graphCacheListeners = new Set(); this.updateTimer = null; this.indexRun = null; this.indexAgain = false; this.indexForce = false; this.indexStable = false; this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt;
+    this.listeners = new Set(); this.graphCacheListeners = new Set(); this.updateTimer = null; this.indexRun = null; this.indexAgain = false; this.indexForce = false; this.indexStable = false; this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt; this.lastUserActivityAt = 0; this.lastIndexProgressAt = 0; this.mobileEmbedQueue = Promise.resolve();
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
     this.legacyIndexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
     this.indexKey = `${plugin.manifest.id}:${plugin.app.vault.adapter.getBasePath?.() || plugin.app.vault.getName()}:bge-small-en-v1.5`;
@@ -267,7 +278,7 @@ export class MobileSearchRuntime {
   setState(phase, message) { if (phase !== this.phase) this.phaseStartedAt = Date.now(); this.phase = phase; this.message = message; this.lastEvent = message; this.lastError = phase === 'error' ? message : ''; this.plugin.recordActivity?.('Search', message, phase === 'error' ? 'error' : phase === 'ready' ? 'success' : ['offline'].includes(phase) ? 'neutral' : 'working'); this.changed(); }
   highlightPhraseCount() { return this.highlightPhraseVectors.size; }
   workerStatus() { return { phase: this.phase, message: this.message, modelMessage: this.modelMessage || '', relationMessage: this.relationMessage || '', topicLabelMessage: this.topicLabelMessage || '', analysisMessage: this.analysisMessage || '', analysisStatus: { ...this.analysisStatus }, graphPreparing: Boolean(this.graphWarmPromise), topicLabelsPreparing: Boolean(this.topicLabelRefreshes?.size), modelPreparing: Boolean(this.modelPromise) || this.phase === 'loading_model', relationModelPreparing: Boolean(this.relationModelPromise), topicLabelModelPreparing: Boolean(this.topicLabelModelPromise), pid: 'mobile', startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }; }
-  async health() { return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), graphEntities: new Set(this.meta.flatMap(item => item.entities || [])).size, graphCacheReady: Boolean(this.graphEvidenceCache?.rootGraph), graphPreparing: Boolean(this.graphWarmPromise), graphCacheBuiltAt: this.graphEvidenceCache?.builtAt || null, cachedRelationships: this.relationCache.size, cachedTopicLabels: this.topicLabelCache.size, cachedTextAnalyses: this.analysisCache.size, analysisStatus: { ...this.analysisStatus }, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelPreparing: Boolean(this.modelPromise) || this.phase === 'loading_model', relationModelPreparing: Boolean(this.relationModelPromise), topicLabelModelPreparing: Boolean(this.topicLabelModelPromise), modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), relationModelLoaded: Boolean(this.relationPipe || this.plugin.desktopEmbedder?.relationReady), topicLabelModelLoaded: Boolean(this.topicLabelPipe || this.plugin.desktopEmbedder?.topicLabelReady), modelProfile: 'bge', modelId: MODEL_ID, modelBackend: this.isMobile ? this.modelBackend : 'web-worker-wasm' }; }
+  async health() { return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), graphEntities: new Set(this.meta.flatMap(item => item.entities || [])).size, graphCacheReady: Boolean(this.graphEvidenceCache?.rootGraph), graphPreparing: Boolean(this.graphWarmPromise), graphCacheBuiltAt: this.graphEvidenceCache?.builtAt || null, cachedRelationships: this.relationCache.size, cachedTopicLabels: this.topicLabelCache.size, cachedTextAnalyses: this.analysisCache.size, analysisStatus: { ...this.analysisStatus }, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelPreparing: Boolean(this.modelPromise) || this.phase === 'loading_model', relationModelPreparing: Boolean(this.relationModelPromise), topicLabelModelPreparing: Boolean(this.topicLabelModelPromise), modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), relationModelLoaded: Boolean(this.relationPipe || this.plugin.desktopEmbedder?.relationReady), topicLabelModelLoaded: Boolean(this.topicLabelPipe || this.plugin.desktopEmbedder?.topicLabelReady), modelProfile: 'bge', modelId: MODEL_ID, modelBackend: this.plugin.desktopEmbedder && !this.plugin.desktopEmbedder.disabled ? 'web-worker-wasm' : this.modelBackend }; }
   async openDatabase() {
     if (this.database) return this.database;
     this.database = await new Promise((resolve, reject) => {
@@ -346,6 +357,42 @@ export class MobileSearchRuntime {
     this.modelPromise = this.loadModel();
     try { return await this.modelPromise; } finally { this.modelPromise = null; }
   }
+  async runMobileEmbedding(task) {
+    const previous = this.mobileEmbedQueue.catch(() => {}); let release;
+    this.mobileEmbedQueue = new Promise(resolve => { release = resolve; });
+    await previous;
+    try { return await task(); } finally { release(); }
+  }
+  indexingCancelled() { return this.cancelRequested || !this.enabled; }
+  async indexingTurn() {
+    if (typeof document === 'undefined') { await yieldToUi(); return; }
+    while (document.hidden && !this.indexingCancelled()) await sleep(500);
+    if (this.indexingCancelled()) return;
+    const quietWindow = this.isMobile ? 900 : 450;
+    const quietRemaining = quietWindow - (Date.now() - this.lastUserActivityAt);
+    if (quietRemaining > 0) await sleep(quietRemaining);
+    while ((this.liveRunning || this.livePending) && !this.indexingCancelled()) await sleep(this.isMobile ? 80 : 40);
+    if (this.indexingCancelled()) return;
+    await yieldForIdle(this.isMobile ? 900 : 500);
+    const scheduling = typeof navigator !== 'undefined' ? navigator.scheduling : null;
+    if (scheduling?.isInputPending?.({ includeContinuous: true })) await sleep(this.isMobile ? 120 : 60);
+    await sleep(this.isMobile ? 32 : 12);
+  }
+  setIndexProgress(message) {
+    const now = Date.now(), interval = this.isMobile ? 650 : 350;
+    if (now - this.lastIndexProgressAt < interval) return;
+    this.lastIndexProgressAt = now; this.setState('indexing', message);
+  }
+  async embedIndexChunks(texts) {
+    const results = [];
+    for (const text of texts) {
+      if (this.indexingCancelled()) return null;
+      try { results.push(...await this.embedBatch([text], false, 1, true)); }
+      catch (error) { if (error?.name !== 'BackgroundWorkerUnavailableError') throw error; this.mobileIndexBlocked = true; this.plugin.logDiagnostic('Mobile indexing paused because background inference is unavailable', true); return null; }
+      await this.indexingTurn();
+    }
+    return results;
+  }
   modelActivity(message = '') { this.modelMessage = message; this.plugin.recordActivity?.('Model', message, 'working'); if (this.indexRun || this.phase === 'indexing' || this.startPromise && this.phase !== 'ready') this.setState('loading_model', message); else { this.lastEvent = message; this.changed(); } }
   modelReady() { this.modelMessage = 'Semantic model ready'; this.plugin.recordActivity?.('Model', this.modelMessage, 'success'); if (this.phase === 'loading_model' && !this.indexRun && this.totalFiles > 0 && this.processedFiles >= this.totalFiles) this.setState('ready', `Ready (${new Set(this.meta.map(item => item.file)).size} files, ${this.meta.length} passages)`); else this.changed(); }
   async loadModel() {
@@ -374,22 +421,26 @@ export class MobileSearchRuntime {
       if (this.plugin.embeddedWasmModuleUrl) { URL.revokeObjectURL(this.plugin.embeddedWasmModuleUrl); this.plugin.embeddedWasmModuleUrl = null; }
     }
   }
-  async embedBatch(texts, query = false, preferredBatchSize = null) {
+  async embedBatch(texts, query = false, preferredBatchSize = null, backgroundOnly = false) {
     if (!texts.length) return [];
     const batchSize = preferredBatchSize || (query ? 8 : 2);
-    if (!this.isMobile && this.plugin.desktopEmbedder) {
+    const backgroundEmbedder = this.plugin.desktopEmbedder;
+    if (backgroundEmbedder) {
+      try { const results = []; for (let i = 0; i < texts.length; i += batchSize) results.push(...await backgroundEmbedder.embedBatch(texts.slice(i, i + batchSize), query)); this.modelBackend = 'web-worker-wasm'; return results; }
+      catch (error) { if (!this.isMobile) throw error; backgroundEmbedder.stop?.(); backgroundEmbedder.disabled = true; this.plugin.logDiagnostic(`Mobile background inference unavailable: ${error?.message || error}`, true); this.modelBackend = 'wasm-fallback'; if (backgroundOnly) { const unavailable = new Error('Mobile background inference is unavailable'); unavailable.name = 'BackgroundWorkerUnavailableError'; throw unavailable; } }
+    }
+    if (backgroundOnly && this.isMobile) { const unavailable = new Error('Mobile background inference is unavailable'); unavailable.name = 'BackgroundWorkerUnavailableError'; throw unavailable; }
+    await this.initializeModel();
+    return this.runMobileEmbedding(async () => {
       const results = [];
-      for (let i = 0; i < texts.length; i += batchSize) results.push(...await this.plugin.desktopEmbedder.embedBatch(texts.slice(i, i + batchSize), query));
+      for (let i = 0; i < texts.length; i += batchSize) {
+        const batch = texts.slice(i, i + batchSize).map(text => query ? `${QUERY_PREFIX}${text}` : text);
+        const output = await this.pipe(batch, { pooling: 'mean', normalize: true }); const dim = output.dims.at(-1);
+        for (let j = 0; j < batch.length; j++) results.push(new Float32Array(output.data.slice(j * dim, (j + 1) * dim)));
+        await yieldToUi();
+      }
       return results;
-    }
-    await this.initializeModel(); const results = [];
-    for (let i = 0; i < texts.length; i += batchSize) {
-      const batch = texts.slice(i, i + batchSize).map(text => query ? `${QUERY_PREFIX}${text}` : text);
-      const output = await this.pipe(batch, { pooling: 'mean', normalize: true }); const dim = output.dims.at(-1);
-      for (let j = 0; j < batch.length; j++) results.push(new Float32Array(output.data.slice(j * dim, (j + 1) * dim)));
-      await yieldToUi();
-    }
-    return results;
+    });
   }
   async embed(text, query = false) { return (await this.embedBatch([text], query))[0]; }
   relationActivity(message = '') { this.relationMessage = message; this.plugin.recordActivity?.('Relationships', message, /ready/i.test(message) ? 'success' : 'working'); this.changed(); }
@@ -473,19 +524,27 @@ export class MobileSearchRuntime {
       if (stored.legacyHighlights || stored.needsMetaCompaction || Object.prototype.hasOwnProperty.call(stored, 'highlightVectors')) await this.databasePut({ meta: this.meta, vectors: all.buffer.slice(all.byteOffset, all.byteOffset + all.byteLength), lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
     } catch (error) { this.plugin.logDiagnostic(`Index load failed: ${error?.message || String(error)}`, true); if (!this.isMobile) throw error; this.meta = []; this.vectors = []; this.highlightPhraseVectors.clear(); this.packedVectors = new Float32Array(); this.refreshLexical(); }
   }
+  async packVectors(vectors) {
+    const packed = new Float32Array(vectors.length * DIMENSION);
+    for (let index = 0; index < vectors.length; index++) { packed.set(vectors[index], index * DIMENSION); if (index % 128 === 127) await yieldForIdle(); }
+    return packed;
+  }
+  async saveCheckpoint(meta, vectors) {
+    const packed = await this.packVectors(vectors); await yieldForIdle();
+    await this.databasePut({ meta, vectors: packed.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt });
+  }
   async saveIndex() {
-    const packed = new Float32Array(this.vectors.length * DIMENSION);
-    this.vectors.forEach((vector, index) => packed.set(vector, index * DIMENSION));
+    const packed = await this.packVectors(this.vectors);
     this.packedVectors = packed; this.vectors = this.meta.map((_, index) => packed.subarray(index * DIMENSION, (index + 1) * DIMENSION)); this.queryCache.clear(); this.resultCache.clear(); this.conceptFacetCache.clear(); this.invalidateGraphEvidence(); this.topicBasisCache = null;
     await this.databasePut({ meta: this.meta, vectors: packed.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }); this.refreshLexical();
   }
   storageBytes() { return this.vectors.length * DIMENSION * 4 + this.highlightPhraseVectors.size * DIMENSION * 2 + this.metaStorageBytes; }
   files() { return this.plugin.app.vault.getFiles().filter(file => INDEXABLE.has(file.extension.toLowerCase())); }
   async waitForVaultSettled() {
-    const minimumUntil = Date.now() + 4000; let previous = -1; let stable = 0;
-    for (let attempt = 0; attempt < 30; attempt++) {
+    const minimumUntil = Date.now() + (this.isMobile ? 12000 : 8000); let previous = -1; let stable = 0;
+    for (let attempt = 0; attempt < 40; attempt++) {
       const count = this.files().length; stable = count === previous ? stable + 1 : 0; previous = count;
-      if (Date.now() >= minimumUntil && stable >= 3) return;
+      if (Date.now() >= minimumUntil && stable >= 4) { await this.indexingTurn(); return; }
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
@@ -507,36 +566,40 @@ export class MobileSearchRuntime {
   async performIndexUpdate(force = false) {
     this.indexStable = false; this.setState('indexing', 'Checking the semantic index…'); const files = this.files(); this.vaultFiles = files.length; this.totalFiles = files.length; this.currentFile = '';
     const indexed = new Map(); this.meta.forEach(item => { const group = indexed.get(item.file) || []; group.push(item); indexed.set(item.file, group); });
-    const changed = []; const contentByPath = new Map(); let metadataChanged = false;
+    const changed = []; let metadataChanged = false;
     for (const file of files) {
-      const previous = indexed.get(file.path); const currentHighlights = previous?.every(item => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)), currentGraphMetadata = previous?.every(item => item.graphVersion === GRAPH_METADATA_VERSION && Array.isArray(item.entities)); if (!force && currentHighlights && currentGraphMetadata && previous?.every(item => item.mtime === file.stat.mtime && item.contentHash)) continue;
-      const content = await this.plugin.app.vault.read(file); const fingerprint = contentFingerprint(content); const previousFingerprint = previous?.find(item => item.contentHash)?.contentHash;
-      const unchanged = !force && currentHighlights && previous && (previousFingerprint === fingerprint || (!previousFingerprint && sameChunks(previous, chunkMarkdown(content))));
-      if (unchanged) { previous.forEach(item => { item.mtime = file.stat.mtime; item.contentHash = fingerprint; item.graphVersion = GRAPH_METADATA_VERSION; item.entities = extractGraphEntities(`${basename(file.path)} ${item.heading || ''} ${item.text || ''}`); }); metadataChanged = true; }
-      else { changed.push(file); contentByPath.set(file.path, content); }
-      await yieldToUi();
+      const previous = indexed.get(file.path); const currentPassages = !this.isMobile || previous?.every(item => item.passageVersion === MOBILE_PASSAGE_INDEX_VERSION), currentHighlights = previous?.every(item => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)), currentGraphMetadata = previous?.every(item => item.graphVersion === GRAPH_METADATA_VERSION && Array.isArray(item.entities)); if (!force && currentPassages && currentHighlights && currentGraphMetadata && previous?.every(item => item.mtime === file.stat.mtime && item.contentHash)) continue;
+      if (force) { changed.push(file); await this.indexingTurn(); continue; }
+      let content; try { content = await this.plugin.app.vault.read(file); } catch (error) { this.plugin.logDiagnostic(`Could not verify ${file.path}; scheduling it for indexing: ${error?.message || error}`); changed.push(file); await this.indexingTurn(); continue; } const fingerprint = contentFingerprint(content); const previousFingerprint = previous?.find(item => item.contentHash)?.contentHash;
+      const unchanged = !force && currentPassages && currentHighlights && previous && (previousFingerprint === fingerprint || (!previousFingerprint && sameChunks(previous, chunkMarkdown(content, this.isMobile ? 1000 : 2400))));
+      if (unchanged) { previous.forEach(item => { item.mtime = file.stat.mtime; item.contentHash = fingerprint; if (!currentGraphMetadata) { item.graphVersion = GRAPH_METADATA_VERSION; item.entities = extractGraphEntities(`${basename(file.path)} ${item.heading || ''} ${item.text || ''}`); } }); metadataChanged = true; }
+      else changed.push(file);
+      await this.indexingTurn();
     }
     const present = new Set(files.map(file => file.path));
     const deleted = new Set(this.meta.filter(item => !present.has(item.file)).map(item => item.file)); this.staleFiles = changed.length;
     this.plugin.logDiagnostic(`Scan complete: ${files.length} files; ${changed.length} need indexing`);
     this.processedFiles = Math.max(0, files.length - changed.length);
     if (!changed.length && !deleted.size) { this.staleFiles = 0; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); if (metadataChanged) await this.saveIndex(); this.indexStable = true; this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`); return; }
-    let meta = []; let vectors = []; let checkpointAt = Date.now(); for (let i = 0; i < this.meta.length; i++) if (!deleted.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
+    let meta = []; let vectors = []; const failedFiles = []; let checkpointAt = Date.now(); for (let i = 0; i < this.meta.length; i++) if (!deleted.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
     for (let fileIndex = 0; fileIndex < changed.length; fileIndex++) {
       if (this.cancelRequested || !this.enabled) return;
-      const file = changed[fileIndex]; const fileStartedAt = Date.now(); this.currentFile = file.path; this.setState('indexing', `Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
+      const file = changed[fileIndex]; const fileStartedAt = Date.now(); this.currentFile = file.path; this.setIndexProgress(`Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
       try {
-        const content = contentByPath.get(file.path) ?? await this.plugin.app.vault.read(file); const fingerprint = contentFingerprint(content); const chunks = chunkMarkdown(content); const embedded = await this.embedBatch(chunks.map(chunk => embeddingText(file.path, chunk))); const highlightCandidates = chunks.map(chunk => buildHighlightCandidates(file.path, chunk));
+        const content = await this.plugin.app.vault.read(file); const fingerprint = contentFingerprint(content); const chunks = chunkMarkdown(content, this.isMobile ? 1000 : 2400); const embedded = await this.embedIndexChunks(chunks.map(chunk => embeddingText(file.path, chunk))); if (!embedded) { if (this.mobileIndexBlocked) { this.staleFiles = Math.max(1, changed.length - fileIndex); this.currentFile = ''; this.indexStable = false; this.setState(this.vectors.length ? 'ready' : 'error', this.vectors.length ? 'Search ready; mobile indexing paused because background inference is unavailable' : 'Mobile indexing requires background-worker support on this device'); } return; }
         const retainedMeta = []; const retainedVectors = []; for (let i = 0; i < meta.length; i++) if (meta[i].file !== file.path) { retainedMeta.push(meta[i]); retainedVectors.push(vectors[i]); }
-        meta = retainedMeta; vectors = retainedVectors; chunks.forEach((chunk, index) => { meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: highlightCandidates[index], graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ''} ${chunk.text}`) }); vectors.push(embedded[index]); });
-        this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks.length} chunks, ${highlightCandidates.flat().length} highlight candidates in ${Date.now() - fileStartedAt} ms`);
-      } catch (error) { this.plugin.reportOnce(`Could not index ${file.path}: ${error.message}`); }
+        meta = retainedMeta; vectors = retainedVectors; let highlightCount = 0;
+        for (let index = 0; index < chunks.length; index++) { if (this.indexingCancelled()) return; const chunk = chunks[index], highlightCandidates = buildHighlightCandidates(file.path, chunk); highlightCount += highlightCandidates.length; meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, passageVersion: this.isMobile ? MOBILE_PASSAGE_INDEX_VERSION : 1, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates, graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ''} ${chunk.text}`) }); vectors.push(embedded[index]); await this.indexingTurn(); }
+        this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks.length} chunks, ${highlightCount} highlight candidates in ${Date.now() - fileStartedAt} ms`);
+      } catch (error) { failedFiles.push({ file: file.path, message: error?.message || String(error) }); this.plugin.logDiagnostic(`Could not index ${file.path}: ${error?.message || error}`, true); }
       this.processedFiles++;
-      if (Date.now() - checkpointAt >= 30000) { this.meta = meta; this.vectors = vectors; await this.saveIndex(); checkpointAt = Date.now(); this.plugin.logDiagnostic(`Saved index checkpoint: ${this.processedFiles}/${files.length} files`); }
-      await yieldToUi();
+      if (Date.now() - checkpointAt >= (this.isMobile ? 90000 : 60000)) { await this.saveCheckpoint(meta, vectors); checkpointAt = Date.now(); this.plugin.logDiagnostic(`Saved index checkpoint: ${this.processedFiles}/${files.length} files`); }
+      await this.indexingTurn();
     }
     if (this.cancelRequested || !this.enabled) return;
-    this.meta = meta; this.vectors = vectors; this.lastSuccessfulIndexAt = Date.now(); await this.saveIndex(); this.staleFiles = 0; this.currentFile = ''; this.processedFiles = files.length; this.indexStable = true; this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`);
+    this.meta = meta; this.vectors = vectors; if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now(); await this.saveIndex(); this.staleFiles = failedFiles.length; this.currentFile = ''; this.processedFiles = files.length - failedFiles.length; this.indexStable = !failedFiles.length;
+    if (failedFiles.length) { const delay = this.isMobile ? 60000 : 30000; this.setState('ready', `Search ready; ${failedFiles.length} ${failedFiles.length === 1 ? 'note' : 'notes'} pending retry`); clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; if (this.enabled && !this.cancelRequested) this.updateIndex(); }, delay); this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? 'note' : 'notes'} after a temporary failure`); }
+    else this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`);
   }
   start() {
     if (!this.plugin.settings.enabled) { this.setState('offline', 'Semantic index is disabled'); return false; }
@@ -548,7 +611,9 @@ export class MobileSearchRuntime {
   restart() { this.stop(); const resume = () => this.startPromise ? setTimeout(resume, 100) : this.start(); resume(); return true; }
   rebuild() { this.stop(); const rebuild = () => { if (this.startPromise) return setTimeout(rebuild, 100); this.meta = []; this.vectors = []; this.highlightPhraseVectors.clear(); this.analysisCache.clear(); this.packedVectors = new Float32Array(); this.queryCache.clear(); this.resultCache.clear(); this.conceptFacetCache.clear(); this.graphEvidenceCache = null; this.invalidateGraphEvidence(); this.topicBasisCache = null; this.refreshLexical(); this.enabled = true; this.cancelRequested = false; this.startPromise = (async () => { try { await this.updateIndex(true); if (this.plugin.atlasEnabled) this.warmGraphEvidence(); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); }; rebuild(); return true; }
   watch() {
-    const schedule = file => { if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || '').toLowerCase())) return; clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; this.updateIndex(); }, 1800); };
+    const noteActivity = () => { this.lastUserActivityAt = Date.now(); };
+    if (typeof document !== 'undefined' && this.plugin.registerDomEvent) { this.plugin.registerDomEvent(document, 'keydown', noteActivity, true); this.plugin.registerDomEvent(document, 'pointerdown', noteActivity, true); this.plugin.registerDomEvent(document, 'touchstart', noteActivity, { capture: true, passive: true }); this.plugin.registerDomEvent(document, 'wheel', noteActivity, { capture: true, passive: true }); }
+    const schedule = file => { if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || '').toLowerCase())) return; clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; this.updateIndex(); }, this.isMobile ? 8000 : 5000); };
     this.plugin.registerEvent(this.plugin.app.vault.on('create', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('modify', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('delete', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('rename', schedule));
   }
   async semanticHighlights(results, queryVector, options) {

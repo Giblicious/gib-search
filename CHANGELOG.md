@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.54.0
+
+- Rebuilds the semantic index one note and one inference passage at a time instead of retaining the contents of every changed note in memory.
+- Yields indexing work to Obsidian's idle periods, backs off while the user is typing or touching the interface, and pauses expensive progress while the app is in the background.
+- Moves mobile indexing inference into a dedicated Web Worker, bounds mobile passages to 1,000 characters, and never falls back to blocking UI-thread inference for background work.
+- Pauses mobile indexing with a clear health message if the device cannot provide background-worker support while preserving any previously searchable index.
+- Makes pause and cancellation responsive between passages, coalesces vault changes into quieter update windows, and reduces high-frequency progress updates.
+- Keeps completed checkpoint work private until a consistent index snapshot is ready, then retries notes that encounter transient read or inference failures.
+
 ## 0.53.0
 
 - Temporarily disables Atlas, Search Map, Navigator, Companion, and View analysis while those features are redesigned.
