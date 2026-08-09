@@ -2,7 +2,7 @@
 
 Local semantic search for Obsidian.
 
-Gib Search indexes note content, headings, filenames, and optional folder-path signals. Results include compact source excerpts, semantic phrase emphasis, ranking controls, typo tolerance, and search-within-file support.
+Gib Search indexes note content, headings, filenames, and optional folder-path signals. PDFs, images, audio, video, and other vault attachments are searchable by filename and path; Gib Search never reads or embeds their binary contents. Results include compact source excerpts, semantic phrase emphasis, ranking controls, typo tolerance, and search-within-file support.
 
 The experimental Atlas and graph surfaces are temporarily disabled while they are redesigned. Their implementation and saved settings remain intact, but Gib Search does not load their views, run their analysis, or prepare graph caches in this release.
 

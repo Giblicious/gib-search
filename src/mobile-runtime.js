@@ -11,7 +11,7 @@ const HIGHLIGHT_INDEX_VERSION = 1;
 const GRAPH_METADATA_VERSION = 1;
 const GRAPH_EVIDENCE_VERSION = 3;
 const QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';
-const INDEXABLE = new Set(['md', 'txt', 'markdown']);
+const CONTENT_INDEXABLE = new Set(['md', 'txt', 'markdown']);
 const STOP_WORDS = new Set(['a', 'about', 'an', 'and', 'are', 'as', 'at', 'be', 'because', 'been', 'being', 'between', 'but', 'by', 'can', 'could', 'do', 'does', 'for', 'from', 'had', 'has', 'have', 'how', 'i', 'in', 'into', 'is', 'it', 'its', 'may', 'might', 'more', 'my', 'not', 'of', 'on', 'or', 'our', 'out', 'over', 'she', 'so', 'than', 'that', 'the', 'their', 'them', 'then', 'they', 'this', 'those', 'through', 'to', 'under', 'up', 'vs', 'was', 'we', 'were', 'what', 'when', 'where', 'which', 'while', 'who', 'with', 'without', 'would', 'you', 'your']);
 const GENERIC_CONCEPTS = new Set(['answer', 'concept', 'example', 'fact', 'idea', 'kind', 'part', 'point', 'question', 'section', 'thing', 'thought', 'type', 'way']);
 const GENERIC_DEMOGRAPHICS = new Set(['adult', 'female', 'male', 'man', 'person', 'woman']);
@@ -24,6 +24,7 @@ function cleanGeneratedTopicLabel(source) { const value = cleanText(source).repl
 
 function basename(file) { return String(file).split('/').pop().replace(/\.(?:md|txt|markdown)$/i, ''); }
 function dirname(file) { const parts = String(file).split('/'); parts.pop(); return parts.join('/'); }
+function isContentIndexable(file) { return CONTENT_INDEXABLE.has(String(file?.extension || '').toLowerCase()); }
 function tokens(source) {
   return (String(source || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [])
     .filter(token => token.length > 2)
@@ -508,7 +509,7 @@ export class MobileSearchRuntime {
   }
   refreshLexical() {
     this.spellingVocabulary.clear(); const addTerms = (source, weight) => { for (const term of new Set(spellingTerms(source))) this.spellingVocabulary.set(term, (this.spellingVocabulary.get(term) || 0) + weight); };
-    this.lexical = this.meta.map(item => { addTerms(basename(item.file), 4); addTerms(dirname(item.file), 2); addTerms(item.heading, 2); addTerms(item.text, 1); return { filename: new Set(tokens(basename(item.file))), folder: new Set(tokens(dirname(item.file))) }; }); this.spellingByLength.clear(); for (const term of this.spellingVocabulary.keys()) { if (!this.spellingByLength.has(term.length)) this.spellingByLength.set(term.length, []); this.spellingByLength.get(term.length).push(term); }
+    this.lexical = this.meta.map(item => { const filename = String(item.file).split('/').pop(); addTerms(filename, 4); addTerms(dirname(item.file), 2); addTerms(item.heading, 2); addTerms(item.text, 1); return { filename: new Set(tokens(filename)), folder: new Set(tokens(dirname(item.file))), filenameText: filename.toLowerCase(), pathText: String(item.file).toLowerCase() }; }); this.spellingByLength.clear(); for (const term of this.spellingVocabulary.keys()) { if (!this.spellingByLength.has(term.length)) this.spellingByLength.set(term.length, []); this.spellingByLength.get(term.length).push(term); }
   }
   correctQuery(query) {
     return String(query || '').replace(/[\p{L}]+/gu, word => { const lower = word.toLowerCase(); if (lower.length < 5 || this.spellingVocabulary.has(lower)) return word; let best = null, bestWeight = 0; for (let length = lower.length - 1; length <= lower.length + 1; length++) for (const candidate of this.spellingByLength.get(length) || []) { if (candidate[0] !== lower[0]) continue; const weight = this.spellingVocabulary.get(candidate) || 0; if (weight < 2 || editDistanceWithin(lower, candidate, 1) > 1) continue; if (weight > bestWeight || weight === bestWeight && candidate < best) { best = candidate; bestWeight = weight; } } if (!best) return word; if (word === word.toUpperCase()) return best.toUpperCase(); if (word[0] === word[0].toUpperCase()) return best[0].toUpperCase() + best.slice(1); return best; });
@@ -539,7 +540,7 @@ export class MobileSearchRuntime {
     await this.databasePut({ meta: this.meta, vectors: packed.buffer, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }); this.refreshLexical();
   }
   storageBytes() { return this.vectors.length * DIMENSION * 4 + this.highlightPhraseVectors.size * DIMENSION * 2 + this.metaStorageBytes; }
-  files() { return this.plugin.app.vault.getFiles().filter(file => INDEXABLE.has(file.extension.toLowerCase())); }
+  files() { return this.plugin.app.vault.getFiles(); }
   async waitForVaultSettled() {
     const minimumUntil = Date.now() + (this.isMobile ? 12000 : 8000); let previous = -1; let stable = 0;
     for (let attempt = 0; attempt < 40; attempt++) {
@@ -568,7 +569,12 @@ export class MobileSearchRuntime {
     const indexed = new Map(); this.meta.forEach(item => { const group = indexed.get(item.file) || []; group.push(item); indexed.set(item.file, group); });
     const changed = []; let metadataChanged = false;
     for (const file of files) {
-      const previous = indexed.get(file.path); const currentPassages = !this.isMobile || previous?.every(item => item.passageVersion === MOBILE_PASSAGE_INDEX_VERSION), currentHighlights = previous?.every(item => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)), currentGraphMetadata = previous?.every(item => item.graphVersion === GRAPH_METADATA_VERSION && Array.isArray(item.entities)); if (!force && currentPassages && currentHighlights && currentGraphMetadata && previous?.every(item => item.mtime === file.stat.mtime && item.contentHash)) continue;
+      const filenameOnly = !isContentIndexable(file), previous = indexed.get(file.path); const currentKind = previous?.every(item => Boolean(item.filenameOnly) === filenameOnly), currentPassages = filenameOnly || !this.isMobile || previous?.every(item => item.passageVersion === MOBILE_PASSAGE_INDEX_VERSION), currentHighlights = previous?.every(item => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)), currentGraphMetadata = previous?.every(item => item.graphVersion === GRAPH_METADATA_VERSION && Array.isArray(item.entities));
+      if (!force && currentKind && currentPassages && currentHighlights && currentGraphMetadata && previous?.every(item => item.contentHash)) {
+        if (filenameOnly) { if (previous.some(item => item.mtime !== file.stat.mtime)) { previous.forEach(item => { item.mtime = file.stat.mtime; }); metadataChanged = true; } continue; }
+        if (previous.every(item => item.mtime === file.stat.mtime)) continue;
+      }
+      if (filenameOnly) { changed.push(file); await this.indexingTurn(); continue; }
       if (force) { changed.push(file); await this.indexingTurn(); continue; }
       let content; try { content = await this.plugin.app.vault.read(file); } catch (error) { this.plugin.logDiagnostic(`Could not verify ${file.path}; scheduling it for indexing: ${error?.message || error}`); changed.push(file); await this.indexingTurn(); continue; } const fingerprint = contentFingerprint(content); const previousFingerprint = previous?.find(item => item.contentHash)?.contentHash;
       const unchanged = !force && currentPassages && currentHighlights && previous && (previousFingerprint === fingerprint || (!previousFingerprint && sameChunks(previous, chunkMarkdown(content, this.isMobile ? 1000 : 2400))));
@@ -580,17 +586,21 @@ export class MobileSearchRuntime {
     const deleted = new Set(this.meta.filter(item => !present.has(item.file)).map(item => item.file)); this.staleFiles = changed.length;
     this.plugin.logDiagnostic(`Scan complete: ${files.length} files; ${changed.length} need indexing`);
     this.processedFiles = Math.max(0, files.length - changed.length);
-    if (!changed.length && !deleted.size) { this.staleFiles = 0; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); if (metadataChanged) await this.saveIndex(); this.indexStable = true; this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`); return; }
+    if (!changed.length && !deleted.size) { this.staleFiles = 0; this.processedFiles = files.length; this.lastSuccessfulIndexAt = Date.now(); if (metadataChanged) await this.saveIndex(); this.indexStable = true; this.setState('ready', `Ready (${files.length} files, ${this.meta.length} records)`); return; }
     let meta = []; let vectors = []; const failedFiles = []; let checkpointAt = Date.now(); for (let i = 0; i < this.meta.length; i++) if (!deleted.has(this.meta[i].file)) { meta.push(this.meta[i]); vectors.push(this.vectors[i]); }
     for (let fileIndex = 0; fileIndex < changed.length; fileIndex++) {
       if (this.cancelRequested || !this.enabled) return;
       const file = changed[fileIndex]; const fileStartedAt = Date.now(); this.currentFile = file.path; this.setIndexProgress(`Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
       try {
-        const content = await this.plugin.app.vault.read(file); const fingerprint = contentFingerprint(content); const chunks = chunkMarkdown(content, this.isMobile ? 1000 : 2400); const embedded = await this.embedIndexChunks(chunks.map(chunk => embeddingText(file.path, chunk))); if (!embedded) { if (this.mobileIndexBlocked) { this.staleFiles = Math.max(1, changed.length - fileIndex); this.currentFile = ''; this.indexStable = false; this.setState(this.vectors.length ? 'ready' : 'error', this.vectors.length ? 'Search ready; mobile indexing paused because background inference is unavailable' : 'Mobile indexing requires background-worker support on this device'); } return; }
-        const retainedMeta = []; const retainedVectors = []; for (let i = 0; i < meta.length; i++) if (meta[i].file !== file.path) { retainedMeta.push(meta[i]); retainedVectors.push(vectors[i]); }
-        meta = retainedMeta; vectors = retainedVectors; let highlightCount = 0;
-        for (let index = 0; index < chunks.length; index++) { if (this.indexingCancelled()) return; const chunk = chunks[index], highlightCandidates = buildHighlightCandidates(file.path, chunk); highlightCount += highlightCandidates.length; meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, passageVersion: this.isMobile ? MOBILE_PASSAGE_INDEX_VERSION : 1, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates, graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ''} ${chunk.text}`) }); vectors.push(embedded[index]); await this.indexingTurn(); }
-        this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks.length} chunks, ${highlightCount} highlight candidates in ${Date.now() - fileStartedAt} ms`);
+        const newMeta = [], newVectors = [];
+        if (!isContentIndexable(file)) {
+          const emptyChunk = { heading: '', text: '', lineStart: 0, lineEnd: 0 }; newMeta.push({ file: file.path, filenameOnly: true, ...emptyChunk, mtime: file.stat.mtime, contentHash: 'filename-only-v1', passageVersion: MOBILE_PASSAGE_INDEX_VERSION, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: buildHighlightCandidates(file.path, emptyChunk), graphVersion: GRAPH_METADATA_VERSION, entities: [] }); newVectors.push(new Float32Array(DIMENSION)); this.plugin.logDiagnostic(`Indexed filename ${file.path} without reading file contents in ${Date.now() - fileStartedAt} ms`);
+        } else {
+          const content = await this.plugin.app.vault.read(file); const fingerprint = contentFingerprint(content); const chunks = chunkMarkdown(content, this.isMobile ? 1000 : 2400); const embedded = await this.embedIndexChunks(chunks.map(chunk => embeddingText(file.path, chunk))); if (!embedded) { if (this.mobileIndexBlocked) { this.staleFiles = Math.max(1, changed.length - fileIndex); this.currentFile = ''; this.indexStable = false; this.setState(this.vectors.length ? 'ready' : 'error', this.vectors.length ? 'Search ready; mobile indexing paused because background inference is unavailable' : 'Mobile indexing requires background-worker support on this device'); } return; }
+          let highlightCount = 0; for (let index = 0; index < chunks.length; index++) { if (this.indexingCancelled()) return; const chunk = chunks[index], highlightCandidates = buildHighlightCandidates(file.path, chunk); highlightCount += highlightCandidates.length; newMeta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, passageVersion: this.isMobile ? MOBILE_PASSAGE_INDEX_VERSION : 1, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates, graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ''} ${chunk.text}`) }); newVectors.push(embedded[index]); await this.indexingTurn(); }
+          this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks.length} chunks, ${highlightCount} highlight candidates in ${Date.now() - fileStartedAt} ms`);
+        }
+        const retainedMeta = [], retainedVectors = []; for (let i = 0; i < meta.length; i++) if (meta[i].file !== file.path) { retainedMeta.push(meta[i]); retainedVectors.push(vectors[i]); } meta = retainedMeta.concat(newMeta); vectors = retainedVectors.concat(newVectors);
       } catch (error) { failedFiles.push({ file: file.path, message: error?.message || String(error) }); this.plugin.logDiagnostic(`Could not index ${file.path}: ${error?.message || error}`, true); }
       this.processedFiles++;
       if (Date.now() - checkpointAt >= (this.isMobile ? 90000 : 60000)) { await this.saveCheckpoint(meta, vectors); checkpointAt = Date.now(); this.plugin.logDiagnostic(`Saved index checkpoint: ${this.processedFiles}/${files.length} files`); }
@@ -598,8 +608,8 @@ export class MobileSearchRuntime {
     }
     if (this.cancelRequested || !this.enabled) return;
     this.meta = meta; this.vectors = vectors; if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now(); await this.saveIndex(); this.staleFiles = failedFiles.length; this.currentFile = ''; this.processedFiles = files.length - failedFiles.length; this.indexStable = !failedFiles.length;
-    if (failedFiles.length) { const delay = this.isMobile ? 60000 : 30000; this.setState('ready', `Search ready; ${failedFiles.length} ${failedFiles.length === 1 ? 'note' : 'notes'} pending retry`); clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; if (this.enabled && !this.cancelRequested) this.updateIndex(); }, delay); this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? 'note' : 'notes'} after a temporary failure`); }
-    else this.setState('ready', `Ready (${files.length} files, ${this.meta.length} passages)`);
+    if (failedFiles.length) { const delay = this.isMobile ? 60000 : 30000; this.setState('ready', `Search ready; ${failedFiles.length} ${failedFiles.length === 1 ? 'file' : 'files'} pending retry`); clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; if (this.enabled && !this.cancelRequested) this.updateIndex(); }, delay); this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? 'file' : 'files'} after a temporary failure`); }
+    else this.setState('ready', `Ready (${files.length} files, ${this.meta.length} records)`);
   }
   start() {
     if (!this.plugin.settings.enabled) { this.setState('offline', 'Semantic index is disabled'); return false; }
@@ -613,8 +623,8 @@ export class MobileSearchRuntime {
   watch() {
     const noteActivity = () => { this.lastUserActivityAt = Date.now(); };
     if (typeof document !== 'undefined' && this.plugin.registerDomEvent) { this.plugin.registerDomEvent(document, 'keydown', noteActivity, true); this.plugin.registerDomEvent(document, 'pointerdown', noteActivity, true); this.plugin.registerDomEvent(document, 'touchstart', noteActivity, { capture: true, passive: true }); this.plugin.registerDomEvent(document, 'wheel', noteActivity, { capture: true, passive: true }); }
-    const schedule = file => { if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || '').toLowerCase())) return; clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; this.updateIndex(); }, this.isMobile ? 8000 : 5000); };
-    this.plugin.registerEvent(this.plugin.app.vault.on('create', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('modify', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('delete', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('rename', schedule));
+    const schedule = file => { if (!this.enabled || !file?.path) return; clearTimeout(this.updateTimer); this.updateTimer = setTimeout(() => { this.updateTimer = null; this.updateIndex(); }, this.isMobile ? 8000 : 5000); };
+    this.plugin.registerEvent(this.plugin.app.vault.on('create', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('modify', file => { if (isContentIndexable(file)) schedule(file); })); this.plugin.registerEvent(this.plugin.app.vault.on('delete', schedule)); this.plugin.registerEvent(this.plugin.app.vault.on('rename', schedule));
   }
   async semanticHighlights(results, queryVector, options) {
     const limit = Math.max(1, Math.min(15, Number(options.highlightLimit) || 15));
@@ -659,14 +669,16 @@ export class MobileSearchRuntime {
     if (!this.vectors.length) throw new Error(this.message || 'The semantic index is not ready');
     const requestedFiles = options.files?.length ? [...new Set(options.files)].sort() : null, requestedFileSet = requestedFiles ? new Set(requestedFiles) : null, cacheKey = JSON.stringify([String(query).trim().toLowerCase(), topK, minScore, options.scoreWindow, options.folderPathBoost, Boolean(options.semanticHighlights), options.resultMinScore, options.singleWordMinScore, options.phraseMinScore, options.maxPhrases, options.highlightLimit || 15, options.file || '', requestedFiles]);
     const cached = this.resultCache.get(cacheKey); if (cached) { this.cacheResult(this.resultCache, cacheKey, cached, 80); return cached; }
-    const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery); const queryTokens = [...new Set(tokens(`${query} ${correctedQuery}`))], queryEntities = new Set(extractGraphEntities(`${query} ${correctedQuery}`).map(value => value.toLowerCase())), yieldStride = this.isMobile ? 192 : 1024; const scores = [];
+    const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery), queryText = String(query || '').trim().toLowerCase(), correctedText = String(correctedQuery || '').trim().toLowerCase(); const queryTokens = [...new Set(tokens(`${query} ${correctedQuery}`))], queryEntities = new Set(extractGraphEntities(`${query} ${correctedQuery}`).map(value => value.toLowerCase())), yieldStride = this.isMobile ? 192 : 1024; const scores = [];
     for (let i = 0; i < this.vectors.length; i++) {
-      if (i % yieldStride === yieldStride - 1) { await yieldToUi(); if (options._liveGeneration !== undefined && options._liveGeneration !== this.liveGeneration) throw staleSearchError(); } if (options.file && this.meta[i].file !== options.file || requestedFileSet && !requestedFileSet.has(this.meta[i].file)) continue; const semantic = dotPacked(queryVector, this.packedVectors, i * DIMENSION); if (semantic < minScore) continue;
-      const filenameBoost = lexicalCoverage(queryTokens, this.lexical[i].filename) * .05; const folderPathBoost = (options.folderPathBoost || 0) * lexicalCoverage(queryTokens, this.lexical[i].folder), passageEntities = new Set((this.meta[i].entities || []).map(value => String(value).toLowerCase())), entityBoost = queryEntities.size ? [...queryEntities].filter(entity => passageEntities.has(entity)).length / queryEntities.size * .025 : 0;
-      scores.push({ index: i, score: semantic, rankingScore: semantic + filenameBoost + folderPathBoost + entityBoost, filenameBoost, folderPathBoost, entityBoost });
+      if (i % yieldStride === yieldStride - 1) { await yieldToUi(); if (options._liveGeneration !== undefined && options._liveGeneration !== this.liveGeneration) throw staleSearchError(); } if (options.file && this.meta[i].file !== options.file || requestedFileSet && !requestedFileSet.has(this.meta[i].file)) continue;
+      const lexical = this.lexical[i], filenameCoverage = lexicalCoverage(queryTokens, lexical.filename), folderCoverage = lexicalCoverage(queryTokens, lexical.folder), filenameOnly = Boolean(this.meta[i].filenameOnly), directFilename = Boolean(queryText && lexical.filenameText.includes(queryText) || correctedText && lexical.filenameText.includes(correctedText)), directPath = Boolean(queryText && lexical.pathText.includes(queryText) || correctedText && lexical.pathText.includes(correctedText));
+      const semantic = filenameOnly ? 0 : dotPacked(queryVector, this.packedVectors, i * DIMENSION); if (filenameOnly && !directFilename && !directPath && filenameCoverage <= 0 && folderCoverage <= 0 || !filenameOnly && semantic < minScore) continue;
+      const filenameBoost = filenameOnly ? 0 : filenameCoverage * .05; const folderPathBoost = filenameOnly ? 0 : (options.folderPathBoost || 0) * folderCoverage, passageEntities = new Set((this.meta[i].entities || []).map(value => String(value).toLowerCase())), entityBoost = filenameOnly ? 0 : queryEntities.size ? [...queryEntities].filter(entity => passageEntities.has(entity)).length / queryEntities.size * .025 : 0, lexicalScore = directFilename ? .88 + filenameCoverage * .1 : filenameCoverage > 0 ? .66 + filenameCoverage * .2 : directPath ? .62 : .52 + folderCoverage * .1;
+      scores.push({ index: i, score: semantic, rankingScore: filenameOnly ? Math.min(.98, lexicalScore) : semantic + filenameBoost + folderPathBoost + entityBoost, filenameBoost, folderPathBoost, entityBoost, filenameOnly, filenameHighlights: directFilename ? [{ phrase: lexical.filenameText.includes(queryText) ? queryText : correctedText, score: 1 }] : [] });
     }
-    scores.sort((a, b) => b.rankingScore - a.rankingScore); const floor = (scores[0]?.score || 0) - Math.max(0, Math.min(1, options.scoreWindow ?? 1)); const top = scores.filter(item => item.score >= floor).slice(0, topK);
-    const results = top.map(item => ({ ...this.meta[item.index], passageIndex: item.index, score: Math.min(1, item.rankingScore), semanticScore: item.score, rankingScore: Math.min(1, item.rankingScore), filenameBoost: item.filenameBoost, folderPathBoost: item.folderPathBoost, entityBoost: item.entityBoost }));
+    scores.sort((a, b) => b.rankingScore - a.rankingScore); const bestSemantic = scores.find(item => !item.filenameOnly)?.score || 0, floor = bestSemantic - Math.max(0, Math.min(1, options.scoreWindow ?? 1)); const top = scores.filter(item => item.filenameOnly || item.score >= floor).slice(0, topK);
+    const results = top.map(item => ({ ...this.meta[item.index], passageIndex: item.index, score: Math.min(1, item.rankingScore), semanticScore: item.score, rankingScore: Math.min(1, item.rankingScore), filenameBoost: item.filenameOnly ? Math.min(1, item.rankingScore) : item.filenameBoost, folderPathBoost: item.folderPathBoost, entityBoost: item.entityBoost, filenameHighlights: item.filenameHighlights }));
     if (options.semanticHighlights && results.length) await this.semanticHighlights(results, queryVector, { ...options, query: correctedQuery }); return this.cacheResult(this.resultCache, cacheKey, results, 80);
   }
   async scores(query) { const vector = await this.queryVector(query); const scores = {}; this.meta.forEach((item, index) => { const score = dotPacked(vector, this.packedVectors, index * DIMENSION); scores[item.file] = Math.max(scores[item.file] || -1, score); }); return scores; }

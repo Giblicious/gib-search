@@ -70543,6 +70543,9 @@ function dirname(file) {
   parts.pop();
   return parts.join("/");
 }
+function isContentIndexable(file) {
+  return CONTENT_INDEXABLE.has(String(file?.extension || "").toLowerCase());
+}
 function tokens(source) {
   return (String(source || "").toLowerCase().match(/[\p{L}\p{N}]+/gu) || []).filter((token) => token.length > 2).map((token) => token.replace(/ies$/, "y").replace(/ing$/, "").replace(/s$/, ""));
 }
@@ -71394,7 +71397,7 @@ function unpackIndexMeta(meta) {
     return { phrase: candidate[0], field: candidate[1], sentenceId: candidate[2], start: candidate[3], end: candidate[4], words: candidate[5], hasNoun: Boolean(flags & 1), hasVerb: Boolean(flags & 2), hasExpression: Boolean(flags & 4), adjectiveOnly: Boolean(flags & 8), quality: Number(candidate[7] || 0) };
   }) }));
 }
-var MODEL_ID, RELATION_MODEL_ID, TOPIC_LABEL_MODEL_ID, DIMENSION, MOBILE_PASSAGE_INDEX_VERSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, GRAPH_EVIDENCE_VERSION, QUERY_PREFIX, INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, STRUCTURAL_TOPIC_LABELS, VAGUE_LABEL_WORDS, IRREGULAR_LEMMAS, MobileSearchRuntime;
+var MODEL_ID, RELATION_MODEL_ID, TOPIC_LABEL_MODEL_ID, DIMENSION, MOBILE_PASSAGE_INDEX_VERSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, GRAPH_EVIDENCE_VERSION, QUERY_PREFIX, CONTENT_INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, STRUCTURAL_TOPIC_LABELS, VAGUE_LABEL_WORDS, IRREGULAR_LEMMAS, MobileSearchRuntime;
 var init_mobile_runtime = __esm({
   "src/mobile-runtime.js"() {
     init_transformers_web();
@@ -71409,7 +71412,7 @@ var init_mobile_runtime = __esm({
     GRAPH_METADATA_VERSION = 1;
     GRAPH_EVIDENCE_VERSION = 3;
     QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
-    INDEXABLE = /* @__PURE__ */ new Set(["md", "txt", "markdown"]);
+    CONTENT_INDEXABLE = /* @__PURE__ */ new Set(["md", "txt", "markdown"]);
     STOP_WORDS = /* @__PURE__ */ new Set(["a", "about", "an", "and", "are", "as", "at", "be", "because", "been", "being", "between", "but", "by", "can", "could", "do", "does", "for", "from", "had", "has", "have", "how", "i", "in", "into", "is", "it", "its", "may", "might", "more", "my", "not", "of", "on", "or", "our", "out", "over", "she", "so", "than", "that", "the", "their", "them", "then", "they", "this", "those", "through", "to", "under", "up", "vs", "was", "we", "were", "what", "when", "where", "which", "while", "who", "with", "without", "would", "you", "your"]);
     GENERIC_CONCEPTS = /* @__PURE__ */ new Set(["answer", "concept", "example", "fact", "idea", "kind", "part", "point", "question", "section", "thing", "thought", "type", "way"]);
     GENERIC_DEMOGRAPHICS = /* @__PURE__ */ new Set(["adult", "female", "male", "man", "person", "woman"]);
@@ -72186,11 +72189,12 @@ var init_mobile_runtime = __esm({
           for (const term of new Set(spellingTerms(source))) this.spellingVocabulary.set(term, (this.spellingVocabulary.get(term) || 0) + weight);
         };
         this.lexical = this.meta.map((item) => {
-          addTerms(basename(item.file), 4);
+          const filename = String(item.file).split("/").pop();
+          addTerms(filename, 4);
           addTerms(dirname(item.file), 2);
           addTerms(item.heading, 2);
           addTerms(item.text, 1);
-          return { filename: new Set(tokens(basename(item.file))), folder: new Set(tokens(dirname(item.file))) };
+          return { filename: new Set(tokens(filename)), folder: new Set(tokens(dirname(item.file))), filenameText: filename.toLowerCase(), pathText: String(item.file).toLowerCase() };
         });
         this.spellingByLength.clear();
         for (const term of this.spellingVocabulary.keys()) {
@@ -72275,7 +72279,7 @@ var init_mobile_runtime = __esm({
         return this.vectors.length * DIMENSION * 4 + this.highlightPhraseVectors.size * DIMENSION * 2 + this.metaStorageBytes;
       }
       files() {
-        return this.plugin.app.vault.getFiles().filter((file) => INDEXABLE.has(file.extension.toLowerCase()));
+        return this.plugin.app.vault.getFiles();
       }
       async waitForVaultSettled() {
         const minimumUntil = Date.now() + (this.isMobile ? 12e3 : 8e3);
@@ -72356,9 +72360,25 @@ var init_mobile_runtime = __esm({
         const changed = [];
         let metadataChanged = false;
         for (const file of files) {
-          const previous = indexed.get(file.path);
-          const currentPassages = !this.isMobile || previous?.every((item) => item.passageVersion === MOBILE_PASSAGE_INDEX_VERSION), currentHighlights = previous?.every((item) => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)), currentGraphMetadata = previous?.every((item) => item.graphVersion === GRAPH_METADATA_VERSION && Array.isArray(item.entities));
-          if (!force && currentPassages && currentHighlights && currentGraphMetadata && previous?.every((item) => item.mtime === file.stat.mtime && item.contentHash)) continue;
+          const filenameOnly = !isContentIndexable(file), previous = indexed.get(file.path);
+          const currentKind = previous?.every((item) => Boolean(item.filenameOnly) === filenameOnly), currentPassages = filenameOnly || !this.isMobile || previous?.every((item) => item.passageVersion === MOBILE_PASSAGE_INDEX_VERSION), currentHighlights = previous?.every((item) => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)), currentGraphMetadata = previous?.every((item) => item.graphVersion === GRAPH_METADATA_VERSION && Array.isArray(item.entities));
+          if (!force && currentKind && currentPassages && currentHighlights && currentGraphMetadata && previous?.every((item) => item.contentHash)) {
+            if (filenameOnly) {
+              if (previous.some((item) => item.mtime !== file.stat.mtime)) {
+                previous.forEach((item) => {
+                  item.mtime = file.stat.mtime;
+                });
+                metadataChanged = true;
+              }
+              continue;
+            }
+            if (previous.every((item) => item.mtime === file.stat.mtime)) continue;
+          }
+          if (filenameOnly) {
+            changed.push(file);
+            await this.indexingTurn();
+            continue;
+          }
           if (force) {
             changed.push(file);
             await this.indexingTurn();
@@ -72400,7 +72420,7 @@ var init_mobile_runtime = __esm({
           this.lastSuccessfulIndexAt = Date.now();
           if (metadataChanged) await this.saveIndex();
           this.indexStable = true;
-          this.setState("ready", `Ready (${files.length} files, ${this.meta.length} passages)`);
+          this.setState("ready", `Ready (${files.length} files, ${this.meta.length} records)`);
           return;
         }
         let meta = [];
@@ -72418,37 +72438,44 @@ var init_mobile_runtime = __esm({
           this.currentFile = file.path;
           this.setIndexProgress(`Indexing ${this.processedFiles + 1} of ${files.length}: ${file.path}`);
           try {
-            const content = await this.plugin.app.vault.read(file);
-            const fingerprint = contentFingerprint(content);
-            const chunks2 = chunkMarkdown(content, this.isMobile ? 1e3 : 2400);
-            const embedded = await this.embedIndexChunks(chunks2.map((chunk) => embeddingText(file.path, chunk)));
-            if (!embedded) {
-              if (this.mobileIndexBlocked) {
-                this.staleFiles = Math.max(1, changed.length - fileIndex);
-                this.currentFile = "";
-                this.indexStable = false;
-                this.setState(this.vectors.length ? "ready" : "error", this.vectors.length ? "Search ready; mobile indexing paused because background inference is unavailable" : "Mobile indexing requires background-worker support on this device");
+            const newMeta = [], newVectors = [];
+            if (!isContentIndexable(file)) {
+              const emptyChunk = { heading: "", text: "", lineStart: 0, lineEnd: 0 };
+              newMeta.push({ file: file.path, filenameOnly: true, ...emptyChunk, mtime: file.stat.mtime, contentHash: "filename-only-v1", passageVersion: MOBILE_PASSAGE_INDEX_VERSION, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: buildHighlightCandidates(file.path, emptyChunk), graphVersion: GRAPH_METADATA_VERSION, entities: [] });
+              newVectors.push(new Float32Array(DIMENSION));
+              this.plugin.logDiagnostic(`Indexed filename ${file.path} without reading file contents in ${Date.now() - fileStartedAt} ms`);
+            } else {
+              const content = await this.plugin.app.vault.read(file);
+              const fingerprint = contentFingerprint(content);
+              const chunks2 = chunkMarkdown(content, this.isMobile ? 1e3 : 2400);
+              const embedded = await this.embedIndexChunks(chunks2.map((chunk) => embeddingText(file.path, chunk)));
+              if (!embedded) {
+                if (this.mobileIndexBlocked) {
+                  this.staleFiles = Math.max(1, changed.length - fileIndex);
+                  this.currentFile = "";
+                  this.indexStable = false;
+                  this.setState(this.vectors.length ? "ready" : "error", this.vectors.length ? "Search ready; mobile indexing paused because background inference is unavailable" : "Mobile indexing requires background-worker support on this device");
+                }
+                return;
               }
-              return;
+              let highlightCount = 0;
+              for (let index3 = 0; index3 < chunks2.length; index3++) {
+                if (this.indexingCancelled()) return;
+                const chunk = chunks2[index3], highlightCandidates = buildHighlightCandidates(file.path, chunk);
+                highlightCount += highlightCandidates.length;
+                newMeta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, passageVersion: this.isMobile ? MOBILE_PASSAGE_INDEX_VERSION : 1, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates, graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ""} ${chunk.text}`) });
+                newVectors.push(embedded[index3]);
+                await this.indexingTurn();
+              }
+              this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks2.length} chunks, ${highlightCount} highlight candidates in ${Date.now() - fileStartedAt} ms`);
             }
-            const retainedMeta = [];
-            const retainedVectors = [];
+            const retainedMeta = [], retainedVectors = [];
             for (let i3 = 0; i3 < meta.length; i3++) if (meta[i3].file !== file.path) {
               retainedMeta.push(meta[i3]);
               retainedVectors.push(vectors[i3]);
             }
-            meta = retainedMeta;
-            vectors = retainedVectors;
-            let highlightCount = 0;
-            for (let index3 = 0; index3 < chunks2.length; index3++) {
-              if (this.indexingCancelled()) return;
-              const chunk = chunks2[index3], highlightCandidates = buildHighlightCandidates(file.path, chunk);
-              highlightCount += highlightCandidates.length;
-              meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: fingerprint, passageVersion: this.isMobile ? MOBILE_PASSAGE_INDEX_VERSION : 1, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates, graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ""} ${chunk.text}`) });
-              vectors.push(embedded[index3]);
-              await this.indexingTurn();
-            }
-            this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(content).length} bytes, ${chunks2.length} chunks, ${highlightCount} highlight candidates in ${Date.now() - fileStartedAt} ms`);
+            meta = retainedMeta.concat(newMeta);
+            vectors = retainedVectors.concat(newVectors);
           } catch (error) {
             failedFiles.push({ file: file.path, message: error?.message || String(error) });
             this.plugin.logDiagnostic(`Could not index ${file.path}: ${error?.message || error}`, true);
@@ -72472,14 +72499,14 @@ var init_mobile_runtime = __esm({
         this.indexStable = !failedFiles.length;
         if (failedFiles.length) {
           const delay = this.isMobile ? 6e4 : 3e4;
-          this.setState("ready", `Search ready; ${failedFiles.length} ${failedFiles.length === 1 ? "note" : "notes"} pending retry`);
+          this.setState("ready", `Search ready; ${failedFiles.length} ${failedFiles.length === 1 ? "file" : "files"} pending retry`);
           clearTimeout(this.updateTimer);
           this.updateTimer = setTimeout(() => {
             this.updateTimer = null;
             if (this.enabled && !this.cancelRequested) this.updateIndex();
           }, delay);
-          this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? "note" : "notes"} after a temporary failure`);
-        } else this.setState("ready", `Ready (${files.length} files, ${this.meta.length} passages)`);
+          this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? "file" : "files"} after a temporary failure`);
+        } else this.setState("ready", `Ready (${files.length} files, ${this.meta.length} records)`);
       }
       start() {
         if (!this.plugin.settings.enabled) {
@@ -72568,7 +72595,7 @@ var init_mobile_runtime = __esm({
           this.plugin.registerDomEvent(document, "wheel", noteActivity, { capture: true, passive: true });
         }
         const schedule = (file) => {
-          if (!this.enabled || !file?.path || !INDEXABLE.has(String(file.extension || "").toLowerCase())) return;
+          if (!this.enabled || !file?.path) return;
           clearTimeout(this.updateTimer);
           this.updateTimer = setTimeout(() => {
             this.updateTimer = null;
@@ -72576,7 +72603,9 @@ var init_mobile_runtime = __esm({
           }, this.isMobile ? 8e3 : 5e3);
         };
         this.plugin.registerEvent(this.plugin.app.vault.on("create", schedule));
-        this.plugin.registerEvent(this.plugin.app.vault.on("modify", schedule));
+        this.plugin.registerEvent(this.plugin.app.vault.on("modify", (file) => {
+          if (isContentIndexable(file)) schedule(file);
+        }));
         this.plugin.registerEvent(this.plugin.app.vault.on("delete", schedule));
         this.plugin.registerEvent(this.plugin.app.vault.on("rename", schedule));
       }
@@ -72679,7 +72708,7 @@ var init_mobile_runtime = __esm({
           this.cacheResult(this.resultCache, cacheKey, cached, 80);
           return cached;
         }
-        const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery);
+        const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery), queryText = String(query || "").trim().toLowerCase(), correctedText = String(correctedQuery || "").trim().toLowerCase();
         const queryTokens = [...new Set(tokens(`${query} ${correctedQuery}`))], queryEntities = new Set(extractGraphEntities(`${query} ${correctedQuery}`).map((value) => value.toLowerCase())), yieldStride = this.isMobile ? 192 : 1024;
         const scores = [];
         for (let i3 = 0; i3 < this.vectors.length; i3++) {
@@ -72688,16 +72717,17 @@ var init_mobile_runtime = __esm({
             if (options._liveGeneration !== void 0 && options._liveGeneration !== this.liveGeneration) throw staleSearchError();
           }
           if (options.file && this.meta[i3].file !== options.file || requestedFileSet && !requestedFileSet.has(this.meta[i3].file)) continue;
-          const semantic = dotPacked(queryVector, this.packedVectors, i3 * DIMENSION);
-          if (semantic < minScore) continue;
-          const filenameBoost = lexicalCoverage(queryTokens, this.lexical[i3].filename) * 0.05;
-          const folderPathBoost = (options.folderPathBoost || 0) * lexicalCoverage(queryTokens, this.lexical[i3].folder), passageEntities = new Set((this.meta[i3].entities || []).map((value) => String(value).toLowerCase())), entityBoost = queryEntities.size ? [...queryEntities].filter((entity2) => passageEntities.has(entity2)).length / queryEntities.size * 0.025 : 0;
-          scores.push({ index: i3, score: semantic, rankingScore: semantic + filenameBoost + folderPathBoost + entityBoost, filenameBoost, folderPathBoost, entityBoost });
+          const lexical = this.lexical[i3], filenameCoverage = lexicalCoverage(queryTokens, lexical.filename), folderCoverage = lexicalCoverage(queryTokens, lexical.folder), filenameOnly = Boolean(this.meta[i3].filenameOnly), directFilename = Boolean(queryText && lexical.filenameText.includes(queryText) || correctedText && lexical.filenameText.includes(correctedText)), directPath = Boolean(queryText && lexical.pathText.includes(queryText) || correctedText && lexical.pathText.includes(correctedText));
+          const semantic = filenameOnly ? 0 : dotPacked(queryVector, this.packedVectors, i3 * DIMENSION);
+          if (filenameOnly && !directFilename && !directPath && filenameCoverage <= 0 && folderCoverage <= 0 || !filenameOnly && semantic < minScore) continue;
+          const filenameBoost = filenameOnly ? 0 : filenameCoverage * 0.05;
+          const folderPathBoost = filenameOnly ? 0 : (options.folderPathBoost || 0) * folderCoverage, passageEntities = new Set((this.meta[i3].entities || []).map((value) => String(value).toLowerCase())), entityBoost = filenameOnly ? 0 : queryEntities.size ? [...queryEntities].filter((entity2) => passageEntities.has(entity2)).length / queryEntities.size * 0.025 : 0, lexicalScore = directFilename ? 0.88 + filenameCoverage * 0.1 : filenameCoverage > 0 ? 0.66 + filenameCoverage * 0.2 : directPath ? 0.62 : 0.52 + folderCoverage * 0.1;
+          scores.push({ index: i3, score: semantic, rankingScore: filenameOnly ? Math.min(0.98, lexicalScore) : semantic + filenameBoost + folderPathBoost + entityBoost, filenameBoost, folderPathBoost, entityBoost, filenameOnly, filenameHighlights: directFilename ? [{ phrase: lexical.filenameText.includes(queryText) ? queryText : correctedText, score: 1 }] : [] });
         }
         scores.sort((a2, b) => b.rankingScore - a2.rankingScore);
-        const floor = (scores[0]?.score || 0) - Math.max(0, Math.min(1, options.scoreWindow ?? 1));
-        const top = scores.filter((item) => item.score >= floor).slice(0, topK);
-        const results = top.map((item) => ({ ...this.meta[item.index], passageIndex: item.index, score: Math.min(1, item.rankingScore), semanticScore: item.score, rankingScore: Math.min(1, item.rankingScore), filenameBoost: item.filenameBoost, folderPathBoost: item.folderPathBoost, entityBoost: item.entityBoost }));
+        const bestSemantic = scores.find((item) => !item.filenameOnly)?.score || 0, floor = bestSemantic - Math.max(0, Math.min(1, options.scoreWindow ?? 1));
+        const top = scores.filter((item) => item.filenameOnly || item.score >= floor).slice(0, topK);
+        const results = top.map((item) => ({ ...this.meta[item.index], passageIndex: item.index, score: Math.min(1, item.rankingScore), semanticScore: item.score, rankingScore: Math.min(1, item.rankingScore), filenameBoost: item.filenameOnly ? Math.min(1, item.rankingScore) : item.filenameBoost, folderPathBoost: item.folderPathBoost, entityBoost: item.entityBoost, filenameHighlights: item.filenameHighlights }));
         if (options.semanticHighlights && results.length) await this.semanticHighlights(results, queryVector, { ...options, query: correctedQuery });
         return this.cacheResult(this.resultCache, cacheKey, results, 80);
       }
@@ -74090,7 +74120,7 @@ function edgeKey(a2, b) {
   return [a2, b].sort().join("\0");
 }
 function basename2(file) {
-  return String(file || "").split("/").pop().replace(INDEXABLE2, "");
+  return String(file || "").split("/").pop().replace(INDEXABLE, "");
 }
 function stableSignature(value) {
   let hash = 2166136261;
@@ -74197,7 +74227,7 @@ function categoryAnchorLayout(categories, vectors, geometry) {
   return points;
 }
 function fileScales(app) {
-  const files = app.vault.getFiles().filter((file) => INDEXABLE2.test(file.path)), sizes = files.map((file) => Math.log1p(Number(file.stat?.size || 0))), low = sizes.length ? Math.min(...sizes) : 0, high = sizes.length ? Math.max(...sizes) : 1, spread = Math.max(1e-3, high - low);
+  const files = app.vault.getFiles().filter((file) => INDEXABLE.test(file.path)), sizes = files.map((file) => Math.log1p(Number(file.stat?.size || 0))), low = sizes.length ? Math.min(...sizes) : 0, high = sizes.length ? Math.max(...sizes) : 1, spread = Math.max(1e-3, high - low);
   return new Map(files.map((file) => [file.path, (Math.log1p(Number(file.stat?.size || 0)) - low) / spread]));
 }
 function manualLinks(app, files) {
@@ -74215,12 +74245,12 @@ function manualLinks(app, files) {
 function cloneScene(scene) {
   return { ...scene, state: copy2(scene.state), center: { ...scene.center, landscape: copy2(scene.center?.landscape) }, nodes: scene.nodes.map((node) => ({ ...node })), edges: scene.edges.map((edge) => ({ ...edge })), roads: scene.roads.map((road) => ({ ...road })), results: scene.results.map((result) => ({ ...result })), legend: scene.legend.map((item) => ({ ...item })) };
 }
-var INDEXABLE2, DEFAULT_ATLAS_VIEW, ATLAS_VIEW_TEMPLATES, STANDARD_ATLAS_VIEWS, AtlasEngine;
+var INDEXABLE, DEFAULT_ATLAS_VIEW, ATLAS_VIEW_TEMPLATES, STANDARD_ATLAS_VIEWS, AtlasEngine;
 var init_atlas_engine = __esm({
   "src/atlas-engine.js"() {
     init_text_signals();
     init_terrain_engine();
-    INDEXABLE2 = /\.(?:md|txt|markdown)$/i;
+    INDEXABLE = /\.(?:md|txt|markdown)$/i;
     DEFAULT_ATLAS_VIEW = {
       id: "all-notes",
       name: "Meaning",
@@ -75088,12 +75118,12 @@ function groupSearchResults(results, query, maxFiles) {
     let group = files.get(hit.file);
     const rankingScore = Number(hit.rankingScore ?? hit.score ?? 0);
     if (!group) {
-      group = { file: hit.file, score: rankingScore, semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), snippets: [], filenameHighlights: [] };
+      group = { file: hit.file, filenameOnly: Boolean(hit.filenameOnly), score: rankingScore, semanticScore: Number(hit.semanticScore ?? hit.score ?? 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), snippets: [], filenameHighlights: [] };
       files.set(hit.file, group);
     }
     if (rankingScore > group.score) {
       group.score = rankingScore;
-      group.semanticScore = Number(hit.score || 0);
+      group.semanticScore = Number(hit.semanticScore ?? hit.score ?? 0);
       group.filenameBoost = Number(hit.filenameBoost || 0);
       group.folderPathBoost = Number(hit.folderPathBoost || 0);
     }
@@ -75104,15 +75134,15 @@ function groupSearchResults(results, query, maxFiles) {
     const text = distillSnippet(hit.text, query, semanticHighlights);
     if (text && !group.snippets.some((item) => item.text === text) && group.snippets.length < 3) group.snippets.push({ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) });
   }
-  return [...files.values()].filter((group) => group.snippets.length).slice(0, maxFiles);
+  return [...files.values()].filter((group) => group.filenameOnly || group.snippets.length).slice(0, maxFiles);
 }
 function passageSearchResults(results, query, maximum) {
   return results.slice(0, maximum).map((hit) => {
     const semanticHighlights = (hit.semanticHighlights || []).map((item) => cleanSourceText(item.phrase)).filter(Boolean);
     const filenameHighlights = (hit.filenameHighlights || []).map((item) => cleanSourceText(item.phrase)).filter(Boolean);
-    const headingHighlights = (hit.headingHighlights || []).map((item) => cleanSourceText(item.phrase)).filter(Boolean);
-    return { file: hit.file, score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.score || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: [{ text: distillSnippet(hit.text, query, semanticHighlights), heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) }] };
-  }).filter((result) => result.snippets[0].text);
+    const headingHighlights = (hit.headingHighlights || []).map((item) => cleanSourceText(item.phrase)).filter(Boolean), text = distillSnippet(hit.text, query, semanticHighlights);
+    return { file: hit.file, filenameOnly: Boolean(hit.filenameOnly), score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.semanticScore ?? hit.score ?? 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: text ? [{ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) }] : [] };
+  }).filter((result) => result.filenameOnly || result.snippets.length);
 }
 function renderHighlighted(parent, text, query, semanticPhrases = []) {
   const matches3 = [...new Set(semanticPhrases.filter((phrase) => {
@@ -77460,13 +77490,13 @@ var SemanticSearchModal = class extends SuggestModal {
     if (result.viewLabel) meta.createSpan({ cls: "gib-semantic-result-view-label", text: result.viewLabel });
     const header = container.createDiv({ cls: "gib-semantic-result-header" });
     const icon = header.createSpan({ cls: "gib-semantic-result-icon" });
-    setIcon(icon, "sticky-note");
+    setIcon(icon, result.filenameOnly ? "file" : "sticky-note");
     const fileTitle = header.createSpan({ cls: "gib-semantic-result-file" });
     renderHighlighted(fileTitle, fileName, this.lastQuery, result.filenameHighlights);
     const displayedScore = Number(result.viewScore ?? result.score ?? 0), score = header.createSpan({ cls: "gib-semantic-result-score", text: `${(displayedScore * 100).toFixed(0)}%` });
     const semantic = Math.round(Number(result.semanticScore || 0) * 100), filename = Math.round(Number(result.filenameBoost || 0) * 100), folderBoost = Math.round(Number(result.folderPathBoost || 0) * 100);
     score.setAttribute("title", `View score: ${(displayedScore * 100).toFixed(0)}% \xB7 Semantic: ${semantic}% \xB7 Filename: +${filename} \xB7 Folder: +${folderBoost}`);
-    const snippets = container.createDiv({ cls: "gib-semantic-snippets" });
+    const snippets = result.snippets.length ? container.createDiv({ cls: "gib-semantic-snippets" }) : null;
     result.snippets.forEach((snippet, index3) => {
       const block = snippets.createDiv({ cls: "gib-semantic-snippet" });
       if (snippet.heading) {
@@ -78657,7 +78687,7 @@ var SearchSettings = class extends PluginSettingTab {
   }
   renderStatusPage() {
     this.renderHealth();
-    new Setting(this.pageEl).setName("Semantic index").setDesc("Keep the local search index current as notes change.").addToggle((t3) => t3.setValue(this.plugin.settings.enabled).onChange(async (value) => {
+    new Setting(this.pageEl).setName("Semantic index").setDesc("Keep note contents and vault filenames searchable as files change.").addToggle((t3) => t3.setValue(this.plugin.settings.enabled).onChange(async (value) => {
       this.plugin.settings.enabled = value;
       await this.plugin.save();
       value ? this.plugin.indexer.start() : this.plugin.indexer.stop();
@@ -78893,7 +78923,7 @@ var SearchSettings = class extends PluginSettingTab {
     this.healthTitle.textContent = state === "healthy" ? "Gib Search is ready" : state === "working" ? "Gib Search is working" : state === "disabled" ? "Gib Search is paused" : "Gib Search needs attention";
     this.healthMessage.textContent = state === "healthy" ? "Semantic search services are current." : failed ? stoppedResponding ? `No response for ${formatElapsed(statusAge)}.` : error || local.message || "A local service failed." : atlasWorking && searchReady ? "Search is ready while Atlas finishes preparing." : local.message || this.plugin.indexer.lastEvent;
     const indexed = Number(remote?.indexedFiles ?? local.indexedFiles ?? 0), chunks2 = Number(remote?.totalChunks ?? local.totalChunks ?? 0), searchProgress = total ? done / total * 100 : null;
-    this.setHealthTrack("search", failed ? "error" : searchReady ? "ready" : searchWorking ? "working" : disabled ? "waiting" : "working", searchReady ? "Ready" : searchWorking ? `${done}/${total || "\u2026"}` : disabled ? "Paused" : "Waiting", `${indexed} notes \xB7 ${chunks2} passages \xB7 ${formatBytes(this.plugin.search.storageBytes?.() || 0)}`, searchWorking ? searchProgress : null);
+    this.setHealthTrack("search", failed ? "error" : searchReady ? "ready" : searchWorking ? "working" : disabled ? "waiting" : "working", searchReady ? "Ready" : searchWorking ? `${done}/${total || "\u2026"}` : disabled ? "Paused" : "Waiting", `${indexed} files \xB7 ${chunks2} records \xB7 ${formatBytes(this.plugin.search.storageBytes?.() || 0)}`, searchWorking ? searchProgress : null);
     const qualityDone = Number(analysis.done || 0), qualityTotal = Number(analysis.total || 0), qualitySignal = analysis.signal ? `${analysis.signal[0].toUpperCase()}${analysis.signal.slice(1)}` : "", graphReady = Boolean(remote?.graphCacheReady), atlasValue = analysis.active ? `${qualityDone}/${qualityTotal}` : local.graphPreparing || remote?.graphPreparing ? "Preparing" : graphReady ? "Ready" : searchReady ? "On demand" : "Waiting", atlasDetail = analysis.active ? `${qualitySignal} qualities` : `${Number(remote?.cachedTextAnalyses || 0)} profiles \xB7 ${Number(remote?.cachedTopicLabels || 0)} topic labels`;
     this.setHealthTrack("atlas", atlasWorking ? "working" : graphReady || searchReady ? "ready" : "waiting", atlasValue, atlasDetail, analysis.active && qualityTotal ? qualityDone / qualityTotal * 100 : null);
     const modelLabel = MODEL_PROFILES[remote?.modelProfile]?.label || "BGE Small", semanticModel = remote?.modelLoaded ? "BGE ready" : "BGE on demand";

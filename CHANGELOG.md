@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.1
+
+- Makes PDFs, images, audio, video, and every other vault attachment searchable by filename and path.
+- Stores only lightweight filename metadata for non-text files without reading binary contents or running embedding inference.
+- Ignores attachment content-modification events because binary changes cannot affect filename search, while create, rename, and delete events remain indexed.
+- Opens attachment results through Obsidian using a file result that does not pretend to have a note-content snippet.
+
 ## 0.54.0
 
 - Rebuilds the semantic index one note and one inference passage at a time instead of retaining the contents of every changed note in memory.
