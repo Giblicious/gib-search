@@ -4,6 +4,10 @@ Local semantic search for Obsidian.
 
 Gib Search indexes note content, headings, filenames, and optional folder-path signals. PDFs, images, audio, video, and other vault attachments are searchable by filename and path; Gib Search never reads or embeds their binary contents. Results include compact source excerpts, semantic phrase emphasis, ranking controls, typo tolerance, and search-within-file support.
 
+The optional **Bundle note revisions** setting collapses editions inside user-selected folders into one result while retaining the strongest historical match. Automatic grouping uses dated titles and bounded textual ancestry checks, not topical similarity. Frontmatter can explicitly join or exclude notes with `gib-search-series`, `gib-search-revision-date`, and `gib-search-no-bundle`.
+
+The **Open Similar Notes** command opens a native sidebar that follows the active note and lists its nearest semantic neighbors from the existing local index.
+
 The experimental Atlas and graph surfaces are temporarily disabled while they are redesigned. Their implementation and saved settings remain intact, but Gib Search does not load their views, run their analysis, or prepare graph caches in this release.
 
 Plugin settings are divided into Status, Search, and Console pages. Status reports the search index and local model independently; Console provides a bounded live account of local work without logging note contents.

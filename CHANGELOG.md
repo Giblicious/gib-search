@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.2
+
+- Adds optional, folder-scoped revision bundling that keeps every edition searchable while showing one result per writing series.
+- Detects revision ancestry from normalized dated titles, explicit series properties, or bounded textual-overlap signatures—never topical embedding similarity.
+- Ranks a bundle by its strongest matching edition, opens the newest edition by default, preserves the older matching passage, and provides controls for opening the match or any edition.
+- Adds a native Similar Notes sidebar that follows the active note and ranks neighbors from cached note vectors without vault reads or new inference.
+- Keeps revision detection disabled by default and yields its bounded analysis work to Obsidian in small batches.
+
 ## 0.54.1
 
 - Makes PDFs, images, audio, video, and every other vault attachment searchable by filename and path.

@@ -3,6 +3,7 @@ const { MobileSearchRuntime } = require('./mobile-runtime');
 const { AtlasEngine, STANDARD_ATLAS_VIEWS, DEFAULT_ATLAS_VIEW } = require('./atlas-engine');
 const { TEXT_SIGNALS } = require('./text-signals');
 const { buildSemanticTerrain, normalizeLandscape } = require('./terrain-engine');
+const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bundles');
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -15,6 +16,7 @@ function loadDesktopModules() {
 const GRAPH_VIEW = 'gib-search-graph';
 const NAVIGATOR_VIEW = 'gib-search-navigator';
 const NEIGHBORHOOD_VIEW = 'gib-search-neighborhood';
+const SIMILAR_NOTES_VIEW = 'gib-search-similar-notes';
 // Atlas remains in the codebase while its interaction and performance model is redesigned.
 const ATLAS_ENABLED = false;
 const MODEL_PROFILES = {
@@ -25,7 +27,7 @@ const MODEL_TWEAK_DEFAULTS = {
 };
 const MAP_TUNING_DEFAULTS = { commonnessSuppression: .75, passageCoverage: .72, passageDiversity: .28, communitySensitivity: 1, communityMembership: .42, communityMinSize: 4, communityLabelSensitivity: .58, neighborhoodStability: .68, neighborhoodSeparation: .06, neighborhoodCoverage: .58, neighborhoodSpread: 1, showTopography: true, terrainSpread: 1, terrainContrast: 1 };
 function atlasId(value = 'view') { return `${String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'view'}-${Date.now().toString(36)}`; }
-const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, searchMapEnabled: false, searchMapGenerations: 1, atlasHomeViewId: DEFAULT_ATLAS_VIEW.id, atlasViews: [], magicGraphEnabled: true, graphSemanticColors: true, generatedTopicLabels: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000 };
+const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, revisionBundlingEnabled: false, revisionBundleFolders: [], similarNotesLimit: 12, similarNotesMinScore: .35, searchMapEnabled: false, searchMapGenerations: 1, atlasHomeViewId: DEFAULT_ATLAS_VIEW.id, atlasViews: [], magicGraphEnabled: true, graphSemanticColors: true, generatedTopicLabels: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000 };
 function activeIndexDir(plugin) {
   return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
 }
@@ -266,7 +268,7 @@ function groupSearchResults(results, query, maxFiles) {
     const headingHighlights = (hit.headingHighlights || []).map(item => cleanSourceText(item.phrase)).filter(Boolean);
     for (const phrase of filenameHighlights) if (!group.filenameHighlights.includes(phrase)) group.filenameHighlights.push(phrase);
     const text = distillSnippet(hit.text, query, semanticHighlights);
-    if (text && !group.snippets.some(item => item.text === text) && group.snippets.length < 3) group.snippets.push({ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) });
+    if (text && !group.snippets.some(item => item.text === text) && group.snippets.length < 3) group.snippets.push({ text, sourceFile: hit.file, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) });
   }
   // Preserve the model's tuned rank. Map insertion order reflects the first
   // (best-ranked) chunk for each file; sorting again by raw cosine would erase
@@ -638,12 +640,12 @@ class SemanticSearchModal extends SuggestModal {
       try {
         const tweaks = activeTweaks(this.plugin);
         const requested = Math.max(this.visibleLimit || tweaks.topK, tweaks.topK);
-        const rawLimit = this.filePath ? Math.min(1000, requested + 10) : Math.min(1000, Math.max(requested * 4, 40));
+        const rawMultiplier = this.plugin.settings.revisionBundlingEnabled ? 8 : 4, rawLimit = this.filePath ? Math.min(1000, requested + 10) : Math.min(1000, Math.max(requested * rawMultiplier, 40));
         const options = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 15, file: this.filePath };
         const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search);
         const results = await runSearch(query, rawLimit, tweaks.minScore, options);
         if (version === this.searchVersion && query === this.lastQuery) {
-          const all = this.filePath ? passageSearchResults(results, query, results.length) : groupSearchResults(results, query, Number.MAX_SAFE_INTEGER);
+          const grouped = this.filePath ? passageSearchResults(results, query, results.length) : groupSearchResults(results, query, Number.MAX_SAFE_INTEGER), all = !this.filePath && this.plugin.settings.revisionBundlingEnabled ? bundleRevisionResults(grouped, await this.plugin.revisionCatalog()) : grouped;
           this.lastResults = all.slice(0, requested); this.mapResults = all;
           this.canLoadMore = all.length > requested || (results.length === rawLimit && rawLimit < 1000);
           this.updateSuggestions();
@@ -711,12 +713,20 @@ class SemanticSearchModal extends SuggestModal {
     const displayedScore = Number(result.viewScore ?? result.score ?? 0), score = header.createSpan({ cls: 'gib-semantic-result-score', text: `${(displayedScore * 100).toFixed(0)}%` });
     const semantic = Math.round(Number(result.semanticScore || 0) * 100), filename = Math.round(Number(result.filenameBoost || 0) * 100), folderBoost = Math.round(Number(result.folderPathBoost || 0) * 100);
     score.setAttribute('title', `View score: ${(displayedScore * 100).toFixed(0)}% · Semantic: ${semantic}% · Filename: +${filename} · Folder: +${folderBoost}`);
+    if (result.revisionCount > 1) {
+      const bundle = container.createDiv({ cls: 'gib-revision-bundle' }), matchedOlder = result.matchedFile && result.matchedFile !== result.primaryFile;
+      bundle.createSpan({ text: `${result.revisionCount} editions${matchedOlder ? ` · best match: ${result.matchedFile.split('/').pop().replace(/\.md$/i, '')}` : ''}` });
+      if (matchedOlder) { const openMatched = bundle.createEl('button', { text: 'Open matched', attr: { type: 'button' } }); openMatched.addEventListener('mousedown', event => event.stopPropagation()); openMatched.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); this.openResultFile(result.matchedFile, result.snippets[0]); }); }
+      const toggle = bundle.createEl('button', { text: 'Show versions', attr: { type: 'button' } }), timeline = container.createDiv({ cls: 'gib-revision-timeline' }); timeline.hide();
+      for (const revision of result.revisionSeries.revisions) { const button = timeline.createEl('button', { attr: { type: 'button' } }); button.createSpan({ text: revision.file.split('/').pop().replace(/\.md$/i, '') }); if (revision.date) button.createEl('time', { text: new Date(revision.date).toLocaleDateString() }); button.addEventListener('mousedown', event => event.stopPropagation()); button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); this.openResultFile(revision.file); }); }
+      toggle.addEventListener('mousedown', event => event.stopPropagation()); toggle.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); const opening = timeline.style.display === 'none'; timeline.toggle(opening); toggle.textContent = opening ? 'Hide versions' : 'Show versions'; });
+    }
     const snippets = result.snippets.length ? container.createDiv({ cls: 'gib-semantic-snippets' }) : null;
     result.snippets.forEach((snippet, index) => {
       const block = snippets.createDiv({ cls: 'gib-semantic-snippet' });
       if (snippet.heading) { const heading = block.createDiv({ cls: 'gib-semantic-result-heading' }); renderHighlighted(heading, snippet.heading, this.lastQuery, snippet.headingHighlights); }
       const content = block.createDiv({ cls: 'gib-semantic-snippet-content' });
-      const image = this.resolveSnippetImage(snippet.imageReferences, result.file);
+      const image = this.resolveSnippetImage(snippet.imageReferences, snippet.sourceFile || result.matchedFile || result.file);
       if (image) {
         const thumbnail = content.createEl('img', { cls: 'gib-semantic-snippet-thumbnail', attr: { src: image.src, alt: image.alt, loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' } });
         thumbnail.addEventListener('error', () => thumbnail.remove());
@@ -728,10 +738,11 @@ class SemanticSearchModal extends SuggestModal {
     });
   }
   async onChooseSuggestion(result) {
-    const file = this.app.vault.getAbstractFileByPath(result.file);
-    if (!(file instanceof TFile)) return;
+    await this.openResultFile(result.primaryFile || result.file, result.matchedFile && result.matchedFile !== result.primaryFile ? null : result.snippets[0]);
+  }
+  async openResultFile(filePath, best = null) {
+    const file = this.app.vault.getAbstractFileByPath(filePath); if (!(file instanceof TFile)) return;
     const leaf = this.app.workspace.getLeaf(); await leaf.openFile(file);
-    const best = result.snippets[0];
     if (Number(best?.lineStart) > 0) setTimeout(() => { const editor = leaf.view?.editor; if (!editor?.setCursor) return; editor.setCursor({ line: best.lineStart, ch: 0 }); editor.scrollIntoView({ from: { line: best.lineStart, ch: 0 }, to: { line: best.lineEnd || best.lineStart, ch: 0 } }, true); }, 100);
   }
   onOpen() {
@@ -1018,6 +1029,29 @@ class GraphView extends ItemView {
   async onClose() { this.loadVersion++; this.searchVersion++; window.clearTimeout(this.searchTimer); window.clearTimeout(this.tuneTimer); window.clearTimeout(this.viewUpdateTimer); if (this.pendingViewDraft) await this.commitViewUpdate(this.pendingViewDraft, false); this.pendingViewDraft = null; this.graphCacheOff?.(); this.map?.destroy(); }
 }
 
+class SimilarNotesView extends ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.filePath = null; this.refreshTimer = null; }
+  getViewType() { return SIMILAR_NOTES_VIEW; }
+  getDisplayText() { return 'Similar Notes'; }
+  getIcon() { return 'git-compare-arrows'; }
+  async onOpen() {
+    this.contentEl.addClass('gib-similar-notes');
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.scheduleRefresh()));
+    this.indexOff = this.plugin.indexer.onChange(() => this.scheduleRefresh()); this.refresh();
+  }
+  scheduleRefresh() { window.clearTimeout(this.refreshTimer); this.refreshTimer = window.setTimeout(() => this.refresh(), 180); }
+  refresh() {
+    if (!this.contentEl?.isConnected) return; this.contentEl.empty(); const active = this.app.workspace.getActiveFile();
+    const header = this.contentEl.createDiv({ cls: 'gib-similar-header' }); header.createDiv({ cls: 'gib-similar-kicker', text: 'Similar Notes' }); header.createDiv({ cls: 'gib-similar-title', text: active?.basename || 'No active note' });
+    if (!(active instanceof TFile) || active.extension.toLowerCase() !== 'md') { this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Open a note to see semantically similar notes.' }); return; }
+    const limit = Math.max(3, Math.min(30, Number(this.plugin.settings.similarNotesLimit) || 12)), minimum = Math.max(-1, Math.min(1, Number(this.plugin.settings.similarNotesMinScore) || 0));
+    const neighbors = this.plugin.search.semanticNeighbors(active.path, Math.min(40, limit * 3)).nodes.filter(node => { const file = this.app.vault.getAbstractFileByPath(node.id); return file instanceof TFile && file.extension.toLowerCase() === 'md' && node.score >= minimum; }).slice(0, limit);
+    if (!neighbors.length) { this.contentEl.createDiv({ cls: 'gib-similar-empty', text: this.plugin.indexer.indexStable ? 'No similar indexed notes meet the current threshold.' : 'Similar notes will appear when indexing is ready.' }); return; }
+    const list = this.contentEl.createDiv({ cls: 'gib-similar-list' }); for (const neighbor of neighbors) { const row = list.createEl('button', { cls: 'gib-similar-row', attr: { type: 'button', title: neighbor.id } }), pathParts = neighbor.id.replace(/\.md$/i, '').split('/'), name = pathParts.pop(); const icon = row.createSpan({ cls: 'gib-similar-icon' }); setIcon(icon, 'sticky-note'); const copy = row.createSpan({ cls: 'gib-similar-copy' }); copy.createSpan({ cls: 'gib-similar-name', text: name }); copy.createSpan({ cls: 'gib-similar-path', text: pathParts.join(' / ') || 'Vault' }); row.createSpan({ cls: 'gib-similar-score', text: `${Math.round(neighbor.score * 100)}%` }); row.addEventListener('click', async () => { const file = this.app.vault.getAbstractFileByPath(neighbor.id); if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file); }); }
+  }
+  async onClose() { window.clearTimeout(this.refreshTimer); this.indexOff?.(); }
+}
+
 class SearchSettings extends PluginSettingTab {
   constructor(app, plugin) { super(app, plugin); this.plugin = plugin; this.timer = null; this.unsubscribe = null; this.activityOff = null; this.busy = false; this.page = 'status'; }
   display() {
@@ -1052,6 +1086,11 @@ class SearchSettings extends PluginSettingTab {
     new Setting(this.pageEl).setName('Boost folder path matches').setDesc('Give matching folder words a modest ranking boost.').addToggle(t => t.setValue(this.plugin.settings.folderPathBoostEnabled).onChange(async value => { this.plugin.settings.folderPathBoostEnabled = value; await this.plugin.save(); }));
     new Setting(this.pageEl).setName('Results').setHeading();
     new Setting(this.pageEl).setName('External image thumbnails').setDesc('Allow web images found in notes. Local vault images remain available.').addToggle(t => t.setValue(this.plugin.settings.allowExternalImageThumbnails).onChange(async value => { this.plugin.settings.allowExternalImageThumbnails = value; await this.plugin.save(); }));
+    new Setting(this.pageEl).setName('Bundle note revisions').setDesc('Collapse detected editions into one search result. Disabled by default; only configured folders are analyzed.').addToggle(t => t.setValue(this.plugin.settings.revisionBundlingEnabled).onChange(async value => { this.plugin.settings.revisionBundlingEnabled = value; this.plugin.revisionCatalogCache = null; await this.plugin.save(); this.display(); }));
+    if (this.plugin.settings.revisionBundlingEnabled) new Setting(this.pageEl).setName('Revision folders').setDesc('Comma-separated vault folders, for example Writings, Essays. Automatic detection never runs outside these folders.').addText(text => text.setPlaceholder('Writings, Essays').setValue(this.plugin.settings.revisionBundleFolders.join(', ')).onChange(async value => { this.plugin.settings.revisionBundleFolders = [...new Set(value.split(',').map(folder => folder.trim().replace(/^\/+|\/+$/g, '')).filter(Boolean))]; this.plugin.revisionCatalogCache = null; await this.plugin.save(); }));
+    new Setting(this.pageEl).setName('Similar Notes sidebar').setHeading();
+    new Setting(this.pageEl).setName('Notes shown').setDesc('Maximum notes listed for the active note.').addSlider(s => s.setLimits(3, 30, 1).setValue(this.plugin.settings.similarNotesLimit).setDynamicTooltip().onChange(async value => { this.plugin.settings.similarNotesLimit = value; await this.plugin.save(); for (const leaf of this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)) leaf.view?.refresh?.(); }));
+    new Setting(this.pageEl).setName('Minimum similarity').setDesc('Hide weak semantic neighbors from the sidebar.').addSlider(s => s.setLimits(0, 1, .01).setValue(this.plugin.settings.similarNotesMinScore).setDynamicTooltip().onChange(async value => { this.plugin.settings.similarNotesMinScore = value; await this.plugin.save(); for (const leaf of this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)) leaf.view?.refresh?.(); }));
     new Setting(this.pageEl).setName('Semantic highlighting').setDesc('Emphasize compact concepts related to the query.').addToggle(t => t.setValue(tweaks.semanticHighlights).onChange(async value => { tweaks.semanticHighlights = value; await this.plugin.save(); this.display(); }));
     if (tweaks.semanticHighlights) {
       new Setting(this.pageEl).setName('Result confidence').setDesc('Minimum result similarity before concepts are emphasized.').addSlider(s => s.setLimits(.4, .9, .01).setValue(tweaks.highlightResultMinScore).setDynamicTooltip().onChange(async value => { tweaks.highlightResultMinScore = value; await this.plugin.save(); }));
@@ -1124,6 +1163,7 @@ module.exports = class GibSearch extends Plugin {
     this.settings.modelTweaks = {
       bge: Object.assign({}, MODEL_TWEAK_DEFAULTS.bge, legacyTweaks, loaded.modelTweaks?.mobile || {}, loaded.modelTweaks?.bge || {}),
     };
+    this.settings.revisionBundleFolders = Array.isArray(loaded.revisionBundleFolders) ? loaded.revisionBundleFolders.map(value => String(value).trim().replace(/^\/+|\/+$/g, '')).filter(Boolean) : [];
     this.legacyModelsPath = loaded.modelsPath || ''; delete this.settings.embeddingModel; delete this.settings.modelsPath;
     delete this.settings.nodePath;
     if (!loaded.folderPathBoostSettingsMigrated) {
@@ -1149,9 +1189,11 @@ module.exports = class GibSearch extends Plugin {
     }
     this.desktopEmbedder = new DesktopEmbedder(this);
     this.search = this.indexer = new MobileSearchRuntime(this); this.atlas = new AtlasEngine(this); this.runtime = { ready: () => true, install: async () => true, stop: () => this.desktopEmbedder?.stop(), storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) }; this.indexer.watch();
+    this.registerView(SIMILAR_NOTES_VIEW, leaf => new SimilarNotesView(leaf, this));
     if (this.atlasEnabled) { this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this)); this.registerView(NAVIGATOR_VIEW, leaf => new AtlasNavigatorView(leaf, this)); this.registerView(NEIGHBORHOOD_VIEW, leaf => new NeighborhoodView(leaf, this)); }
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: 'semantic-search', name: 'Semantic search', callback: () => new SemanticSearchModal(this.app, this).open() });
+    this.addCommand({ id: 'open-similar-notes', name: 'Open Similar Notes', callback: () => this.openSimilarNotes() });
     if (this.atlasEnabled) {
       this.addCommand({ id: 'atlas-navigator', name: 'Open Atlas Navigator', callback: () => this.openNavigator(true) });
       this.addCommand({ id: 'note-neighborhood', name: 'Open Atlas Companion', callback: () => this.openNeighborhood(this.app.workspace.getActiveFile()?.path) });
@@ -1162,6 +1204,12 @@ module.exports = class GibSearch extends Plugin {
     this.indexer.start();
   }
   async save() { await this.saveData(this.settings); }
+  async revisionCatalog() {
+    if (!this.settings.revisionBundlingEnabled || !this.settings.revisionBundleFolders.length) return { byFile: new Map(), series: new Map() };
+    const signature = JSON.stringify([this.settings.revisionBundleFolders, this.search.meta.length, this.search.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)]); if (this.revisionCatalogCache?.signature === signature) return this.revisionCatalogCache.catalog; if (this.revisionCatalogPending?.signature === signature) return this.revisionCatalogPending.promise;
+    const folders = this.settings.revisionBundleFolders, inScope = file => folders.some(folder => file === folder || file.startsWith(`${folder}/`)), text = new Map(); for (const item of this.search.meta) { if (item.filenameOnly || !inScope(item.file)) continue; const existing = text.get(item.file) || ''; if (existing.length < 120000) text.set(item.file, `${existing}\n${item.heading || ''}\n${item.text || ''}`.slice(0, 120000)); }
+    const promise = buildRevisionCatalog(this.app.vault.getFiles(), file => this.app.metadataCache.getFileCache(file), file => text.get(file) || '', this.settings.revisionBundleFolders, () => new Promise(resolve => window.setTimeout(resolve, 0))).then(catalog => { this.revisionCatalogCache = { signature, catalog }; return catalog; }).finally(() => { if (this.revisionCatalogPending?.signature === signature) this.revisionCatalogPending = null; }); this.revisionCatalogPending = { signature, promise }; return promise;
+  }
   recordActivity(channel, message, level = 'info') { const clean = String(message || '').replace(/\s+/g, ' ').trim(); if (!clean) return; this.activityLog ||= []; this.activityListeners ||= new Set(); const at = Date.now(), last = this.activityLog.at(-1); if (last && last.channel === channel && last.message === clean && at - last.at < 1500) { last.at = at; last.level = level; } else { this.activityLog.push({ at, channel: String(channel || 'System'), message: clean, level }); if (this.activityLog.length > 500) this.activityLog.splice(0, this.activityLog.length - 500); } for (const listener of this.activityListeners) listener(this.activityLog.at(-1)); }
   onActivity(listener) { this.activityListeners ||= new Set(); this.activityListeners.add(listener); return () => this.activityListeners.delete(listener); }
   clearActivity() { this.activityLog = []; for (const listener of this.activityListeners || []) listener(null); }
@@ -1181,5 +1229,6 @@ module.exports = class GibSearch extends Plugin {
   async openGraph() { let leaf = this.app.workspace.getLeavesOfType(GRAPH_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: GRAPH_VIEW, active: true }); } await this.openNavigator(false); await this.openNeighborhood(null, false, false); this.app.workspace.revealLeaf(leaf); }
   async openNavigator(reveal = true) { let leaf = this.app.workspace.getLeavesOfType(NAVIGATOR_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getLeftLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: NAVIGATOR_VIEW, active: false }); } if (reveal) this.app.workspace.revealLeaf(leaf); return leaf; }
   async openNeighborhood(filePath, pin = false, reveal = true) { let leaf = this.app.workspace.getLeavesOfType(NEIGHBORHOOD_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: NEIGHBORHOOD_VIEW, active: false }); } if (reveal) this.app.workspace.revealLeaf(leaf); if (filePath && leaf.view instanceof NeighborhoodView) await leaf.view.centerOn(filePath, pin); return leaf; }
+  async openSimilarNotes() { let leaf = this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: SIMILAR_NOTES_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); leaf.view?.refresh?.(); return leaf; }
   onunload() { this.runtime?.stop(); this.indexer?.stop(); }
 };
