@@ -279,6 +279,9 @@ function cleanSourceText(source) {
     .replace(/\s+/g, ' ')
     .trim();
 }
+function selectionPreviewText(source, limit = 140) {
+  const clean = cleanSourceText(source); if (!clean) return 'Selected passage'; const maximum = Math.max(40, Number(limit) || 140); if (clean.length <= maximum) return clean; return `${clean.slice(0, maximum).replace(/\s+\S*$/, '').trim()}…`;
+}
 function distillSnippet(source, query, semanticPhrases = [], limit = 240) {
   const clean = cleanSourceText(source); if (!clean) return '';
   const terms = queryTerms(query); const semantic = semanticPhrases.map(cleanSourceText).filter(Boolean); const sentences = clean.match(/[^.!?\n]+[.!?]?/g)?.map(s => s.trim()).filter(Boolean) || [clean];
@@ -1102,7 +1105,7 @@ class SimilarNotesView extends ItemView {
   renderHeader(active) {
     const header = this.contentEl.createDiv({ cls: 'gib-similar-header' }), heading = header.createDiv({ cls: 'gib-similar-heading-row' }), copy = heading.createDiv({ cls: 'gib-similar-heading-copy' });
     if (this.selectionQuery) {
-      copy.createDiv({ cls: 'gib-similar-kicker', text: 'Similar to selection' }); copy.createDiv({ cls: 'gib-similar-title gib-similar-selection-title', text: `“${this.selectionQuery.text.slice(0, 140)}${this.selectionQuery.text.length > 140 ? '…' : ''}”` });
+      copy.createDiv({ cls: 'gib-similar-kicker', text: 'Similar to selection' }); copy.createDiv({ cls: 'gib-similar-title gib-similar-selection-title', text: `“${selectionPreviewText(this.selectionQuery.text)}”` });
       const actions = heading.createDiv({ cls: 'gib-similar-selection-actions' }), back = actions.createEl('button', { attr: { type: 'button', 'aria-label': 'Back to similar notes', title: 'Back to similar notes' } }), close = actions.createEl('button', { attr: { type: 'button', 'aria-label': 'Close selection search', title: 'Close selection search' } }); setIcon(back, 'arrow-left'); back.createSpan({ text: 'Back' }); setIcon(close, 'x'); back.addEventListener('click', () => this.clearSelection()); close.addEventListener('click', () => this.clearSelection());
     } else { copy.createDiv({ cls: 'gib-similar-kicker', text: 'Similar Notes' }); copy.createDiv({ cls: 'gib-similar-title', text: active?.basename || 'No active note' }); }
     renderQuickFilterBar(header, this.plugin, 'similar', this.activeQuickFilterIds, () => this.refresh(false));

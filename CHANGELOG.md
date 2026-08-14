@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.14
+
+- Replaces raw Markdown in the similar-to-selection sidebar header with a short plain-text preview.
+- Keeps the original selection intact for semantic matching while stripping display-only formatting, links, embeds, and callout markers.
+
 ## 0.54.13
 
 - Adds keyword and compact-phrase highlighting to Similar Notes and Find similar to selection results.

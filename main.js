@@ -75614,6 +75614,13 @@ function queryTerms(query) {
 function cleanSourceText(source) {
   return String(source || "").replace(/^---\s*[\s\S]*?\n---\s*/, "").replace(/```[\s\S]*?```/g, " ").replace(/`([^`]+)`/g, "$1").replace(/!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1").replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2").replace(/\[\[([^\]]+)\]\]/g, "$1").replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/^\s*>\s*\[![^\]]+\][+-]?\s*/gim, "").replace(/^\s{0,3}(?:#{1,6}|>|[-*+] |\d+[.)] )\s*/gm, "").replace(/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/gm, " ").replace(/\|/g, " \xB7 ").replace(/(?:\*\*|__|~~|==)(.*?)(?:\*\*|__|~~|==)/g, "$1").replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "$1").replace(/<[^>]+>/g, " ").replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu, "$1").replace(/\s+/g, " ").trim();
 }
+function selectionPreviewText(source, limit = 140) {
+  const clean2 = cleanSourceText(source);
+  if (!clean2) return "Selected passage";
+  const maximum = Math.max(40, Number(limit) || 140);
+  if (clean2.length <= maximum) return clean2;
+  return `${clean2.slice(0, maximum).replace(/\s+\S*$/, "").trim()}\u2026`;
+}
 function distillSnippet(source, query, semanticPhrases = [], limit = 240) {
   const clean2 = cleanSourceText(source);
   if (!clean2) return "";
@@ -79329,7 +79336,7 @@ var SimilarNotesView = class extends ItemView {
     const header = this.contentEl.createDiv({ cls: "gib-similar-header" }), heading = header.createDiv({ cls: "gib-similar-heading-row" }), copy3 = heading.createDiv({ cls: "gib-similar-heading-copy" });
     if (this.selectionQuery) {
       copy3.createDiv({ cls: "gib-similar-kicker", text: "Similar to selection" });
-      copy3.createDiv({ cls: "gib-similar-title gib-similar-selection-title", text: `\u201C${this.selectionQuery.text.slice(0, 140)}${this.selectionQuery.text.length > 140 ? "\u2026" : ""}\u201D` });
+      copy3.createDiv({ cls: "gib-similar-title gib-similar-selection-title", text: `\u201C${selectionPreviewText(this.selectionQuery.text)}\u201D` });
       const actions = heading.createDiv({ cls: "gib-similar-selection-actions" }), back = actions.createEl("button", { attr: { type: "button", "aria-label": "Back to similar notes", title: "Back to similar notes" } }), close = actions.createEl("button", { attr: { type: "button", "aria-label": "Close selection search", title: "Close selection search" } });
       setIcon(back, "arrow-left");
       back.createSpan({ text: "Back" });

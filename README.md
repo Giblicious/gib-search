@@ -8,7 +8,7 @@ The optional **Bundle note revisions** setting collapses editions inside user-se
 
 The **Open Similar Notes** command opens a native sidebar that follows the active note. It uses the search result card UI, ranks each note's strongest related passages from the existing local index, highlights related keywords and compact phrases when semantic highlighting is enabled, and opens at the best passage.
 
-Select text in an editor and choose **Find similar to selection** from the context menu to temporarily reuse that sidebar for passage-level matches with the same keyword and phrase highlighting. The selection stays in memory only, excludes its source note, and can be dismissed with Back or Close to resume the usual active-note view.
+Select text in an editor and choose **Find similar to selection** from the context menu to temporarily reuse that sidebar for passage-level matches with the same keyword and phrase highlighting. Its header shows a short plain-text preview rather than raw Markdown. The selection stays in memory only, excludes its source note, and can be dismissed with Back or Close to resume the usual active-note view.
 
 Search and Similar Notes result icons can optionally follow Iconic file or folder icons. The default uses the top-level folder's resolved Iconic icon and color; parent-depth, nearest-decorated-folder, file, file-type, and fixed sticky-note modes are also available. Iconic is never required.
 
