@@ -14,6 +14,7 @@ let topicLabelPromise = null;
 let nextCacheId = 1;
 const pendingCache = new Map();
 let embedQueue = Promise.resolve();
+let foregroundPending = 0;
 
 function requestKey(request) { return typeof request === 'string' ? request : request?.url || String(request || ''); }
 function cacheRequest(action, key, buffer = null) {
@@ -72,9 +73,9 @@ async function initializeRelationModel() {
   try { relationPipe = await relationPromise; self.postMessage({ type: 'relation-ready' }); return relationPipe; } finally { relationPromise = null; }
 }
 function softmax(values) { const maximum = Math.max(...values), exponents = values.map(value => Math.exp(value - maximum)), total = exponents.reduce((sum, value) => sum + value, 0) || 1; return exponents.map(value => value / total); }
-async function classifyRelations(pairs) {
-  const classifier = await initializeRelationModel(), results = [];
-  for (let offset = 0; offset < pairs.length; offset += 24) { const batch = pairs.slice(offset, offset + 24), premises = batch.map(pair => String(pair.premise || '').slice(0, 1200)), hypotheses = batch.map(pair => String(pair.hypothesis || '').slice(0, 1200)), inputs = classifier.tokenizer(premises, { text_pair: hypotheses, padding: true, truncation: true, max_length: 256 }), output = await classifier.model(inputs), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label || {}; results.push(...batch.map((_, index) => { const probabilities = softmax(Array.from(output.logits.data.slice(index * width, (index + 1) * width))), result = { entailment: 0, neutral: 0, contradiction: 0 }; probabilities.forEach((score, labelIndex) => { const label = String(labels[labelIndex] || labels[String(labelIndex)] || '').toLowerCase(); if (label.includes('entail') || !label && labelIndex === 2) result.entailment = score; else if (label.includes('contrad') || !label && labelIndex === 0) result.contradiction = score; else result.neutral = score; }); return result; })); }
+async function classifyRelations(pairs, lowPriority = false) {
+  const classifier = await initializeRelationModel(), results = [], mobile = Boolean(configuration?.mobile), batchSize = lowPriority ? (mobile ? 4 : 12) : mobile ? 6 : 24;
+  for (let offset = 0; offset < pairs.length; offset += batchSize) { const batch = pairs.slice(offset, offset + batchSize), premises = batch.map(pair => String(pair.premise || '').slice(0, 1200)), hypotheses = batch.map(pair => String(pair.hypothesis || '').slice(0, 1200)), inputs = classifier.tokenizer(premises, { text_pair: hypotheses, padding: true, truncation: true, max_length: 256 }), output = await classifier.model(inputs), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label || {}; results.push(...batch.map((_, index) => { const probabilities = softmax(Array.from(output.logits.data.slice(index * width, (index + 1) * width))), result = { entailment: 0, neutral: 0, contradiction: 0 }; probabilities.forEach((score, labelIndex) => { const label = String(labels[labelIndex] || labels[String(labelIndex)] || '').toLowerCase(); if (label.includes('entail') || !label && labelIndex === 2) result.entailment = score; else if (label.includes('contrad') || !label && labelIndex === 0) result.contradiction = score; else result.neutral = score; }); return result; })); if (lowPriority && offset + batchSize < pairs.length) { await new Promise(resolve => setTimeout(resolve, mobile ? 60 : 15)); if (foregroundPending) await embedQueue; } }
   return results;
 }
 
@@ -102,7 +103,7 @@ async function handleEmbed(message) {
   try { const result = await embed(message.texts || [], Boolean(message.query)); self.postMessage({ type: 'result', id: message.id, buffers: result.buffers }, result.transfer); }
   catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
 }
-async function handleRelations(message) { try { self.postMessage({ type: 'relation-result', id: message.id, results: await classifyRelations(message.pairs || []) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
+async function handleRelations(message) { try { self.postMessage({ type: 'relation-result', id: message.id, results: await classifyRelations(message.pairs || [], Boolean(message.lowPriority)) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
 async function handleTopicLabels(message) { try { self.postMessage({ type: 'topic-label-result', id: message.id, labels: await generateTopicLabels(message.prompts || []) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
 
 self.onmessage = event => {
@@ -112,7 +113,7 @@ self.onmessage = event => {
     if (message.error) pending.reject(new Error(message.error)); else pending.resolve(message.buffer || null); return;
   }
   if (message.type === 'init') { configuration = message; self.postMessage({ type: 'initialized' }); return; }
-  if (message.type === 'embed') embedQueue = embedQueue.then(() => handleEmbed(message));
+  if (message.type === 'embed') { foregroundPending++; embedQueue = embedQueue.then(() => handleEmbed(message)).finally(() => { foregroundPending--; }); }
   else if (message.type === 'relations') handleRelations(message);
   else if (message.type === 'topic-labels') handleTopicLabels(message);
 };

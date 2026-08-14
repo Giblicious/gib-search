@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.15
+
+- Adds an optional persistent Writing Profile index for emotion, purpose, and writing form, disabled by default.
+- Adds an active-note companion sidebar with stable radar charts, top findings, confidence, and expandable evidence passages.
+- Reuses content fingerprints and indexed passages so unchanged notes load from cache and only changed notes return to the analysis queue.
+- Keeps profile work behind semantic indexing and live search, prioritizes the active note, runs one note and one signal at a time, uses worker-only mobile inference, and yields between low-priority model batches.
+- Checkpoints the compact profile cache separately and updates it across note changes, renames, and deletions without delaying semantic search readiness.
+
 ## 0.54.14
 
 - Replaces raw Markdown in the similar-to-selection sidebar header with a short plain-text preview.
