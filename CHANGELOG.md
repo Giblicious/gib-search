@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.8
+
+- Restyles quick-filter buttons as compact, flat controls that match the plugin's existing toolbars and tabs.
+- Replaces pill outlines with subtle four-pixel corners and native hover/active backgrounds.
+
 ## 0.54.7
 
 - Adds an enable/disable switch for every saved quick filter.
