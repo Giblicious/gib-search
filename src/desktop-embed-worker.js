@@ -11,6 +11,8 @@ let modelBackend = 'starting';
 let modelDtype = 'q8';
 let relationPipe = null;
 let relationPromise = null;
+let relationBackend = 'starting';
+let relationDtype = 'q8';
 let topicLabelPipe = null;
 let topicLabelPromise = null;
 let nextCacheId = 1;
@@ -46,6 +48,9 @@ async function gunzipBase64(encoded, text = false) {
   const compressed = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
   const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
   return text ? new Response(stream).text() : new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function serviceHigherPriorityTasks(priority) {
+  for (;;) { const index = taskQueues.findIndex((values, queuePriority) => queuePriority < priority && values.length); if (index < 0) return; await taskQueues[index].shift()(); }
 }
 
 async function configureRuntime() {
@@ -126,16 +131,43 @@ async function embed(texts, query) {
   return { buffers, transfer: buffers };
 }
 
+function relationProgressCallback(progress) {
+  if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'relation-progress', file: progress.file || 'relationship model', progress: Number(progress.progress) });
+}
+async function loadRelationModel(device, dtype) {
+  const loaded = await pipeline('text-classification', RELATION_MODEL_ID, { device, dtype, progress_callback: relationProgressCallback });
+  try {
+    const inputs = loaded.tokenizer(['A written schedule organizes actions and times.'], { text_pair: ['This text is a plan.'], padding: true, truncation: true, max_length: 64 }), output = await loaded.model(inputs);
+    if (!output?.logits?.dims?.length || !output.logits.data?.length) throw new Error('Relationship model warmup returned no logits');
+    return loaded;
+  } catch (error) { await disposePipeline(loaded); throw error; }
+}
+function relationReady() { self.postMessage({ type: 'relation-ready', backend: relationBackend, dtype: relationDtype }); }
+async function activateRelationWasm(fallbackError = null) {
+  const previous = relationPipe; relationPipe = null; await disposePipeline(previous);
+  if (fallbackError) self.postMessage({ type: 'backend-fallback', scope: 'profile', from: 'webgpu', to: 'wasm', message: fallbackError?.message || String(fallbackError) });
+  relationPipe = await loadRelationModel('wasm', 'q8'); relationBackend = 'wasm'; relationDtype = 'q8'; relationReady(); return relationPipe;
+}
+async function tryActivateRelationWebGpu() {
+  if (configuration.mobile || modelBackend !== 'webgpu') return false;
+  try { relationPipe = await loadRelationModel('webgpu', modelDtype); relationBackend = 'webgpu'; relationDtype = modelDtype; relationReady(); return true; }
+  catch (error) { await activateRelationWasm(error); return false; }
+}
 async function initializeRelationModel() {
   if (relationPipe) return relationPipe; if (relationPromise) return relationPromise; await initializeModel();
-  relationPromise = pipeline('text-classification', RELATION_MODEL_ID, { dtype: 'q8', progress_callback: progress => { if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'relation-progress', file: progress.file || 'relationship model', progress: Number(progress.progress) }); } });
-  try { relationPipe = await relationPromise; self.postMessage({ type: 'relation-ready' }); return relationPipe; } finally { relationPromise = null; }
+  relationPromise = (async () => { if (await tryActivateRelationWebGpu()) return relationPipe; if (relationPipe) return relationPipe; return activateRelationWasm(); })();
+  try { return await relationPromise; } finally { relationPromise = null; }
 }
 function softmax(values) { const maximum = Math.max(...values), exponents = values.map(value => Math.exp(value - maximum)), total = exponents.reduce((sum, value) => sum + value, 0) || 1; return exponents.map(value => value / total); }
-async function classifyRelations(pairs, lowPriority = false) {
-  const classifier = await initializeRelationModel(), results = [], mobile = Boolean(configuration?.mobile), batchSize = lowPriority ? (mobile ? 4 : 12) : mobile ? 6 : 24;
-  for (let offset = 0; offset < pairs.length; offset += batchSize) { const batch = pairs.slice(offset, offset + batchSize), premises = batch.map(pair => String(pair.premise || '').slice(0, 1200)), hypotheses = batch.map(pair => String(pair.hypothesis || '').slice(0, 1200)), inputs = classifier.tokenizer(premises, { text_pair: hypotheses, padding: true, truncation: true, max_length: 256 }), output = await classifier.model(inputs), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label || {}; results.push(...batch.map((_, index) => { const probabilities = softmax(Array.from(output.logits.data.slice(index * width, (index + 1) * width))), result = { entailment: 0, neutral: 0, contradiction: 0 }; probabilities.forEach((score, labelIndex) => { const label = String(labels[labelIndex] || labels[String(labelIndex)] || '').toLowerCase(); if (label.includes('entail') || !label && labelIndex === 2) result.entailment = score; else if (label.includes('contrad') || !label && labelIndex === 0) result.contradiction = score; else result.neutral = score; }); return result; })); if (lowPriority && offset + batchSize < pairs.length) await new Promise(resolve => setTimeout(resolve, mobile ? 60 : 15)); }
+async function classifyWithModel(classifier, pairs, lowPriority = false) {
+  const results = [], mobile = Boolean(configuration?.mobile), batchSize = lowPriority ? (mobile ? 4 : 12) : mobile ? 6 : 24;
+  for (let offset = 0; offset < pairs.length; offset += batchSize) { const batch = pairs.slice(offset, offset + batchSize), premises = batch.map(pair => String(pair.premise || '').slice(0, 1200)), hypotheses = batch.map(pair => String(pair.hypothesis || '').slice(0, 1200)), inputs = classifier.tokenizer(premises, { text_pair: hypotheses, padding: true, truncation: true, max_length: 256 }), output = await classifier.model(inputs), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label || {}; results.push(...batch.map((_, index) => { const probabilities = softmax(Array.from(output.logits.data.slice(index * width, (index + 1) * width))), result = { entailment: 0, neutral: 0, contradiction: 0 }; probabilities.forEach((score, labelIndex) => { const label = String(labels[labelIndex] || labels[String(labelIndex)] || '').toLowerCase(); if (label.includes('entail') || !label && labelIndex === 2) result.entailment = score; else if (label.includes('contrad') || !label && labelIndex === 0) result.contradiction = score; else result.neutral = score; }); return result; })); if (lowPriority && offset + batchSize < pairs.length) { await new Promise(resolve => setTimeout(resolve, mobile ? 60 : 15)); await serviceHigherPriorityTasks(4); } }
   return results;
+}
+async function classifyRelations(pairs, lowPriority = false) {
+  const classifier = await initializeRelationModel();
+  try { return await classifyWithModel(classifier, pairs, lowPriority); }
+  catch (error) { if (relationBackend !== 'webgpu') throw error; return classifyWithModel(await activateRelationWasm(error), pairs, lowPriority); }
 }
 
 async function initializeTopicLabelModel() {

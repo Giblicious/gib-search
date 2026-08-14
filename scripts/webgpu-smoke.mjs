@@ -25,13 +25,16 @@ const completed = new Promise(resolve => { finish = resolve; });
 const page = `<!doctype html><meta charset="utf-8"><script type="module">
 const [source, configuration] = await Promise.all([fetch('/worker.js').then(value => value.text()), fetch('/config').then(value => value.json())]);
 const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })), { name: 'gib-search-webgpu-smoke' });
-let profile = null;
+let profile = null, relationProfile = null, semanticResult = null, priorityCompleted = false;
 worker.onmessage = async event => {
   const message = event.data;
   if (message.type === 'cache') { worker.postMessage({ type: 'cache-result', id: message.id }); return; }
   if (message.type === 'runtime-profile') { profile = message; return; }
+  if (message.type === 'relation-ready') { relationProfile = message; return; }
   if (message.type === 'initialized') { worker.postMessage({ type: 'embed', id: 1, texts: ['Contained WebGPU semantic indexing smoke check.'], query: false, priority: 0 }); return; }
-  if (message.type === 'result') { const vector = new Float32Array(message.buffers[0]); const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)); await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: vector.length === 384 && vector.every(Number.isFinite) && Math.abs(magnitude - 1) < .01, backend: profile?.backend, dtype: profile?.dtype, dimension: vector.length, magnitude }) }); return; }
+  if (message.type === 'result' && message.id === 1) { const vector = new Float32Array(message.buffers[0]); const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)); semanticResult = { ok: vector.length === 384 && vector.every(Number.isFinite) && Math.abs(magnitude - 1) < .01, backend: profile?.backend, dtype: profile?.dtype, dimension: vector.length, magnitude }; const pair = { premise: 'A written schedule organizes actions and times.', hypothesis: 'This text is a plan.' }; worker.postMessage({ type: 'relations', id: 2, lowPriority: true, pairs: Array.from({ length: 24 }, () => pair) }); worker.postMessage({ type: 'embed', id: 3, texts: ['Priority search must run between profile batches.'], query: true, priority: 0 }); return; }
+  if (message.type === 'result' && message.id === 3) { priorityCompleted = true; return; }
+  if (message.type === 'relation-result' && message.id === 2) { const row = message.results?.[0] || {}, probabilities = [row.entailment, row.neutral, row.contradiction].map(Number), total = probabilities.reduce((sum, value) => sum + value, 0), relation = { ok: message.results?.length === 24 && probabilities.every(Number.isFinite) && Math.abs(total - 1) < .01 && priorityCompleted, backend: relationProfile?.backend, dtype: relationProfile?.dtype, probabilities, interactivePreemption: priorityCompleted }; await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: semanticResult?.ok && relation.ok, semantic: semanticResult, relation }) }); return; }
   if (message.type === 'error') await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: false, error: message.message, backend: profile?.backend }) });
 };
 worker.onerror = event => fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: false, error: event.message }) });
@@ -46,11 +49,11 @@ await new Promise((resolve, reject) => { server.once('error', reject); server.li
 const address = server.address(), profileDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gib-search-webgpu-'));
 const browser = spawn(chrome, [`--user-data-dir=${profileDirectory}`, '--headless=new', '--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--no-first-run', '--disable-sync', `http://127.0.0.1:${address.port}/`], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
 let browserError = ''; browser.stderr.on('data', chunk => { browserError += chunk; });
-const timeout = setTimeout(() => finish({ ok: false, error: 'Timed out waiting for the WebGPU embedding' }), 180000);
+const timeout = setTimeout(() => finish({ ok: false, error: 'Timed out waiting for WebGPU semantic and profile inference' }), 180000);
 try {
   const result = await completed; clearTimeout(timeout);
-  if (!result.ok || result.backend !== 'webgpu') throw new Error(`WebGPU smoke check failed: ${JSON.stringify(result)}${browserError ? `\n${browserError.slice(-1200)}` : ''}`);
-  console.log(`WebGPU worker smoke check passed (${result.dtype}, ${result.dimension} dimensions, magnitude ${result.magnitude.toFixed(4)}).`);
+  if (!result.ok || result.semantic?.backend !== 'webgpu' || result.relation?.backend !== 'webgpu') throw new Error(`WebGPU smoke check failed: ${JSON.stringify(result)}${browserError ? `\n${browserError.slice(-1200)}` : ''}`);
+  console.log(`WebGPU worker smoke check passed (semantic ${result.semantic.dtype}, ${result.semantic.dimension} dimensions; profile ${result.relation.dtype}, probabilities ${result.relation.probabilities.map(value => value.toFixed(3)).join('/')}; interactive preemption verified).`);
 } finally {
   clearTimeout(timeout); browser.kill();
   if (browser.exitCode === null) await Promise.race([new Promise(resolve => browser.once('exit', resolve)), new Promise(resolve => setTimeout(resolve, 2000))]);

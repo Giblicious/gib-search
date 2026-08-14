@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.21
+
+- Runs desktop Writing Profile emotion, purpose, and form classification through the verified WebGPU/fp16 worker when available.
+- Warms and validates the profile classifier before use, and automatically retries through the bundled q8 WASM engine if GPU initialization or inference fails.
+- Keeps profile classification below semantic queries and indexing, and now admits queued higher-priority work between bounded low-priority classification batches.
+- Keeps mobile on q8 WASM in its existing background worker and does not add system dependencies, installers, services, or native runtimes.
+- Extends the isolated worker smoke test to verify normalized WebGPU output from both the semantic and profile models.
+
 ## 0.54.20
 
 - Uses a verified high-performance WebGPU adapter for desktop BGE embeddings, with fp16 inference and bounded batches that can make practical use of modern discrete GPUs.

@@ -10,7 +10,7 @@ The **Open Similar Notes** command opens a native sidebar that follows the activ
 
 Select text in an editor and choose **Find similar to selection** from the context menu to temporarily reuse that sidebar for passage-level matches with the same keyword and phrase highlighting. Its header shows a short plain-text preview rather than raw Markdown. The selection stays in memory only, excludes its source note, and can be dismissed with Back or Close to resume the usual active-note view.
 
-The optional **Index writing profiles** setting builds a separate persistent local index of each Markdown note's predominant emotion, purpose, and writing form. The **Open Writing Profile** command shows the active note in a companion sidebar with three compact radar charts, calibrated evidence strengths, and expandable supporting passages. A dimension explicitly reports that no clear signal was found instead of forcing a label onto neutral or ambiguous writing. Profiles are content-fingerprinted, so unchanged notes load from cache; changed notes alone return to the queue, and the active note receives priority.
+The optional **Index writing profiles** setting builds a separate persistent local index of each Markdown note's predominant emotion, purpose, and writing form. The **Open Writing Profile** command shows the active note in a companion sidebar with three compact radar charts, calibrated evidence strengths, and expandable supporting passages. A dimension explicitly reports that no clear signal was found instead of forcing a label onto neutral or ambiguous writing. Profiles are content-fingerprinted, so unchanged notes load from cache; changed notes alone return to the queue, and the active note receives priority. Desktop profile classification uses the same verified WebGPU/fp16 worker and automatic bundled-WASM fallback as semantic indexing, but remains lower priority and yields between bounded batches.
 
 Search and Similar Notes result icons can optionally follow Iconic file or folder icons. The default uses the top-level folder's resolved Iconic icon and color; parent-depth, nearest-decorated-folder, file, file-type, and fixed sticky-note modes are also available. Iconic is never required.
 
@@ -37,7 +37,7 @@ Indexing runs cooperatively: model inference stays in a dedicated background wor
 
 - Notes, queries, embeddings, and indexes remain on the local device.
 - Inference runs directly inside Obsidian using desktop WebGPU or the bundled WebAssembly fallback.
-- BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached. GPU-capable desktops cache its fp16 model; the fallback engine and mobile cache its q8 model. Enabling Writing Profile indexing also downloads the local MobileBERT MNLI analysis model.
+- BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached. GPU-capable desktops cache its fp16 model; the fallback engine and mobile cache its q8 model. Enabling Writing Profile indexing also downloads the local MobileBERT MNLI analysis model in desktop fp16 or fallback/mobile q8 form.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 

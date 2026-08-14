@@ -1,6 +1,6 @@
 {
   "name": "gib-search",
-  "version": "0.54.20",
+  "version": "0.54.21",
   "private": true,
   "type": "module",
   "scripts": {
