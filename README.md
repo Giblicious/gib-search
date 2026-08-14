@@ -10,7 +10,7 @@ The **Open Similar Notes** command opens a native sidebar that follows the activ
 
 Select text in an editor and choose **Find similar to selection** from the context menu to temporarily reuse that sidebar for passage-level matches with the same keyword and phrase highlighting. Its header shows a short plain-text preview rather than raw Markdown. The selection stays in memory only, excludes its source note, and can be dismissed with Back or Close to resume the usual active-note view.
 
-The optional **Index writing profiles** setting builds a separate persistent local index of each Markdown note's predominant emotion, purpose, and writing form. The **Open Writing Profile** command shows the active note in a companion sidebar with three compact radar charts, top findings, confidence, and expandable supporting passages. Profiles are content-fingerprinted, so unchanged notes load from cache; changed notes alone return to the queue, and the active note receives priority.
+The optional **Index writing profiles** setting builds a separate persistent local index of each Markdown note's predominant emotion, purpose, and writing form. The **Open Writing Profile** command shows the active note in a companion sidebar with three compact radar charts, calibrated evidence strengths, and expandable supporting passages. A dimension explicitly reports that no clear signal was found instead of forcing a label onto neutral or ambiguous writing. Profiles are content-fingerprinted, so unchanged notes load from cache; changed notes alone return to the queue, and the active note receives priority.
 
 Search and Similar Notes result icons can optionally follow Iconic file or folder icons. The default uses the top-level folder's resolved Iconic icon and color; parent-depth, nearest-decorated-folder, file, file-type, and fixed sticky-note modes are also available. Iconic is never required.
 
@@ -45,7 +45,7 @@ On desktop, the model, index, and diagnostic logs are stored inside the Gib Sear
 
 ## Model
 
-Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. The optional Writing Profile index uses **MobileBERT MNLI** for local emotion, purpose, and form classification, combined with lightweight form and purpose heuristics.
+Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. The optional Writing Profile index uses **MobileBERT MNLI** for local emotion, purpose, and form classification, combined with conservative applicability gates and Markdown-aware structural evidence. Raw model entailment is calibrated before display, and weak evidence can abstain rather than becoming a finding.
 
 ## Commands
 

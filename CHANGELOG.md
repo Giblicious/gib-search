@@ -1,9 +1,18 @@
 # Changelog
 
+## 0.54.16
+
+- Calibrates Writing Profile scores instead of presenting raw NLI entailment as confidence.
+- Allows emotion, purpose, and form to abstain with a neutral radar state when a note does not contain enough reliable evidence for a finding.
+- Adds an explicit emotion-applicability gate so schedules, instructions, reference material, and other neutral structures do not inherit spurious negative emotions.
+- Makes form and purpose structure-aware: schedules, rules, checklists, and action lists establish Planning and Outline without letting weak model guesses overpower clear Markdown evidence.
+- Suppresses unsupported Narrative classifications when strong outline structure is present, while retaining explicit emotional writing and genuinely narrative prose.
+- Invalidates older profile caches so enabled devices rebuild the corrected profiles politely in the background.
+
 ## 0.54.15
 
 - Adds an optional persistent Writing Profile index for emotion, purpose, and writing form, disabled by default.
-- Adds an active-note companion sidebar with stable radar charts, top findings, confidence, and expandable evidence passages.
+- Adds an active-note companion sidebar with stable radar charts, top findings, evidence strength, and expandable evidence passages.
 - Reuses content fingerprints and indexed passages so unchanged notes load from cache and only changed notes return to the analysis queue.
 - Keeps profile work behind semantic indexing and live search, prioritizes the active note, runs one note and one signal at a time, uses worker-only mobile inference, and yields between low-priority model batches.
 - Checkpoints the compact profile cache separately and updates it across note changes, renames, and deletions without delaying semantic search readiness.
