@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.13
+
+- Adds keyword and compact-phrase highlighting to Similar Notes and Find similar to selection results.
+- Reuses indexed highlight candidates so the sidebar does not add embedding work, note reads, or indexing activity.
+- Respects the existing Semantic highlighting setting and maximum-phrases preference.
+
 ## 0.54.12
 
 - Adds **Find similar to selection** to the editor context menu when text is selected.

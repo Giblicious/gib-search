@@ -70520,7 +70520,8 @@ var mobile_runtime_exports = {};
 __export(mobile_runtime_exports, {
   MobileSearchRuntime: () => MobileSearchRuntime,
   buildHighlightCandidates: () => buildHighlightCandidates,
-  conceptLabelCandidates: () => conceptLabelCandidates
+  conceptLabelCandidates: () => conceptLabelCandidates,
+  relatedHighlightPhrases: () => relatedHighlightPhrases
 });
 function isTemporalConceptLabel(source) {
   const value = cleanText(source).toLowerCase(), words = value.match(/[\p{L}\p{N}]+/gu) || [];
@@ -71387,6 +71388,30 @@ function buildHighlightCandidates(file, chunk) {
     return true;
   });
 }
+function relatedHighlightPhrases(source, target, maximum = 3) {
+  let anchors = source && typeof source === "object" ? RELATED_HIGHLIGHT_ANCHORS.get(source) : null;
+  if (!anchors) {
+    anchors = queryAnchors(`${source?.heading || ""} ${source?.text || ""}`);
+    if (source && typeof source === "object") RELATED_HIGHLIGHT_ANCHORS.set(source, anchors);
+  }
+  const limit = Math.max(1, Math.min(5, Number(maximum) || 3));
+  if (!anchors.size) return { body: [], heading: [] };
+  const candidates = target?.highlightCandidates || buildHighlightCandidates(target?.file || "", target || {}), scored = candidates.map((candidate) => {
+    const meaningful = sentenceWords(candidate.phrase).filter((word) => !word.stop), matched = [...new Set(meaningful.filter((word) => anchors.has(word.lemma)).map((word) => word.lemma))], coverage = matched.length / Math.max(1, meaningful.length);
+    return { ...candidate, matched: matched.length, coverage, rank: coverage + matched.length * 0.16 + (candidate.words > 1 ? 0.1 : 0) + Number(candidate.quality || 0) };
+  }).filter((candidate) => candidate.matched > 0 && (candidate.coverage >= 0.5 || candidate.matched >= 2));
+  const choose = (field) => {
+    const chosen = [];
+    for (const candidate of scored.filter((item) => item.field === field).sort((a2, b) => b.rank - a2.rank || b.words - a2.words)) {
+      const phrase = String(candidate.phrase || "").trim();
+      if (!phrase || chosen.some((existing) => existing.toLowerCase() === phrase.toLowerCase() || existing.toLowerCase().includes(phrase.toLowerCase()) || phrase.toLowerCase().includes(existing.toLowerCase()))) continue;
+      chosen.push(phrase);
+      if (chosen.length >= limit) break;
+    }
+    return chosen;
+  };
+  return { body: choose("body"), heading: choose("heading") };
+}
 function packIndexMeta(meta) {
   return (meta || []).map((item) => ({ ...item, highlightCandidates: (item.highlightCandidates || []).map((candidate) => Array.isArray(candidate) ? candidate : [candidate.phrase, candidate.field, candidate.sentenceId, candidate.start, candidate.end, candidate.words, (candidate.hasNoun ? 1 : 0) | (candidate.hasVerb ? 2 : 0) | (candidate.hasExpression ? 4 : 0) | (candidate.adjectiveOnly ? 8 : 0), candidate.quality]) }));
 }
@@ -71397,7 +71422,7 @@ function unpackIndexMeta(meta) {
     return { phrase: candidate[0], field: candidate[1], sentenceId: candidate[2], start: candidate[3], end: candidate[4], words: candidate[5], hasNoun: Boolean(flags & 1), hasVerb: Boolean(flags & 2), hasExpression: Boolean(flags & 4), adjectiveOnly: Boolean(flags & 8), quality: Number(candidate[7] || 0) };
   }) }));
 }
-var MODEL_ID, RELATION_MODEL_ID, TOPIC_LABEL_MODEL_ID, DIMENSION, MOBILE_PASSAGE_INDEX_VERSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, GRAPH_EVIDENCE_VERSION, QUERY_PREFIX, CONTENT_INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, STRUCTURAL_TOPIC_LABELS, VAGUE_LABEL_WORDS, IRREGULAR_LEMMAS, MobileSearchRuntime;
+var MODEL_ID, RELATION_MODEL_ID, TOPIC_LABEL_MODEL_ID, DIMENSION, MOBILE_PASSAGE_INDEX_VERSION, HIGHLIGHT_INDEX_VERSION, GRAPH_METADATA_VERSION, GRAPH_EVIDENCE_VERSION, QUERY_PREFIX, CONTENT_INDEXABLE, STOP_WORDS, GENERIC_CONCEPTS, GENERIC_DEMOGRAPHICS, TEMPORAL_LABEL_WORDS, STRUCTURAL_TOPIC_LABELS, VAGUE_LABEL_WORDS, IRREGULAR_LEMMAS, RELATED_HIGHLIGHT_ANCHORS, MobileSearchRuntime;
 var init_mobile_runtime = __esm({
   "src/mobile-runtime.js"() {
     init_transformers_web();
@@ -71420,6 +71445,7 @@ var init_mobile_runtime = __esm({
     STRUCTURAL_TOPIC_LABELS = /* @__PURE__ */ new Set(["ai", "answer", "assistant", "candidate", "chat", "chatbot", "connections", "conversation", "dataview", "discussion", "evidence", "journal", "label", "notes", "passage", "response", "resources", "template", "templates", "templater", "text", "topic", "tp", "transcript"]);
     VAGUE_LABEL_WORDS = /* @__PURE__ */ new Set(["all", "entry", "entries", "material", "now", "other", "rename", "something", "still", "there", "word", "words"]);
     IRREGULAR_LEMMAS = /* @__PURE__ */ new Map([["felt", "feel"], ["feels", "feel"], ["feelings", "feel"], ["children", "child"], ["people", "person"], ["men", "man"], ["women", "woman"]]);
+    RELATED_HIGHLIGHT_ANCHORS = /* @__PURE__ */ new WeakMap();
     MobileSearchRuntime = class {
       constructor(plugin6) {
         this.plugin = plugin6;
@@ -73725,7 +73751,7 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
         for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(vectors.get(ranked[first].id).vector, vectors.get(ranked[second].id).vector), residualScore: dot(residuals[first].vector, residuals[second].vector) });
         return { center: file, nodes: ranked.map((node) => ({ ...node, ...positions.get(node.id) || {} })), edges };
       }
-      async relatedPassages(file, files, maximum = 2) {
+      async relatedPassages(file, files, maximum = 2, options = {}) {
         this.ensureFileCaches();
         const sourceAll = (this.passageIndicesByFile.get(file) || []).filter((index3) => this.vectors[index3] && !this.meta[index3]?.filenameOnly), sourceLimit = 24;
         if (!sourceAll.length) return /* @__PURE__ */ new Map();
@@ -73743,7 +73769,7 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
                 bestSource = this.meta[sourceIndex];
               }
             }
-            ranked.push({ ...this.meta[targetIndex], passageIndex: targetIndex, score: bestScore, sourceHeading: bestSource?.heading || "" });
+            ranked.push({ ...this.meta[targetIndex], passageIndex: targetIndex, score: bestScore, sourceHeading: bestSource?.heading || "", highlightSource: bestSource });
             if (++comparisons % 48 === 0) await yieldToUi();
           }
           ranked.sort((first, second) => second.score - first.score);
@@ -73753,7 +73779,10 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
             selected.push(passage);
             if (selected.length >= wanted) break;
           }
-          output.set(targetFile, selected);
+          output.set(targetFile, selected.map((passage) => {
+            const highlights = options.highlights && passage.highlightSource ? relatedHighlightPhrases(passage.highlightSource, passage, options.maxPhrases) : { body: [], heading: [] }, { highlightSource, ...result } = passage;
+            return { ...result, semanticHighlights: highlights.body, headingHighlights: highlights.heading };
+          }));
           await yieldToUi();
         }
         return output;
@@ -74998,7 +75027,7 @@ var init_quick_filters = __esm({
 
 // src/main.js
 var { Plugin, PluginSettingTab, Setting, ToggleComponent, SuggestModal, Modal: Modal2, ItemView, Notice, TFile, setIcon, getIcon, Platform } = require("obsidian");
-var { MobileSearchRuntime: MobileSearchRuntime2 } = (init_mobile_runtime(), __toCommonJS(mobile_runtime_exports));
+var { MobileSearchRuntime: MobileSearchRuntime2, relatedHighlightPhrases: relatedHighlightPhrases2 } = (init_mobile_runtime(), __toCommonJS(mobile_runtime_exports));
 var { AtlasEngine: AtlasEngine2, STANDARD_ATLAS_VIEWS: STANDARD_ATLAS_VIEWS2, DEFAULT_ATLAS_VIEW: DEFAULT_ATLAS_VIEW2 } = (init_atlas_engine(), __toCommonJS(atlas_engine_exports));
 var { TEXT_SIGNALS: TEXT_SIGNALS2 } = (init_text_signals(), __toCommonJS(text_signals_exports));
 var { buildSemanticTerrain: buildSemanticTerrain2, normalizeLandscape: normalizeLandscape2 } = (init_terrain_engine(), __toCommonJS(terrain_engine_exports));
@@ -79348,7 +79377,7 @@ var SimilarNotesView = class extends ItemView {
     }
     const loading = retainCurrent ? null : this.contentEl.createDiv({ cls: "gib-similar-empty", text: "Finding the strongest related passages\u2026" });
     try {
-      const passages = await this.plugin.search.relatedPassages(active.path, neighbors.map((node) => node.id), 2);
+      const tweaks = activeTweaks(this.plugin), passages = await this.plugin.search.relatedPassages(active.path, neighbors.map((node) => node.id), 2, { highlights: tweaks.semanticHighlights, maxPhrases: tweaks.highlightMaxPhrases });
       if (version2 !== this.refreshVersion || !this.contentEl?.isConnected) return;
       if (retainCurrent) {
         this.contentEl.empty();
@@ -79385,7 +79414,11 @@ var SimilarNotesView = class extends ItemView {
       if (allowedPaths !== null) options.files = allowedPaths;
       const raw = await this.plugin.search.search(selection.text, Math.min(180, Math.max(48, limit * 6)), minimum, options);
       if (version2 !== this.refreshVersion || this.selectionQuery !== selection || !this.contentEl?.isConnected) return;
-      const results = groupSearchResults(raw, selection.text, Number.MAX_SAFE_INTEGER).filter((result) => {
+      const highlightSource = { text: selection.text }, highlighted = tweaks.semanticHighlights ? raw.map((hit) => {
+        const phrases = relatedHighlightPhrases2(highlightSource, hit, tweaks.highlightMaxPhrases);
+        return { ...hit, semanticHighlights: phrases.body.map((phrase) => ({ phrase, score: 1 })), headingHighlights: phrases.heading.map((phrase) => ({ phrase, score: 1 })) };
+      }) : raw;
+      const results = groupSearchResults(highlighted, selection.text, Number.MAX_SAFE_INTEGER).filter((result) => {
         const file = this.app.vault.getAbstractFileByPath(result.file);
         return file instanceof TFile && file.extension.toLowerCase() === "md" && result.file !== selection.sourcePath && result.score >= minimum;
       }).slice(0, limit);
@@ -79424,10 +79457,11 @@ var SimilarNotesView = class extends ItemView {
     score.setAttribute("title", scoreTitle || `Whole-note semantic similarity: ${Math.round(neighbor.score * 100)}%`);
     const snippets = passages.length ? container.createDiv({ cls: "gib-semantic-snippets" }) : null;
     passages.forEach((passage, index3) => {
-      const block = snippets.createDiv({ cls: "gib-semantic-snippet" }), heading = block.createDiv({ cls: "gib-similar-passage-heading" });
-      heading.createSpan({ text: passage.heading || "Strongest related passage" });
+      const bodyHighlights = (passage.semanticHighlights || []).map((item) => typeof item === "string" ? item : item.phrase).filter(Boolean), headingHighlights = (passage.headingHighlights || []).map((item) => typeof item === "string" ? item : item.phrase).filter(Boolean), block = snippets.createDiv({ cls: "gib-semantic-snippet" }), heading = block.createDiv({ cls: "gib-similar-passage-heading" }), headingText = heading.createSpan();
+      renderHighlighted(headingText, passage.heading || "Strongest related passage", this.selectionQuery?.text || "", headingHighlights);
       heading.createSpan({ cls: "gib-similar-passage-score", text: `${Math.round(passage.score * 100)}% passage` });
-      const preview = block.createDiv({ cls: "gib-semantic-result-preview", text: distillSnippet(passage.text, "", []) });
+      const previewText = distillSnippet(passage.text, this.selectionQuery?.text || "", bodyHighlights), preview = block.createDiv({ cls: "gib-semantic-result-preview" });
+      renderHighlighted(preview, previewText, this.selectionQuery?.text || "", bodyHighlights);
       if (passage.sourceHeading) preview.setAttribute("title", `Most related to \u201C${passage.sourceHeading}\u201D in the active note`);
       if (index3 < passages.length - 1) snippets.createDiv({ cls: "gib-semantic-snippet-divider" });
     });

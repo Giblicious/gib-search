@@ -260,6 +260,13 @@ export function buildHighlightCandidates(file, chunk) {
   const candidates = [...indexedHighlightCandidates('filename', basename(file), 8), ...indexedHighlightCandidates('heading', chunk.heading, 8), ...indexedHighlightCandidates('body', chunk.text, 24)];
   const seen = new Set(); return candidates.filter(item => { const key = `${item.field}:${item.phrase.toLowerCase()}`; if (seen.has(key)) return false; seen.add(key); return true; });
 }
+const RELATED_HIGHLIGHT_ANCHORS = new WeakMap();
+export function relatedHighlightPhrases(source, target, maximum = 3) {
+  let anchors = source && typeof source === 'object' ? RELATED_HIGHLIGHT_ANCHORS.get(source) : null; if (!anchors) { anchors = queryAnchors(`${source?.heading || ''} ${source?.text || ''}`); if (source && typeof source === 'object') RELATED_HIGHLIGHT_ANCHORS.set(source, anchors); } const limit = Math.max(1, Math.min(5, Number(maximum) || 3)); if (!anchors.size) return { body: [], heading: [] };
+  const candidates = target?.highlightCandidates || buildHighlightCandidates(target?.file || '', target || {}), scored = candidates.map(candidate => { const meaningful = sentenceWords(candidate.phrase).filter(word => !word.stop), matched = [...new Set(meaningful.filter(word => anchors.has(word.lemma)).map(word => word.lemma))], coverage = matched.length / Math.max(1, meaningful.length); return { ...candidate, matched: matched.length, coverage, rank: coverage + matched.length * .16 + (candidate.words > 1 ? .1 : 0) + Number(candidate.quality || 0) }; }).filter(candidate => candidate.matched > 0 && (candidate.coverage >= .5 || candidate.matched >= 2));
+  const choose = field => { const chosen = []; for (const candidate of scored.filter(item => item.field === field).sort((a, b) => b.rank - a.rank || b.words - a.words)) { const phrase = String(candidate.phrase || '').trim(); if (!phrase || chosen.some(existing => existing.toLowerCase() === phrase.toLowerCase() || existing.toLowerCase().includes(phrase.toLowerCase()) || phrase.toLowerCase().includes(existing.toLowerCase()))) continue; chosen.push(phrase); if (chosen.length >= limit) break; } return chosen; };
+  return { body: choose('body'), heading: choose('heading') };
+}
 function packIndexMeta(meta) { return (meta || []).map(item => ({ ...item, highlightCandidates: (item.highlightCandidates || []).map(candidate => Array.isArray(candidate) ? candidate : [candidate.phrase, candidate.field, candidate.sentenceId, candidate.start, candidate.end, candidate.words, (candidate.hasNoun ? 1 : 0) | (candidate.hasVerb ? 2 : 0) | (candidate.hasExpression ? 4 : 0) | (candidate.adjectiveOnly ? 8 : 0), candidate.quality]) })); }
 function unpackIndexMeta(meta) { return (meta || []).map(item => ({ ...item, highlightCandidates: (item.highlightCandidates || []).map(candidate => { if (!Array.isArray(candidate)) return candidate; const flags = Number(candidate[6] || 0); return { phrase: candidate[0], field: candidate[1], sentenceId: candidate[2], start: candidate[3], end: candidate[4], words: candidate[5], hasNoun: Boolean(flags & 1), hasVerb: Boolean(flags & 2), hasExpression: Boolean(flags & 4), adjectiveOnly: Boolean(flags & 8), quality: Number(candidate[7] || 0) }; }) })); }
 
@@ -895,7 +902,7 @@ export class MobileSearchRuntime {
     const ranked = [...vectors.entries()].filter(([id]) => id !== file && (!allowed || allowed.has(id))).map(([id, entry]) => ({ id, label: basename(id), score: dot(center.vector, entry.vector) })).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(40, limit)));
     const residuals = ranked.map(node => ({ id: node.id, vector: residualVector(vectors.get(node.id).vector, center.vector) })), positions = semanticProjection(file, center.vector, residuals), edges = []; for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(vectors.get(ranked[first].id).vector, vectors.get(ranked[second].id).vector), residualScore: dot(residuals[first].vector, residuals[second].vector) }); return { center: file, nodes: ranked.map(node => ({ ...node, ...(positions.get(node.id) || {}) })), edges };
   }
-  async relatedPassages(file, files, maximum = 2) {
+  async relatedPassages(file, files, maximum = 2, options = {}) {
     this.ensureFileCaches(); const sourceAll = (this.passageIndicesByFile.get(file) || []).filter(index => this.vectors[index] && !this.meta[index]?.filenameOnly), sourceLimit = 24;
     if (!sourceAll.length) return new Map();
     const sourceIndices = sourceAll.length <= sourceLimit ? sourceAll : [...new Set(Array.from({ length: sourceLimit }, (_, index) => sourceAll[Math.round(index * (sourceAll.length - 1) / (sourceLimit - 1))]))], output = new Map(), wanted = Math.max(1, Math.min(3, Number(maximum) || 2)); let comparisons = 0;
@@ -904,12 +911,12 @@ export class MobileSearchRuntime {
       for (const targetIndex of this.passageIndicesByFile.get(targetFile) || []) {
         if (!this.vectors[targetIndex] || this.meta[targetIndex]?.filenameOnly) continue; let bestScore = -1, bestSource = null;
         for (const sourceIndex of sourceIndices) { const score = dot(this.vectors[sourceIndex], this.vectors[targetIndex]); if (score > bestScore) { bestScore = score; bestSource = this.meta[sourceIndex]; } }
-        ranked.push({ ...this.meta[targetIndex], passageIndex: targetIndex, score: bestScore, sourceHeading: bestSource?.heading || '' });
+        ranked.push({ ...this.meta[targetIndex], passageIndex: targetIndex, score: bestScore, sourceHeading: bestSource?.heading || '', highlightSource: bestSource });
         if (++comparisons % 48 === 0) await yieldToUi();
       }
       ranked.sort((first, second) => second.score - first.score); const selected = [];
       for (const passage of ranked) { if (selected.some(item => item.text === passage.text && item.heading === passage.heading)) continue; selected.push(passage); if (selected.length >= wanted) break; }
-      output.set(targetFile, selected);
+      output.set(targetFile, selected.map(passage => { const highlights = options.highlights && passage.highlightSource ? relatedHighlightPhrases(passage.highlightSource, passage, options.maxPhrases) : { body: [], heading: [] }, { highlightSource, ...result } = passage; return { ...result, semanticHighlights: highlights.body, headingHighlights: highlights.heading }; }));
       await yieldToUi();
     }
     return output;
