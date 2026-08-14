@@ -205,11 +205,12 @@ class DesktopEmbedder {
       worker.onmessage = event => this.receive(event.data);
       worker.onerror = event => this.fail(new Error(event.message || 'Background embedding worker failed'));
       worker.onmessageerror = () => this.fail(new Error('Background embedding worker sent an unreadable message'));
-      worker.postMessage({ type: 'init', mobile: this.plugin.isMobile, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP }); return true;
+      const indexing = this.plugin.search?.indexingConfig || {}; worker.postMessage({ type: 'init', mobile: this.plugin.isMobile, hardwareConcurrency: indexing.cores || Number(navigator?.hardwareConcurrency) || 1, wasmThreads: indexing.wasmThreads || 1, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP }); return true;
     } catch (error) { this.disabled = true; if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; this.plugin.logDiagnostic(`Background embedding worker unavailable: ${error?.message || error}`, true); return false; }
   }
   async receive(message) {
     if (message.type === 'cache') { await this.cache(message); return; }
+    if (message.type === 'runtime-profile') { this.plugin.search?.workerRuntimeProfile?.(message); return; }
     if (message.type === 'ready') { this.ready = true; this.plugin.search?.modelReady?.(); return; }
     if (message.type === 'relation-ready') { this.relationReady = true; this.plugin.search?.relationActivity?.('Relationship intelligence ready'); return; }
     if (message.type === 'topic-label-ready') { this.topicLabelReady = true; this.plugin.search?.topicLabelActivity?.('Topic labeler ready'); return; }

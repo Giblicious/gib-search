@@ -178,6 +178,13 @@ function yieldForIdle(timeout = 500) {
   if (typeof window !== 'undefined' && typeof document !== 'undefined' && !document.hidden && typeof window.requestIdleCallback === 'function') return new Promise(resolve => window.requestIdleCallback(() => resolve(), { timeout }));
   return yieldToUi();
 }
+export function indexingHardwareProfile(mobile = false, hardwareConcurrency = null, deviceMemory = null) {
+  const detectedCores = Number(hardwareConcurrency ?? (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 0)), cores = Math.max(1, Math.min(64, Number.isFinite(detectedCores) && detectedCores > 0 ? Math.floor(detectedCores) : mobile ? 2 : 8));
+  const detectedMemory = Number(deviceMemory ?? (typeof navigator !== 'undefined' ? navigator.deviceMemory : 0)), memoryGiB = Number.isFinite(detectedMemory) && detectedMemory > 0 ? detectedMemory : mobile ? 4 : 8;
+  if (mobile) return { cores, memoryGiB, wasmThreads: 1, maximumEmbedBatchSize: 1, maximumBatchCharacters: 2400, checkpointFiles: 6, checkpointMs: 30000, metadataYieldEvery: 1 };
+  const wasmThreads = Math.max(1, Math.min(12, Math.floor(cores * .625))), memoryBatchLimit = memoryGiB <= 4 ? 6 : memoryGiB <= 6 ? 10 : 16, maximumEmbedBatchSize = Math.max(2, Math.min(memoryBatchLimit, Math.round(wasmThreads * 1.5)));
+  return { cores, memoryGiB, wasmThreads, maximumEmbedBatchSize, maximumBatchCharacters: Math.max(9600, Math.min(32000, maximumEmbedBatchSize * 2200)), checkpointFiles: cores >= 12 ? 24 : 16, checkpointMs: 20000, metadataYieldEvery: 96 };
+}
 function sampleEvenly(items, maximum) { if (items.length <= maximum) return items; return Array.from({ length: maximum }, (_, index) => items[Math.round(index * (items.length - 1) / (maximum - 1))]); }
 function contentProfileSimilarity(first, second, coverageWeight = .72) { if (!first?.length || !second?.length) return -1; const directional = (source, target) => { let total = 0, weights = 0; for (const passage of source) { const best = Math.max(...target.map(other => dot(passage.vector, other.vector))); total += best * passage.weight; weights += passage.weight; } return total / Math.max(.001, weights); }, coverage = (directional(first, second) + directional(second, first)) / 2, strongest = []; for (const a of first) for (const b of second) strongest.push({ score: dot(a.vector, b.vector), weight: Math.sqrt(a.weight * b.weight) }); strongest.sort((a, b) => b.score * b.weight - a.score * a.weight); const selected = strongest.slice(0, 3), peak = selected.reduce((sum, item) => sum + item.score * item.weight, 0) / Math.max(.001, selected.reduce((sum, item) => sum + item.weight, 0)), blend = Math.max(0, Math.min(1, Number(coverageWeight))); return Math.max(-1, Math.min(1, coverage * blend + peak * (1 - blend))); }
 
@@ -314,7 +321,7 @@ export class MobileSearchRuntime {
     this.plugin = plugin; this.adapter = plugin.app.vault.adapter; this.isMobile = plugin.isMobile; this.meta = []; this.vectors = []; this.metaStorageBytes = 0; this.fileVectorCache = null; this.fileCentroidCache = null; this.fileEntityCache = null; this.passageIndicesByFile = null; this.highlightPhraseVectors = new Map(); this.highlightCacheLoaded = false; this.highlightCacheSave = Promise.resolve(); this.packedVectors = new Float32Array(); this.lexical = []; this.bm25 = new IncrementalBm25(); this.documentKeys = []; this.spellingVocabulary = new Map(); this.spellingByLength = new Map(); this.starfieldCache = null; this.starfieldCaches = new Map(); this.topicBasisCache = null; this.contentProfileCache = null; this.graphEvidenceCache = null; this.graphEvidencePromise = null; this.graphEvidencePromiseSignature = ''; this.graphEvidenceGeneration = 0; this.graphWarmPromise = null; this.graphWarmSignature = ''; this.relationshipForceCaches = new Map(); this.relationCache = new Map(); this.relationPipe = null; this.relationModelPromise = null; this.topicLabelPipe = null; this.topicLabelModelPromise = null; this.topicLabelCache = new Map(); this.topicLabelUnavailable = false; this.analysisCache = new Map(); this.analysisSave = Promise.resolve(); this.analysisRuns = new Map(); this.analysisMessage = ''; this.analysisStatus = { active: false, signal: '', done: 0, total: 0 };
     this.writingProfiles = new Map(); this.writingProfilesLoaded = false; this.writingProfileSave = Promise.resolve(); this.writingProfileSaveTimer = null; this.writingProfileRevision = 0; this.writingProfileSavedRevision = 0; this.writingProfileBucketRevisions = new Map(); this.writingProfileLastSavedAt = 0; this.writingProfileRenameGrace = new Set(); this.writingProfileListeners = new Set(); this.writingProfileQueue = []; this.writingProfileQueued = new Set(); this.writingProfileCurrentFile = ''; this.writingProfileTimer = null; this.writingProfileRun = null; this.writingProfileGeneration = 0; this.writingProfileStatus = { state: plugin.settings?.writingProfileIndexEnabled ? 'waiting' : 'disabled', done: 0, total: 0, currentFile: '', message: '' };
     this.pipe = null; this.modelPromise = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Semantic search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
-    this.listeners = new Set(); this.graphCacheListeners = new Set(); this.updateTimer = null; this.indexRun = null; this.indexAgain = false; this.indexForce = false; this.indexPendingPaths = new Set(); this.indexFullPending = false; this.dirtyPaths = new Set(); this.indexDirtyBuckets = new Set(); this.indexSaveTimer = null; this.indexSaveRun = null; this.indexDirty = false; this.indexGeneration = 0; this.indexRevision = 0; this.performanceStats = { lastScanMs: 0, lastCommitMs: 0, lastSaveMs: 0, lastSearchMs: 0, scannedFiles: 0, writtenFiles: 0 }; this.indexStable = false; this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt; this.lastUserActivityAt = 0; this.lastIndexProgressAt = 0; this.mobileEmbedQueue = Promise.resolve();
+    this.listeners = new Set(); this.graphCacheListeners = new Set(); this.updateTimer = null; this.indexRun = null; this.indexAgain = false; this.indexForce = false; this.indexPendingPaths = new Set(); this.indexFullPending = false; this.dirtyPaths = new Set(); this.indexDirtyBuckets = new Set(); this.indexSaveTimer = null; this.indexSaveRun = null; this.indexDirty = false; this.indexGeneration = 0; this.indexRevision = 0; this.performanceStats = { lastScanMs: 0, lastCommitMs: 0, lastSaveMs: 0, lastSearchMs: 0, scannedFiles: 0, writtenFiles: 0 }; this.indexStable = false; this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt; this.lastUserActivityAt = 0; this.lastIndexProgressAt = 0; this.mobileEmbedQueue = Promise.resolve(); this.indexingConfig = indexingHardwareProfile(this.isMobile); this.indexEmbedBatchSize = this.indexingConfig.maximumEmbedBatchSize; this.activeWasmThreads = 1;
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
     this.legacyIndexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
     this.indexKey = `${plugin.manifest.id}:${plugin.app.vault.adapter.getBasePath?.() || plugin.app.vault.getName()}:bge-small-en-v1.5`;
@@ -531,17 +538,20 @@ export class MobileSearchRuntime {
   indexingCancelled() { return this.cancelRequested || !this.enabled; }
   async indexingTurn() {
     if (typeof document === 'undefined') { await yieldToUi(); return; }
-    while (document.hidden && !this.indexingCancelled()) await sleep(500);
+    if (this.isMobile) while (document.hidden && !this.indexingCancelled()) await sleep(500);
     if (this.indexingCancelled()) return;
-    const quietWindow = this.isMobile ? 900 : 450;
-    const quietRemaining = quietWindow - (Date.now() - this.lastUserActivityAt);
-    if (quietRemaining > 0) await sleep(quietRemaining);
+    const quietWindow = this.isMobile ? 900 : 140, quietRemaining = quietWindow - (Date.now() - this.lastUserActivityAt);
+    if (quietRemaining > 0) await sleep(this.isMobile ? quietRemaining : Math.min(32, quietRemaining));
     while ((this.liveRunning || this.livePending) && !this.indexingCancelled()) await sleep(this.isMobile ? 80 : 40);
     if (this.indexingCancelled()) return;
-    await yieldForIdle(this.isMobile ? 900 : 500);
     const scheduling = typeof navigator !== 'undefined' ? navigator.scheduling : null;
-    if (scheduling?.isInputPending?.({ includeContinuous: true })) await sleep(this.isMobile ? 120 : 60);
-    await sleep(this.isMobile ? 32 : 12);
+    if (this.isMobile) {
+      await yieldForIdle(900);
+      if (scheduling?.isInputPending?.({ includeContinuous: true })) await sleep(120);
+      await sleep(32); return;
+    }
+    if (scheduling?.isInputPending?.({ includeContinuous: true })) await sleep(24);
+    if (!document.hidden) await yieldToUi(); else await sleep(0);
   }
   setIndexProgress(message) {
     const now = Date.now(), interval = this.isMobile ? 650 : 350;
@@ -550,13 +560,28 @@ export class MobileSearchRuntime {
   }
   async embedIndexChunks(texts) {
     const results = [];
-    for (const text of texts) {
+    for (let offset = 0; offset < texts.length;) {
       if (this.indexingCancelled()) return null;
-      try { results.push(...await this.embedBatch([text], false, 1, true)); }
+      let count = Math.min(texts.length - offset, this.isMobile ? 1 : Math.max(2, Math.min(this.indexingConfig.maximumEmbedBatchSize, this.indexEmbedBatchSize))), characters = 0;
+      while (count > 1) { characters = texts.slice(offset, offset + count).reduce((sum, text) => sum + String(text || '').length, 0); if (characters <= this.indexingConfig.maximumBatchCharacters) break; count--; }
+      const batch = texts.slice(offset, offset + count), startedAt = Date.now();
+      try {
+        const embedded = await this.embedBatch(batch, false, batch.length, true); if (embedded.length !== batch.length) throw new Error(`Index embedding returned ${embedded.length} of ${batch.length} vectors`); results.push(...embedded);
+      }
       catch (error) { if (error?.name !== 'BackgroundWorkerUnavailableError') throw error; this.mobileIndexBlocked = true; this.plugin.logDiagnostic('Mobile indexing paused because background inference is unavailable', true); return null; }
+      if (!this.isMobile) {
+        const elapsed = Date.now() - startedAt, target = typeof document !== 'undefined' && document.hidden ? 650 : Date.now() - this.lastUserActivityAt < 500 ? 220 : 400;
+        if (elapsed > target * 1.5 && this.indexEmbedBatchSize > 2) this.indexEmbedBatchSize = Math.max(2, Math.floor(this.indexEmbedBatchSize * .7));
+        else if (elapsed < target * .7 && this.indexEmbedBatchSize < this.indexingConfig.maximumEmbedBatchSize) this.indexEmbedBatchSize++;
+      }
+      offset += batch.length;
       await this.indexingTurn();
     }
     return results;
+  }
+  workerRuntimeProfile(profile = {}) {
+    const threads = Math.max(1, Number(profile.wasmThreads) || 1); this.activeWasmThreads = threads;
+    this.plugin.logDiagnostic(`Desktop inference profile: ${this.indexingConfig.cores} logical cores, ${threads} WASM ${threads === 1 ? 'thread' : 'threads'}, up to ${this.indexingConfig.maximumEmbedBatchSize} passages per adaptive batch`);
   }
   modelActivity(message = '') { this.modelMessage = message; this.plugin.recordActivity?.('Model', message, 'working'); if (this.indexRun || this.phase === 'indexing' || this.startPromise && this.phase !== 'ready') this.setState('loading_model', message); else { this.lastEvent = message; this.changed(); } }
   modelReady() { this.modelMessage = 'Semantic model ready'; this.plugin.recordActivity?.('Model', this.modelMessage, 'success'); if (this.phase === 'loading_model' && !this.indexRun && this.totalFiles > 0 && this.processedFiles >= this.totalFiles) this.setState('ready', `Ready (${new Set(this.meta.map(item => item.file)).size} files, ${this.meta.length} passages)`); else this.changed(); }
@@ -732,14 +757,15 @@ export class MobileSearchRuntime {
   }
   async packVectors(vectors) {
     const packed = new Float32Array(vectors.length * DIMENSION);
-    for (let index = 0; index < vectors.length; index++) { packed.set(vectors[index], index * DIMENSION); if (index % 128 === 127) await yieldForIdle(); }
+    const stride = this.isMobile ? 128 : 2048;
+    for (let index = 0; index < vectors.length; index++) { packed.set(vectors[index], index * DIMENSION); if (index % stride === stride - 1) await (this.isMobile ? yieldForIdle(900) : yieldToUi()); }
     return packed;
   }
   async saveIndex() {
     if (this.indexSaveRun) return this.indexSaveRun;
     clearTimeout(this.indexSaveTimer); this.indexSaveTimer = null; this.indexDirty = true;
     const revision = this.indexRevision, meta = this.meta, vectors = this.vectors.slice(), dirtyBuckets = new Set(this.indexDirtyBuckets), lastSuccessfulIndexAt = this.lastSuccessfulIndexAt, startedAt = Date.now();
-    const run = (async () => { const packed = this.isMobile ? null : await this.packVectors(vectors); await yieldForIdle(); await this.databasePut({ meta, ...(this.isMobile ? { vectorList: vectors } : { vectors: packed.buffer }), lastSuccessfulIndexAt }); if (revision === this.indexRevision && meta === this.meta) { if (packed) this.packedVectors = packed; this.indexDirty = false; for (const bucket of dirtyBuckets) this.indexDirtyBuckets.delete(bucket); } this.performanceStats.lastSaveMs = Date.now() - startedAt; })(); this.indexSaveRun = run;
+    const run = (async () => { const packed = this.isMobile ? null : await this.packVectors(vectors); await (this.isMobile ? yieldForIdle(900) : yieldToUi()); await this.databasePut({ meta, ...(this.isMobile ? { vectorList: vectors } : { vectors: packed.buffer }), lastSuccessfulIndexAt }); if (revision === this.indexRevision && meta === this.meta) { if (packed) this.packedVectors = packed; this.indexDirty = false; for (const bucket of dirtyBuckets) this.indexDirtyBuckets.delete(bucket); } this.performanceStats.lastSaveMs = Date.now() - startedAt; })(); this.indexSaveRun = run;
     try { return await run; } finally { if (this.indexSaveRun === run) this.indexSaveRun = null; if (this.indexDirty && this.enabled) this.queueIndexSave(); }
   }
   queueIndexSave(delay = this.isMobile ? 45000 : 12000) { this.indexDirty = true; clearTimeout(this.indexSaveTimer); this.indexSaveTimer = setTimeout(() => { this.indexSaveTimer = null; this.saveIndex().catch(error => this.plugin.logDiagnostic(`Index save failed: ${error?.message || error}`, true)); }, Math.max(500, delay)); }
@@ -770,54 +796,103 @@ export class MobileSearchRuntime {
     if (unique.length) this.queueHighlightPhraseCacheSave();
     return groups.map(candidates => candidates.map(candidate => resolved.get(candidate.phrase.trim().toLowerCase())));
   }
+  replaceIndexedFile(file, newMeta, newVectors) {
+    this.replaceIndexedFiles(new Map([[file, { meta: newMeta, vectors: newVectors }]]));
+  }
+  replaceIndexedFiles(replacements) {
+    const changed = new Set(replacements?.keys?.() || []); if (!changed.size) return;
+    const startedAt = Date.now(), meta = [], vectors = [];
+    for (let index = 0; index < this.meta.length; index++) if (!changed.has(this.meta[index].file)) { meta.push(this.meta[index]); vectors.push(this.vectors[index]); }
+    for (const replacement of replacements.values()) { meta.push(...replacement.meta); vectors.push(...replacement.vectors); }
+    this.commitIndex(meta, vectors, changed); this.performanceStats.lastCommitMs += Date.now() - startedAt;
+  }
+  removeIndexedFiles(files) {
+    const removed = new Set(files || []); if (!removed.size) return;
+    const startedAt = Date.now(), meta = [], vectors = [];
+    for (let index = 0; index < this.meta.length; index++) if (!removed.has(this.meta[index].file)) { meta.push(this.meta[index]); vectors.push(this.vectors[index]); }
+    this.commitIndex(meta, vectors, removed); this.performanceStats.lastCommitMs += Date.now() - startedAt;
+  }
+  async materializeIndexEntry(entry, force = false) {
+    if (entry.filenameOnly) return { ...entry, startedAt: Date.now() };
+    const startedAt = Date.now(), file = entry.file, content = await this.plugin.app.vault.read(file), chunks = chunkMarkdown(content, this.isMobile ? 1000 : 2400), semanticMetadata = this.semanticMetadata(file), representationHash = contentFingerprint(`${PASSAGE_INDEX_VERSION}\0${semanticMetadata}\0${chunks.map(chunk => embeddingText(file.path, chunk, semanticMetadata)).join('\0')}`), previousFingerprint = entry.previous?.find(item => item.contentHash)?.contentHash;
+    if (!force && entry.currentKind && entry.currentPassages && entry.currentHighlights && entry.currentGraphMetadata && entry.previous && previousFingerprint === representationHash) return { ...entry, unchanged: true, semanticMetadata, startedAt };
+    return { ...entry, content, chunks, semanticMetadata, representationHash, startedAt };
+  }
+  async commitMaterializedIndexEntries(entries) {
+    const passageTexts = entries.flatMap(entry => entry.filenameOnly ? [] : entry.chunks.map(chunk => embeddingText(entry.file.path, chunk, entry.semanticMetadata))), embedded = await this.embedIndexChunks(passageTexts);
+    if (!embedded) return false;
+    let vectorOffset = 0; const replacements = new Map();
+    for (const entry of entries) {
+      const file = entry.file, newMeta = [], newVectors = [];
+      if (entry.filenameOnly) {
+        const emptyChunk = { heading: '', text: '', lineStart: 0, lineEnd: 0 }; newMeta.push({ file: file.path, filenameOnly: true, ...emptyChunk, mtime: file.stat.mtime, contentHash: entry.representationHash, passageVersion: PASSAGE_INDEX_VERSION, semanticMetadata: '', highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: buildHighlightCandidates(file.path, emptyChunk), graphVersion: GRAPH_METADATA_VERSION, entities: [] }); newVectors.push(new Float32Array(DIMENSION)); this.plugin.logDiagnostic(`Indexed filename ${file.path} without reading file contents in ${Date.now() - entry.startedAt} ms`);
+      } else {
+        let highlightCount = 0; for (let index = 0; index < entry.chunks.length; index++) { if (this.indexingCancelled()) return false; const chunk = entry.chunks[index], highlightCandidates = buildHighlightCandidates(file.path, chunk); highlightCount += highlightCandidates.length; newMeta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: entry.representationHash, passageVersion: PASSAGE_INDEX_VERSION, semanticMetadata: entry.semanticMetadata, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates, graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ''} ${chunk.text}`) }); newVectors.push(embedded[vectorOffset++]); if (this.isMobile || index % this.indexingConfig.metadataYieldEvery === this.indexingConfig.metadataYieldEvery - 1) await this.indexingTurn(); }
+        if (!entry.chunks.length) { const emptyChunk = { heading: '', text: '', lineStart: 0, lineEnd: 0 }; newMeta.push({ file: file.path, ...emptyChunk, mtime: file.stat.mtime, contentHash: entry.representationHash, passageVersion: PASSAGE_INDEX_VERSION, semanticMetadata: entry.semanticMetadata, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: buildHighlightCandidates(file.path, emptyChunk), graphVersion: GRAPH_METADATA_VERSION, entities: [] }); newVectors.push(new Float32Array(DIMENSION)); }
+        this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(entry.content).length} bytes, ${entry.chunks.length} chunks, ${highlightCount} highlight candidates in ${Date.now() - entry.startedAt} ms${entries.length > 1 ? ' using a shared desktop batch' : ''}`);
+      }
+      replacements.set(file.path, { meta: newMeta, vectors: newVectors });
+    }
+    if (vectorOffset !== embedded.length) throw new Error(`Index batch consumed ${vectorOffset} of ${embedded.length} vectors`);
+    this.replaceIndexedFiles(replacements); this.queueIndexSave(); this.performanceStats.writtenFiles += replacements.size;
+    return true;
+  }
   async performDirtyIndexUpdate(force = false, requestedPaths = null) {
     const scanStartedAt = Date.now(), full = requestedPaths === null, allFiles = full ? this.files() : null;
     const available = full ? new Map(allFiles.map(file => [file.path, file])) : new Map([...requestedPaths].map(path => [path, this.plugin.app.vault.getAbstractFileByPath?.(path)]));
     const files = [...available.values()].filter(file => file?.path && file.stat); this.vaultFiles = full ? files.length : this.vaultFiles || new Set(this.meta.map(item => item.file)).size; this.totalFiles = full ? files.length : Math.max(1, files.length); this.processedFiles = 0; this.currentFile = ''; this.indexStable = false; this.setState('indexing', full ? 'Checking the semantic index…' : `Updating ${Math.max(1, available.size)} changed ${available.size === 1 ? 'file' : 'files'}…`);
     const indexed = new Map(); for (const item of this.meta) { const group = indexed.get(item.file) || []; group.push(item); indexed.set(item.file, group); }
     const prepared = [], failedFiles = [], metadataTouched = new Set(), deleted = full ? new Set([...indexed.keys()].filter(path => !available.has(path))) : new Set([...requestedPaths].filter(path => !available.get(path)?.stat));
-    for (const file of files) {
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+      const file = files[fileIndex];
       const filenameOnly = !isContentIndexable(file), previous = indexed.get(file.path), currentKind = previous?.every(item => Boolean(item.filenameOnly) === filenameOnly), currentPassages = previous?.every(item => item.passageVersion === PASSAGE_INDEX_VERSION), currentHighlights = previous?.every(item => item.highlightVersion === HIGHLIGHT_INDEX_VERSION && Array.isArray(item.highlightCandidates)), currentGraphMetadata = previous?.every(item => item.graphVersion === GRAPH_METADATA_VERSION && Array.isArray(item.entities));
       if (!force && currentKind && currentPassages && currentHighlights && currentGraphMetadata && previous?.every(item => item.contentHash) && previous.every(item => item.mtime === file.stat.mtime)) { this.processedFiles++; continue; }
       if (filenameOnly) {
         const representationHash = contentFingerprint(`filename-only-v2\0${file.path}`);
         if (!force && currentKind && currentPassages && previous?.[0]?.contentHash === representationHash) { previous.forEach(item => { item.mtime = file.stat.mtime; }); metadataTouched.add(file.path); }
-        else prepared.push({ file, filenameOnly, representationHash, semanticMetadata: '' });
-        await this.indexingTurn(); continue;
-      }
-      try {
-        const content = await this.plugin.app.vault.read(file), chunks = chunkMarkdown(content, this.isMobile ? 1000 : 2400), semanticMetadata = this.semanticMetadata(file), representationHash = contentFingerprint(`${PASSAGE_INDEX_VERSION}\0${semanticMetadata}\0${chunks.map(chunk => embeddingText(file.path, chunk, semanticMetadata)).join('\0')}`), previousFingerprint = previous?.find(item => item.contentHash)?.contentHash;
-        if (!force && currentKind && currentPassages && currentHighlights && currentGraphMetadata && previous && previousFingerprint === representationHash) { previous.forEach(item => { item.mtime = file.stat.mtime; item.semanticMetadata = semanticMetadata; }); metadataTouched.add(file.path); }
-        else prepared.push({ file, filenameOnly, content, chunks, semanticMetadata, representationHash });
-      } catch (error) { failedFiles.push({ file: file.path, message: error?.message || String(error) }); this.plugin.logDiagnostic(`Could not read ${file.path}: ${error?.message || error}`, true); }
-      this.processedFiles++; await this.indexingTurn();
+        else prepared.push({ file, filenameOnly, representationHash, semanticMetadata: '', previous, currentKind, currentPassages, currentHighlights, currentGraphMetadata });
+      } else prepared.push({ file, filenameOnly, previous, currentKind, currentPassages, currentHighlights, currentGraphMetadata });
+      this.processedFiles++;
+      if (this.isMobile || fileIndex % 64 === 63) await this.indexingTurn();
     }
     this.performanceStats.lastScanMs = Date.now() - scanStartedAt; this.performanceStats.scannedFiles = files.length; this.staleFiles = prepared.length + failedFiles.length; this.plugin.logDiagnostic(`${full ? 'Vault scan' : 'Dirty-file scan'} complete: ${files.length} checked; ${prepared.length} need indexing`);
-    if (!prepared.length && !deleted.size) {
-      this.staleFiles = failedFiles.length; if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now(); if (metadataTouched.size) { for (const file of metadataTouched) this.indexDirtyBuckets.add(indexBucket(file)); this.queueIndexSave(); } this.indexStable = !failedFiles.length; this.currentFile = ''; this.setState('ready', failedFiles.length ? `Search ready; ${failedFiles.length} file pending retry` : `Ready (${this.vaultFiles} files, ${this.meta.length} records)`); if (failedFiles.length) { this.scheduleIndexRetry(failedFiles.map(item => item.file)); this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? 'file' : 'files'} after a temporary failure`); } this.scheduleWritingProfileSync(); return;
+    this.performanceStats.lastCommitMs = 0; this.performanceStats.writtenFiles = 0;
+    if (deleted.size) { this.removeIndexedFiles(deleted); this.queueIndexSave(); }
+    if (metadataTouched.size) { for (const file of metadataTouched) this.indexDirtyBuckets.add(indexBucket(file)); this.queueIndexSave(); }
+    if (!prepared.length) {
+      this.staleFiles = failedFiles.length; if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now(); this.indexStable = !failedFiles.length; this.currentFile = ''; this.setState('ready', failedFiles.length ? `Search ready; ${failedFiles.length} file pending retry` : `Ready (${this.vaultFiles} files, ${this.meta.length} records)`); if (failedFiles.length) { this.scheduleIndexRetry(failedFiles.map(item => item.file)); this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? 'file' : 'files'} after a temporary failure`); } this.scheduleWritingProfileSync(); return;
     }
-    const replacements = new Map(), successfullyChanged = new Set();
-    for (let fileIndex = 0; fileIndex < prepared.length; fileIndex++) {
-      if (this.cancelRequested || !this.enabled) return; const entry = prepared[fileIndex], file = entry.file, fileStartedAt = Date.now(); this.currentFile = file.path; this.setIndexProgress(`Indexing ${fileIndex + 1} of ${prepared.length}: ${file.path}`);
-      try {
-        const newMeta = [], newVectors = [];
-        if (entry.filenameOnly) {
-          const emptyChunk = { heading: '', text: '', lineStart: 0, lineEnd: 0 }; newMeta.push({ file: file.path, filenameOnly: true, ...emptyChunk, mtime: file.stat.mtime, contentHash: entry.representationHash, passageVersion: PASSAGE_INDEX_VERSION, semanticMetadata: '', highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: buildHighlightCandidates(file.path, emptyChunk), graphVersion: GRAPH_METADATA_VERSION, entities: [] }); newVectors.push(new Float32Array(DIMENSION)); this.plugin.logDiagnostic(`Indexed filename ${file.path} without reading file contents in ${Date.now() - fileStartedAt} ms`);
-        } else {
-          const embedded = await this.embedIndexChunks(entry.chunks.map(chunk => embeddingText(file.path, chunk, entry.semanticMetadata))); if (!embedded) { if (this.mobileIndexBlocked) { this.staleFiles = Math.max(1, prepared.length - fileIndex); this.currentFile = ''; this.indexStable = false; this.setState(this.vectors.length ? 'ready' : 'error', this.vectors.length ? 'Search ready; mobile indexing paused because background inference is unavailable' : 'Mobile indexing requires background-worker support on this device'); } return; }
-          let highlightCount = 0; for (let index = 0; index < entry.chunks.length; index++) { if (this.indexingCancelled()) return; const chunk = entry.chunks[index], highlightCandidates = buildHighlightCandidates(file.path, chunk); highlightCount += highlightCandidates.length; newMeta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: entry.representationHash, passageVersion: PASSAGE_INDEX_VERSION, semanticMetadata: entry.semanticMetadata, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates, graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ''} ${chunk.text}`) }); newVectors.push(embedded[index]); await this.indexingTurn(); }
-          this.plugin.logDiagnostic(`Indexed ${file.path}: ${new TextEncoder().encode(entry.content).length} bytes, ${entry.chunks.length} chunks, ${highlightCount} highlight candidates in ${Date.now() - fileStartedAt} ms`);
+    this.totalFiles = Math.max(1, prepared.length); this.processedFiles = 0; let filesSinceCheckpoint = 0, checkpointAt = Date.now(), cursor = 0;
+    if (!this.isMobile) this.plugin.logDiagnostic(`Desktop indexing will use adaptive batches of up to ${this.indexingConfig.maximumEmbedBatchSize} passages and checkpoint every ${this.indexingConfig.checkpointFiles} files`);
+    while (cursor < prepared.length) {
+      if (this.cancelRequested || !this.enabled) return;
+      const groupSize = this.isMobile ? 1 : Math.min(prepared.length - cursor, Math.max(4, Math.min(10, this.indexingConfig.maximumEmbedBatchSize))), group = prepared.slice(cursor, cursor + groupSize), materialized = [];
+      for (let groupIndex = 0; groupIndex < group.length; groupIndex++) {
+        const entry = group[groupIndex], position = cursor + groupIndex; this.currentFile = entry.file.path; this.setIndexProgress(`Preparing ${position + 1} of ${prepared.length}: ${entry.file.path}`);
+        try {
+          const ready = await this.materializeIndexEntry(entry, force);
+          if (ready.unchanged) { entry.previous.forEach(item => { item.mtime = entry.file.stat.mtime; item.semanticMetadata = ready.semanticMetadata; }); metadataTouched.add(entry.file.path); this.indexDirtyBuckets.add(indexBucket(entry.file.path)); this.queueIndexSave(); }
+          else materialized.push(ready);
+        } catch (error) { failedFiles.push({ file: entry.file.path, message: error?.message || String(error) }); this.plugin.logDiagnostic(`Could not read ${entry.file.path}: ${error?.message || error}`, true); }
+        if (this.isMobile) await this.indexingTurn();
+      }
+      if (materialized.length) {
+        this.currentFile = materialized.length === 1 ? materialized[0].file.path : `${materialized[0].file.path} (+${materialized.length - 1} files)`; this.setIndexProgress(`Indexing ${cursor + 1}–${Math.min(prepared.length, cursor + group.length)} of ${prepared.length}`);
+        try {
+          const committed = await this.commitMaterializedIndexEntries(materialized); if (!committed) { if (this.mobileIndexBlocked) { this.staleFiles = Math.max(1, prepared.length - cursor); this.currentFile = ''; this.indexStable = false; this.setState(this.vectors.length ? 'ready' : 'error', this.vectors.length ? 'Search ready; mobile indexing paused because background inference is unavailable' : 'Mobile indexing requires background-worker support on this device'); } return; }
+          filesSinceCheckpoint += materialized.length;
+        } catch (error) {
+          if (materialized.length === 1) { failedFiles.push({ file: materialized[0].file.path, message: error?.message || String(error) }); this.plugin.logDiagnostic(`Could not index ${materialized[0].file.path}: ${error?.message || error}`, true); }
+          else for (const entry of materialized) try { if (await this.commitMaterializedIndexEntries([entry])) filesSinceCheckpoint++; } catch (itemError) { failedFiles.push({ file: entry.file.path, message: itemError?.message || String(itemError) }); this.plugin.logDiagnostic(`Could not index ${entry.file.path}: ${itemError?.message || itemError}`, true); }
         }
-        replacements.set(file.path, { meta: newMeta, vectors: newVectors }); successfullyChanged.add(file.path);
-      } catch (error) { failedFiles.push({ file: file.path, message: error?.message || String(error) }); this.plugin.logDiagnostic(`Could not index ${file.path}: ${error?.message || error}`, true); }
+      }
+      cursor += group.length; this.processedFiles = cursor; this.staleFiles = Math.max(failedFiles.length, prepared.length - cursor + failedFiles.length);
+      if (filesSinceCheckpoint >= this.indexingConfig.checkpointFiles || Date.now() - checkpointAt >= this.indexingConfig.checkpointMs) { await this.saveIndex(); this.plugin.logDiagnostic(`Saved resumable index checkpoint after ${this.processedFiles} of ${prepared.length} files`); filesSinceCheckpoint = 0; checkpointAt = Date.now(); }
       await this.indexingTurn();
     }
     if (this.cancelRequested || !this.enabled) return;
-    const commitStartedAt = Date.now(), meta = [], vectors = [];
-    for (let index = 0; index < this.meta.length; index++) if (!deleted.has(this.meta[index].file) && !replacements.has(this.meta[index].file)) { meta.push(this.meta[index]); vectors.push(this.vectors[index]); }
-    for (const replacement of replacements.values()) { meta.push(...replacement.meta); vectors.push(...replacement.vectors); }
-    this.commitIndex(meta, vectors, new Set([...deleted, ...successfullyChanged, ...metadataTouched])); this.performanceStats.lastCommitMs = Date.now() - commitStartedAt; this.performanceStats.writtenFiles = replacements.size; if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now(); this.staleFiles = failedFiles.length; this.currentFile = ''; this.processedFiles = files.length - failedFiles.length; this.indexStable = !failedFiles.length;
-    if (force || full && !this.packedVectors.length) await this.saveIndex(); else this.queueIndexSave();
+    if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now(); this.staleFiles = failedFiles.length; this.currentFile = ''; this.processedFiles = prepared.length - failedFiles.length; this.indexStable = !failedFiles.length;
+    if (force || full || this.performanceStats.writtenFiles >= this.indexingConfig.checkpointFiles) await this.saveIndex(); else if (this.indexDirty) this.queueIndexSave();
     if (failedFiles.length) { this.setState('ready', `Search ready; ${failedFiles.length} ${failedFiles.length === 1 ? 'file' : 'files'} pending retry`); this.scheduleIndexRetry(failedFiles.map(item => item.file)); this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? 'file' : 'files'} after a temporary failure`); }
     else this.setState('ready', `Ready (${this.vaultFiles} files, ${this.meta.length} records)`); this.scheduleWritingProfileSync();
   }

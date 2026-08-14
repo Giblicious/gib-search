@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.19
+
+- Makes desktop semantic indexing hardware-aware, using additional WASM threads when Electron permits them while reserving CPU capacity for Obsidian.
+- Batches passages across notes with adaptive latency and memory limits instead of paying one worker round trip and two idle waits for every passage.
+- Keeps desktop indexing productive while Obsidian is hidden, shortens activity backoff, and preserves interactive search priority between bounded inference batches.
+- Reads rebuild candidates in small groups, commits each completed file immediately, and writes periodic resumable checkpoints so a restart loses little completed work.
+- Keeps mobile on its strict one-passage, single-threaded profile and adds regression coverage for hardware scaling, bounded batching, interruption recovery, and empty-note stability.
+
 ## 0.54.18
 
 - Replaces vault-wide rescans after every edit with a coalesced dirty-file queue that reads, embeds, and retries only changed notes while preserving the last searchable copy on failure.

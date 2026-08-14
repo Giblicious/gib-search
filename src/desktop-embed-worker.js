@@ -52,7 +52,8 @@ async function initializeModel() {
   modelPromise = (async () => {
     const mobile = Boolean(configuration.mobile); env.allowRemoteModels = true; env.allowLocalModels = false; env.useCustomCache = !mobile; env.customCache = mobile ? null : modelCache; env.useBrowserCache = mobile; env.useFSCache = false;
     if (env.backends?.onnx?.wasm) {
-      env.backends.onnx.wasm.numThreads = 1; env.backends.onnx.wasm.proxy = false;
+      const threaded = !mobile && self.crossOriginIsolated === true, requestedThreads = Math.max(1, Math.min(12, Number(configuration?.wasmThreads) || 1)), wasmThreads = threaded ? requestedThreads : 1;
+      env.backends.onnx.wasm.numThreads = wasmThreads; env.backends.onnx.wasm.proxy = false; self.postMessage({ type: 'runtime-profile', wasmThreads, threaded, hardwareConcurrency: Number(configuration?.hardwareConcurrency) || 1 });
       const moduleSource = await gunzipBase64(configuration.wasmModuleGzip, true);
       env.backends.onnx.wasm.wasmPaths = { mjs: URL.createObjectURL(new Blob([moduleSource], { type: 'text/javascript' })) };
       env.backends.onnx.wasm.wasmBinary = await gunzipBase64(configuration.wasmGzip);
