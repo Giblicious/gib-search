@@ -31,6 +31,13 @@ function normalizeQuickFilter(filter = {}, index = 0) {
 
 function normalizeQuickFilters(filters) { return (Array.isArray(filters) ? filters : []).map(normalizeQuickFilter).slice(0, 24); }
 function visibleQuickFilters(filters, surface) { return normalizeQuickFilters(filters).filter(filter => filter.enabled && (filter.surfaces === 'both' || filter.surfaces === surface)); }
+function updateQuickFilterSelection(activeIds, id, additive = false) {
+  if (!(activeIds instanceof Set)) return activeIds;
+  if (additive) activeIds.has(id) ? activeIds.delete(id) : activeIds.add(id);
+  else if (activeIds.size === 1 && activeIds.has(id)) activeIds.clear();
+  else { activeIds.clear(); activeIds.add(id); }
+  return activeIds;
+}
 
 function inFolder(path, folder) { return path === folder || path.startsWith(`${folder}/`); }
 function fileKind(extension) {
@@ -71,4 +78,4 @@ function resolveQuickFilterPaths(files, cacheFor, filters, activeIds, now = Date
   return (files || []).filter(file => { let cache = null, loaded = false; return active.some(filter => { const needsMetadata = filter.tags.length || filter.properties.length; if (needsMetadata && !loaded) { cache = cacheFor(file); loaded = true; } return quickFilterMatches(file, needsMetadata ? cache : null, filter, now); }); }).map(file => file.path);
 }
 
-export { fileKind, filterId, normalizePropertyRule, normalizeQuickFilter, normalizeQuickFilters, quickFilterMatches, resolveQuickFilterPaths, visibleQuickFilters };
+export { fileKind, filterId, normalizePropertyRule, normalizeQuickFilter, normalizeQuickFilters, quickFilterMatches, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters };

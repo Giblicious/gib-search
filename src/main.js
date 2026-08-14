@@ -5,7 +5,7 @@ const { TEXT_SIGNALS } = require('./text-signals');
 const { buildSemanticTerrain, normalizeLandscape } = require('./terrain-engine');
 const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bundles');
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
-const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, visibleQuickFilters } = require('./quick-filters');
+const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -47,10 +47,10 @@ function renderQuickFilterBar(parent, plugin, surface, activeIds, onChange) {
   all.addEventListener('click', () => { if (!activeIds.size) return; activeIds.clear(); render(); onChange(); });
   const buttons = [];
   for (const filter of filters) {
-    const button = bar.createEl('button', { cls: 'gib-quick-filter', attr: { type: 'button', 'aria-pressed': String(activeIds.has(filter.id)), title: filter.name } });
+    const button = bar.createEl('button', { cls: 'gib-quick-filter', attr: { type: 'button', 'aria-pressed': String(activeIds.has(filter.id)), title: `${filter.name} · Shift-click to combine` } });
     if (filter.icon) { const icon = button.createSpan({ cls: 'gib-quick-filter-icon' }); if (getIcon(filter.icon)) setIcon(icon, filter.icon); else icon.setText(filter.icon); }
     button.createSpan({ text: filter.name }); if (filter.color && globalThis.CSS?.supports?.('color', filter.color)) button.style.setProperty('--gib-filter-color', filter.color);
-    button.addEventListener('click', () => { activeIds.has(filter.id) ? activeIds.delete(filter.id) : activeIds.add(filter.id); render(); onChange(); }); buttons.push([filter, button]);
+    button.addEventListener('click', event => { updateQuickFilterSelection(activeIds, filter.id, event.shiftKey); render(); onChange(); }); buttons.push([filter, button]);
   }
   function render() { all.toggleClass('is-active', activeIds.size === 0); all.setAttribute('aria-pressed', String(activeIds.size === 0)); for (const [filter, button] of buttons) { button.toggleClass('is-active', activeIds.has(filter.id)); button.setAttribute('aria-pressed', String(activeIds.has(filter.id))); } }
   return bar;
@@ -1093,7 +1093,7 @@ class SimilarNotesView extends ItemView {
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refreshForActiveNote()));
     this.indexOff = this.plugin.indexer.onChange(() => this.refreshForIndexChange()); this.refresh();
   }
-  activeNote() { const file = this.app.workspace.getActiveFile(); return file instanceof TFile && file.extension.toLowerCase() === 'md' ? file : null; }
+  activeNote() { const file = this.app.workspace.getActiveFile(); if (file instanceof TFile && file.extension.toLowerCase() === 'md') return file; const previous = this.filePath ? this.app.vault.getAbstractFileByPath(this.filePath) : null; return previous instanceof TFile && previous.extension.toLowerCase() === 'md' ? previous : null; }
   refreshForActiveNote() { const active = this.activeNote(); if (!active || active.path === this.filePath) return; this.scheduleRefresh(false); }
   refreshForIndexChange() { const meta = this.plugin.search.meta, vectors = this.plugin.search.vectors; if (meta === this.indexMeta && vectors === this.indexVectors) return; this.indexMeta = meta; this.indexVectors = vectors; this.scheduleRefresh(true); }
   scheduleRefresh(preserveScroll = false) { this.pendingPreserveScroll = this.refreshTimer ? this.pendingPreserveScroll && preserveScroll : preserveScroll; window.clearTimeout(this.refreshTimer); this.refreshTimer = window.setTimeout(() => { this.refreshTimer = null; const preserve = this.pendingPreserveScroll; this.pendingPreserveScroll = true; this.refresh(preserve); }, 180); }
@@ -1167,7 +1167,7 @@ class SearchSettings extends PluginSettingTab {
     new Setting(this.pageEl).setName('Quick filters').setHeading();
     new Setting(this.pageEl).setName('Show custom quick-filter buttons').setDesc('Apply reusable metadata scopes before ranking in Search and Similar Notes. Disabled by default.').addToggle(toggle => toggle.setValue(this.plugin.settings.quickFiltersEnabled).onChange(async value => { this.plugin.settings.quickFiltersEnabled = value; this.plugin.clearQuickFilterCache(); await this.plugin.save(); this.display(); for (const leaf of this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)) leaf.view?.refresh?.(); }));
     if (this.plugin.settings.quickFiltersEnabled) {
-      new Setting(this.pageEl).setName('Custom filters').setDesc('Active buttons combine as OR; conditions inside each filter combine as AND.').addButton(button => button.setButtonText('Add filter').setCta().onClick(() => this.openQuickFilterEditor()));
+      new Setting(this.pageEl).setName('Custom filters').setDesc('Click to select one filter. Shift-click adds or removes filters as OR; conditions inside each filter combine as AND.').addButton(button => button.setButtonText('Add filter').setCta().onClick(() => this.openQuickFilterEditor()));
       if (!this.plugin.settings.quickFilters.length) this.pageEl.createDiv({ cls: 'gib-settings-empty', text: 'No quick filters yet.' });
       else { const list = this.pageEl.createDiv({ cls: 'gib-settings-view-list' }); for (const filter of this.plugin.settings.quickFilters) { const row = list.createDiv({ cls: 'gib-settings-view-row' }), copy = row.createDiv({ cls: 'gib-settings-view-copy' }); copy.createDiv({ cls: 'gib-settings-view-name', text: filter.name }); copy.createDiv({ cls: 'gib-settings-view-meta', text: `${filter.enabled === false ? 'Disabled · ' : ''}${filter.surfaces === 'both' ? 'Search + Similar Notes' : filter.surfaces === 'search' ? 'Search' : 'Similar Notes'}${filter.defaultActive ? ' · default' : ''}` }); const enabled = new ToggleComponent(row); enabled.setValue(filter.enabled !== false).setTooltip(`${filter.enabled === false ? 'Enable' : 'Disable'} ${filter.name}`).onChange(async value => { filter.enabled = value; await this.saveQuickFilters(); this.display(); }); const edit = row.createEl('button', { attr: { type: 'button', 'aria-label': `Edit ${filter.name}`, title: 'Edit filter' } }); setIcon(edit, 'pencil'); edit.addEventListener('click', () => this.openQuickFilterEditor(filter)); const remove = row.createEl('button', { attr: { type: 'button', 'aria-label': `Delete ${filter.name}`, title: 'Delete filter' } }); setIcon(remove, 'trash-2'); remove.addEventListener('click', async () => { if (!window.confirm(`Delete the “${filter.name}” quick filter?`)) return; this.plugin.settings.quickFilters = this.plugin.settings.quickFilters.filter(item => item.id !== filter.id); await this.saveQuickFilters(); this.display(); }); } }
     }

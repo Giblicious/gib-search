@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.9
+
+- Keeps Similar Notes anchored to its current note when its sidebar filter controls receive focus.
+- Makes normal filter clicks exclusive toggles and reserves Shift-click for additive OR selection.
+- Removes inherited Obsidian borders, shadows, focus highlights, gradients, and filters from every quick-filter button state.
+
 ## 0.54.8
 
 - Restyles quick-filter buttons as compact, flat controls that match the plugin's existing toolbars and tabs.
