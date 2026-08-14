@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.7
+
+- Adds an enable/disable switch for every saved quick filter.
+- Keeps disabled filter definitions intact while hiding them from Search and Similar Notes.
+- Migrates existing quick filters as enabled so the new switch does not change current behavior.
+
 ## 0.54.6
 
 - Adds optional custom quick-filter buttons shared by semantic search and Similar Notes.

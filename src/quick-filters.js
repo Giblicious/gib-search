@@ -20,7 +20,7 @@ function normalizePropertyRule(rule) {
 function normalizeQuickFilter(filter = {}, index = 0) {
   const name = String(filter.name || `Filter ${index + 1}`).trim() || `Filter ${index + 1}`;
   return {
-    id: String(filter.id || filterId(name)), name, icon: String(filter.icon || '').trim(), color: String(filter.color || '').trim(),
+    id: String(filter.id || filterId(name)), name, enabled: filter.enabled !== false, icon: String(filter.icon || '').trim(), color: String(filter.color || '').trim(),
     surfaces: ['search', 'similar', 'both'].includes(filter.surfaces) ? filter.surfaces : 'both', defaultActive: Boolean(filter.defaultActive),
     folders: cleanList(filter.folders, normalizedPath), excludeFolders: cleanList(filter.excludeFolders, normalizedPath),
     types: cleanList(filter.types, value => value.toLowerCase().replace(/^\./, '')), tags: cleanList(filter.tags, value => value.toLowerCase().replace(/^#/, '')),
@@ -30,7 +30,7 @@ function normalizeQuickFilter(filter = {}, index = 0) {
 }
 
 function normalizeQuickFilters(filters) { return (Array.isArray(filters) ? filters : []).map(normalizeQuickFilter).slice(0, 24); }
-function visibleQuickFilters(filters, surface) { return normalizeQuickFilters(filters).filter(filter => filter.surfaces === 'both' || filter.surfaces === surface); }
+function visibleQuickFilters(filters, surface) { return normalizeQuickFilters(filters).filter(filter => filter.enabled && (filter.surfaces === 'both' || filter.surfaces === surface)); }
 
 function inFolder(path, folder) { return path === folder || path.startsWith(`${folder}/`); }
 function fileKind(extension) {
@@ -66,7 +66,7 @@ function quickFilterMatches(file, cache, filter, now = Date.now()) {
 }
 
 function resolveQuickFilterPaths(files, cacheFor, filters, activeIds, now = Date.now()) {
-  const requested = activeIds instanceof Set ? [...activeIds] : Array.isArray(activeIds) ? activeIds : [], active = normalizeQuickFilters(filters).filter(filter => requested.includes(filter.id));
+  const requested = activeIds instanceof Set ? [...activeIds] : Array.isArray(activeIds) ? activeIds : [], active = normalizeQuickFilters(filters).filter(filter => filter.enabled && requested.includes(filter.id));
   if (!requested.length) return null; if (!active.length) return [];
   return (files || []).filter(file => { let cache = null, loaded = false; return active.some(filter => { const needsMetadata = filter.tags.length || filter.properties.length; if (needsMetadata && !loaded) { cache = cacheFor(file); loaded = true; } return quickFilterMatches(file, needsMetadata ? cache : null, filter, now); }); }).map(file => file.path);
 }

@@ -74886,6 +74886,7 @@ function normalizeQuickFilter(filter2 = {}, index3 = 0) {
   return {
     id: String(filter2.id || filterId(name)),
     name,
+    enabled: filter2.enabled !== false,
     icon: String(filter2.icon || "").trim(),
     color: String(filter2.color || "").trim(),
     surfaces: ["search", "similar", "both"].includes(filter2.surfaces) ? filter2.surfaces : "both",
@@ -74904,7 +74905,7 @@ function normalizeQuickFilters(filters) {
   return (Array.isArray(filters) ? filters : []).map(normalizeQuickFilter).slice(0, 24);
 }
 function visibleQuickFilters(filters, surface) {
-  return normalizeQuickFilters(filters).filter((filter2) => filter2.surfaces === "both" || filter2.surfaces === surface);
+  return normalizeQuickFilters(filters).filter((filter2) => filter2.enabled && (filter2.surfaces === "both" || filter2.surfaces === surface));
 }
 function inFolder(path2, folder) {
   return path2 === folder || path2.startsWith(`${folder}/`);
@@ -74959,7 +74960,7 @@ function quickFilterMatches(file, cache2, filter2, now = Date.now()) {
   return true;
 }
 function resolveQuickFilterPaths(files, cacheFor, filters, activeIds, now = Date.now()) {
-  const requested = activeIds instanceof Set ? [...activeIds] : Array.isArray(activeIds) ? activeIds : [], active = normalizeQuickFilters(filters).filter((filter2) => requested.includes(filter2.id));
+  const requested = activeIds instanceof Set ? [...activeIds] : Array.isArray(activeIds) ? activeIds : [], active = normalizeQuickFilters(filters).filter((filter2) => filter2.enabled && requested.includes(filter2.id));
   if (!requested.length) return null;
   if (!active.length) return [];
   return (files || []).filter((file) => {
@@ -74985,7 +74986,7 @@ var init_quick_filters = __esm({
 });
 
 // src/main.js
-var { Plugin, PluginSettingTab, Setting, SuggestModal, Modal: Modal2, ItemView, Notice, TFile, setIcon, getIcon, Platform } = require("obsidian");
+var { Plugin, PluginSettingTab, Setting, ToggleComponent, SuggestModal, Modal: Modal2, ItemView, Notice, TFile, setIcon, getIcon, Platform } = require("obsidian");
 var { MobileSearchRuntime: MobileSearchRuntime2 } = (init_mobile_runtime(), __toCommonJS(mobile_runtime_exports));
 var { AtlasEngine: AtlasEngine2, STANDARD_ATLAS_VIEWS: STANDARD_ATLAS_VIEWS2, DEFAULT_ATLAS_VIEW: DEFAULT_ATLAS_VIEW2 } = (init_atlas_engine(), __toCommonJS(atlas_engine_exports));
 var { TEXT_SIGNALS: TEXT_SIGNALS2 } = (init_text_signals(), __toCommonJS(text_signals_exports));
@@ -75097,7 +75098,7 @@ var QuickFilterEditorModal = class extends Modal2 {
   constructor(app, plugin6, filter2 = null, onSave) {
     super(app);
     this.plugin = plugin6;
-    this.filter = { id: filter2?.id || filterId2(filter2?.name), name: filter2?.name || "", icon: filter2?.icon || "", color: filter2?.color || "", surfaces: filter2?.surfaces || "both", defaultActive: Boolean(filter2?.defaultActive), folders: [...filter2?.folders || []], excludeFolders: [...filter2?.excludeFolders || []], types: [...filter2?.types || []], tags: [...filter2?.tags || []], pathTerms: [...filter2?.pathTerms || []], properties: [...filter2?.properties || []], modifiedWithinDays: Number(filter2?.modifiedWithinDays || 0), createdWithinDays: Number(filter2?.createdWithinDays || 0) };
+    this.filter = { id: filter2?.id || filterId2(filter2?.name), name: filter2?.name || "", enabled: filter2?.enabled !== false, icon: filter2?.icon || "", color: filter2?.color || "", surfaces: filter2?.surfaces || "both", defaultActive: Boolean(filter2?.defaultActive), folders: [...filter2?.folders || []], excludeFolders: [...filter2?.excludeFolders || []], types: [...filter2?.types || []], tags: [...filter2?.tags || []], pathTerms: [...filter2?.pathTerms || []], properties: [...filter2?.properties || []], modifiedWithinDays: Number(filter2?.modifiedWithinDays || 0), createdWithinDays: Number(filter2?.createdWithinDays || 0) };
     this.onSaveFilter = onSave;
   }
   onOpen() {
@@ -79540,7 +79541,13 @@ var SearchSettings = class extends PluginSettingTab {
         for (const filter2 of this.plugin.settings.quickFilters) {
           const row = list4.createDiv({ cls: "gib-settings-view-row" }), copy3 = row.createDiv({ cls: "gib-settings-view-copy" });
           copy3.createDiv({ cls: "gib-settings-view-name", text: filter2.name });
-          copy3.createDiv({ cls: "gib-settings-view-meta", text: `${filter2.surfaces === "both" ? "Search + Similar Notes" : filter2.surfaces === "search" ? "Search" : "Similar Notes"}${filter2.defaultActive ? " \xB7 default" : ""}` });
+          copy3.createDiv({ cls: "gib-settings-view-meta", text: `${filter2.enabled === false ? "Disabled \xB7 " : ""}${filter2.surfaces === "both" ? "Search + Similar Notes" : filter2.surfaces === "search" ? "Search" : "Similar Notes"}${filter2.defaultActive ? " \xB7 default" : ""}` });
+          const enabled = new ToggleComponent(row);
+          enabled.setValue(filter2.enabled !== false).setTooltip(`${filter2.enabled === false ? "Enable" : "Disable"} ${filter2.name}`).onChange(async (value) => {
+            filter2.enabled = value;
+            await this.saveQuickFilters();
+            this.display();
+          });
           const edit = row.createEl("button", { attr: { type: "button", "aria-label": `Edit ${filter2.name}`, title: "Edit filter" } });
           setIcon(edit, "pencil");
           edit.addEventListener("click", () => this.openQuickFilterEditor(filter2));
