@@ -1,4 +1,4 @@
-export const TEXT_ANALYSIS_VERSION = 3;
+export const TEXT_ANALYSIS_VERSION = 4;
 
 const quality = (key, name, hypothesis, extra = {}) => ({ key, name, description: hypothesis, hypothesis, ...extra });
 

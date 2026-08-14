@@ -70438,7 +70438,7 @@ function signalHypothesis(signal, categoryValue, reference = "") {
 var TEXT_ANALYSIS_VERSION, quality, EMOTION_LANDMARKS, EMOTION_HYPOTHESES, TEXT_SIGNALS, PURPOSE_QUALITIES, POSITION_QUALITIES, FORM_QUALITIES, TEXT_SIGNAL_PROFILES, TEXT_SIGNAL_TEMPLATES;
 var init_text_signals = __esm({
   "src/text-signals.js"() {
-    TEXT_ANALYSIS_VERSION = 3;
+    TEXT_ANALYSIS_VERSION = 4;
     quality = (key, name, hypothesis, extra = {}) => ({ key, name, description: hypothesis, hypothesis, ...extra });
     EMOTION_LANDMARKS = [
       quality("joy", "Joy", "The writer expresses joy, delight, happiness, or celebration.", { hue: 48 }),
@@ -70571,7 +70571,7 @@ var WRITING_PROFILE_VERSION, WRITING_PROFILE_SIGNALS, FINDING_THRESHOLDS, ABSTEN
 var init_writing_profiles = __esm({
   "src/writing-profiles.js"() {
     init_text_signals();
-    WRITING_PROFILE_VERSION = 2;
+    WRITING_PROFILE_VERSION = 3;
     WRITING_PROFILE_SIGNALS = Object.freeze(["emotion", "purpose", "form"]);
     FINDING_THRESHOLDS = Object.freeze({ emotion: 0.5, purpose: 0.5, form: 0.5 });
     ABSTENTION_LABELS = Object.freeze({
@@ -72009,10 +72009,22 @@ var init_mobile_runtime = __esm({
         }
         return combineWritingProfile(file, fingerprint, values);
       }
+      writingProfileMetadataReady(file) {
+        const vault = this.plugin.app?.vault, metadataCache = this.plugin.app?.metadataCache;
+        if (!vault?.getAbstractFileByPath || !metadataCache?.getFileCache) return true;
+        const abstractFile = vault.getAbstractFileByPath(file);
+        if (!abstractFile) return false;
+        try {
+          return metadataCache.getFileCache(abstractFile) !== null;
+        } catch {
+          return false;
+        }
+      }
       async runWritingProfileQueue() {
         if (this.writingProfileRun || !this.plugin.settings?.writingProfileIndexEnabled || !this.enabled) return this.writingProfileRun;
         const generation = this.writingProfileGeneration;
         let retryDelay = 0;
+        const metadataDeferred = /* @__PURE__ */ new Set();
         const run = (async () => {
           while (this.writingProfileQueue.length && generation === this.writingProfileGeneration && this.plugin.settings?.writingProfileIndexEnabled && this.enabled) {
             if (!await this.writingProfileTurn()) break;
@@ -72020,6 +72032,13 @@ var init_mobile_runtime = __esm({
             this.writingProfileQueued.delete(file);
             const fingerprint = this.fileFingerprint(file), existing = this.writingProfiles.get(file);
             if (isCurrentWritingProfile(existing, file, fingerprint)) continue;
+            if (!this.writingProfileMetadataReady(file)) {
+              this.enqueueWritingProfile(file, false);
+              retryDelay = this.isMobile ? 3e4 : 1e4;
+              if (metadataDeferred.has(file)) break;
+              metadataDeferred.add(file);
+              continue;
+            }
             this.writingProfileCurrentFile = file;
             this.writingProfileStatus = { ...this.writingProfileStatus, state: "working", currentFile: file, message: `Analyzing ${file}` };
             this.writingProfilesChanged(file);
@@ -72566,18 +72585,46 @@ var init_mobile_runtime = __esm({
         }
         return source.slice(0, 8e3);
       }
+      profileFormMetadata(file) {
+        const abstractFile = this.plugin.app?.vault?.getAbstractFileByPath?.(file), frontmatter = abstractFile ? this.plugin.app?.metadataCache?.getFileCache?.(abstractFile)?.frontmatter : null, scores = {}, evidence = {};
+        if (!frontmatter || typeof frontmatter !== "object") return { scores, evidence, explicit: [] };
+        const aliases3 = {
+          analysis: /* @__PURE__ */ new Set(["analysis", "analytical essay", "article", "essay", "paper", "research paper"]),
+          journal: /* @__PURE__ */ new Set(["daily note", "diary", "journal", "journal entry", "reflection"]),
+          conversation: /* @__PURE__ */ new Set(["conversation", "dialogue", "interview", "transcript"]),
+          reference: /* @__PURE__ */ new Set(["bibliography", "definition", "glossary", "reference", "reference note", "resource", "source note"]),
+          narrative: /* @__PURE__ */ new Set(["memoir", "narrative", "story"]),
+          outline: /* @__PURE__ */ new Set(["checklist", "outline", "plan", "task list", "todo"])
+        };
+        for (const [property, raw] of Object.entries(frontmatter)) {
+          if (!["document type", "doctype", "form", "kind", "note type", "type"].includes(String(property).toLowerCase().replace(/[_-]+/g, " ").trim())) continue;
+          for (const value of Array.isArray(raw) ? raw : [raw]) {
+            const normalized = String(value || "").toLowerCase().replace(/^#/, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+            if (!normalized) continue;
+            for (const [form, values] of Object.entries(aliases3)) if (values.has(normalized)) {
+              scores[form] = 0.98;
+              evidence[form] = `Frontmatter ${property}: ${String(value).trim()}`;
+            }
+          }
+        }
+        return { scores, evidence, explicit: Object.keys(scores) };
+      }
       profileDocumentFeatures(file, passages = []) {
-        const source = this.representativeStructure(file) || passages.join("\n"), lower = source.toLowerCase(), lines = source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean), words = lower.match(/[\p{L}\p{N}'’]+/gu) || [], listLines = lines.filter((line) => /^(?:[-*+] |\d+[.)] |\[[ xX]\] )/.test(line)).length, listRatio = listLines / Math.max(1, lines.length), firstPersonCount = (lower.match(/\b(?:i|me|my|mine|we|our|ours)\b/g) || []).length, firstPerson = firstPersonCount / Math.max(20, words.length), speakers = lines.filter((line) => /^(?:user|assistant|human|[A-Z][\p{L}'-]{1,18})\s*:/u.test(line)).length, citations = (source.match(/(?:\[\[|https?:\/\/|\([^)]*\d{4}[^)]*\)|\b(?:source|reference|citation)\b)/gi) || []).length, analysisTerms = (lower.match(/\b(?:because|therefore|however|although|evidence|implies|distinction|definition|conclusion)\b/g) || []).length, timeCues = (source.match(/\b\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b/gi) || []).length, scheduleHeadings = lines.filter((line) => /^#{0,6}\s*(?:(?:core|next)\s+)?(?:schedule|rules?|routine|checklist|tasks?|plan|steps?|agenda)\s*:?[\s*]*$/i.test(line.replace(/\*\*/g, ""))).length, instructionLines = lines.filter((line) => /^(?:[-*+]\s*)?(?:no\b|do\b|don't\b|avoid\b|track\b|use\b|keep\b|make\b|take\b|eat\b|drink\b|wake\b|sleep\b|bedtime\b)/i.test(line.replace(/[*_]/g, ""))).length, actionLines = lines.filter((line) => /^(?:[-*+]\s*|\d+[.)]\s*)(?:add|ask|build|buy|call|check|clean|compare|complete|create|decide|draft|email|finish|gather|get|make|plan|prepare|read|review|schedule|send|set|start|track|update|use|write)\b/i.test(line.replace(/[*_]/g, ""))).length, narrativeMarkers = (lower.match(/\b(?:then|afterward|afterwards|later|eventually|when i|when we|we went|i went|i remember|that morning|that night)\b/g) || []).length, reflectionMarkers = (lower.match(/\b(?:i|we)\s+(?:feel|felt|realized?|learned?|understand|remember|wonder|noticed?|believe|think)\b/g) || []).length, journalPath = /(?:^|\/)journals?(?:\/|$)/i.test(file) || /(?:^|\/)(?:19|20)\d{2}[-_.]\d{2}[-_.]\d{2}(?:\D|$)/.test(file);
+        const source = this.representativeStructure(file) || passages.join("\n"), lower = source.toLowerCase(), lines = source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean), headings = [...new Set([...this.meta.filter((item) => item.file === file && item.heading).map((item) => String(item.heading).replace(/^#+\s*/, "").trim()), ...lines.filter((line) => /^#{1,6}\s+/.test(line)).map((line) => line.replace(/^#{1,6}\s+/, "").trim())].filter(Boolean))], words = lower.match(/[\p{L}\p{N}'’]+/gu) || [], listLines = lines.filter((line) => /^(?:[-*+] |\d+[.)] |\[[ xX]\] )/.test(line)).length, listRatio = listLines / Math.max(1, lines.length), firstPersonCount = (lower.match(/\b(?:i|me|my|mine|we|our|ours)\b/g) || []).length, firstPerson = firstPersonCount / Math.max(20, words.length), speakers = lines.filter((line) => /^(?:user|assistant|human|[A-Z][\p{L}'-]{1,18})\s*:/u.test(line)).length, citations = (source.match(/(?:\[\[|https?:\/\/|\([^)]*\d{4}[^)]*\)|\b(?:source|reference|citation)\b)/gi) || []).length, analysisTerms = (lower.match(/\b(?:because|therefore|however|although|evidence|implies|distinction|definition|conclusion|premise|argument|reason)\b/g) || []).length, essayHeadings = headings.filter((heading) => /^(?:abstract|analysis|argument|conclusion|discussion|evidence|introduction|sources?|references?|thesis)$/i.test(heading)).length, timeCues = (source.match(/\b\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b/gi) || []).length, scheduleHeadings = lines.filter((line) => /^#{0,6}\s*(?:(?:core|next)\s+)?(?:schedule|rules?|routine|checklist|tasks?|plan|steps?|agenda)\s*:?[\s*]*$/i.test(line.replace(/\*\*/g, ""))).length, instructionLines = lines.filter((line) => /^(?:[-*+]\s*)?(?:no\b|do\b|don't\b|avoid\b|track\b|use\b|keep\b|make\b|take\b|eat\b|drink\b|wake\b|sleep\b|bedtime\b)/i.test(line.replace(/[*_]/g, ""))).length, actionLines = lines.filter((line) => /^(?:[-*+]\s*|\d+[.)]\s*)(?:add|ask|build|buy|call|check|clean|compare|complete|create|decide|draft|email|finish|gather|get|make|plan|prepare|read|review|schedule|send|set|start|track|update|use|write)\b/i.test(line.replace(/[*_]/g, ""))).length, sequencePattern = /\b(?:afterwards?|eventually|years? ago|once upon|the next (?:day|morning|night|week|month|year)|that (?:morning|night|afternoon|evening)|then (?:i|we|he|she|they))\b/gi, eventPattern = /\b(?:i|we|he|she|they)\s+(?:arrived|asked|began|came|drove|entered|found|heard|left|met|returned|said|saw|told|walked|went|woke)\b/gi, narrativeMarkers = (source.match(sequencePattern) || []).length, narrativeEvents = (source.match(eventPattern) || []).length, reflectionMarkers = (lower.match(/\b(?:i|we)\s+(?:feel|felt|realized?|learned?|understand|remember|wonder|noticed?|believe|think)\b/g) || []).length, journalFolder = /(?:^|\/)journals?(?:\/|$)/i.test(file), datedFile = /(?:^|\/)(?:19|20)\d{2}[-_.]\d{2}[-_.]\d{2}(?:\D|$)/.test(file), formMetadata = this.profileFormMetadata(file);
         const emotionCues = Object.fromEntries(Object.entries(EMOTION_CUE_PATTERNS).map(([key, pattern]) => {
           if (!pattern.test(source)) return [key, 0];
           const direct = new RegExp(`(?:\\b(?:i|we|me|my|our)\\b.{0,48}${pattern.source}|${pattern.source}.{0,48}\\b(?:i|we|me|my|our)\\b)`, "is");
           return [key, direct.test(source) ? 0.94 : 0.64];
         })), emotionCueStrength = Math.max(0, ...Object.values(emotionCues)), outlineStrength = listRatio > 0.35 ? 0.94 : listRatio > 0.16 ? 0.68 : 0, planningStrength = Math.max(scheduleHeadings ? 0.96 : 0, timeCues >= 2 ? 0.9 : timeCues ? 0.55 : 0, instructionLines >= 2 ? 0.9 : instructionLines ? 0.58 : 0, actionLines >= 2 ? 0.9 : actionLines ? 0.58 : 0), organizationalStrength = Math.max(outlineStrength, planningStrength);
-        return { source, lower, lines, words, listLines, listRatio, firstPerson, speakers, citations, analysisTerms, timeCues, scheduleHeadings, instructionLines, actionLines, narrativeMarkers, reflectionMarkers, journalPath, emotionCues, emotionCueStrength, outlineStrength, planningStrength, organizationalStrength };
+        const passageMatching = (pattern) => passages.find((passage) => pattern.test(passage)) || "", metadataEvidence = formMetadata.evidence, headingEvidence = essayHeadings ? `Structure: ${headings.filter((heading) => /^(?:abstract|analysis|argument|conclusion|discussion|evidence|introduction|sources?|references?|thesis)$/i.test(heading)).slice(0, 3).join(" \xB7 ")}` : "", formEvidence = { ...metadataEvidence, analysis: metadataEvidence.analysis || headingEvidence || passageMatching(/\b(?:because|however|evidence|distinction|definition|conclusion|premise|argument)\b/i), journal: metadataEvidence.journal || passageMatching(/\b(?:i|we)\s+(?:feel|felt|realized?|learned?|understand|remember|wonder|noticed?|believe|think)\b/i), conversation: metadataEvidence.conversation || passageMatching(/^(?:user|assistant|human|[A-Z][\p{L}'-]{1,18})\s*:/mu), reference: metadataEvidence.reference || passageMatching(/(?:\[\[|https?:\/\/|\b(?:sources?|references?|citation)\b)/i), narrative: metadataEvidence.narrative || passageMatching(/\b(?:afterwards?|eventually|years? ago|once upon|the next (?:day|morning|night|week|month|year)|that (?:morning|night|afternoon|evening)|then (?:i|we|he|she|they))\b/i), outline: metadataEvidence.outline || lines.filter((line) => /^(?:[-*+] |\d+[.)] |\[[ xX]\] )/.test(line)).slice(0, 3).join(" ") };
+        return { source, lower, lines, headings, words, listLines, listRatio, firstPerson, speakers, citations, analysisTerms, essayHeadings, timeCues, scheduleHeadings, instructionLines, actionLines, narrativeMarkers, narrativeEvents, reflectionMarkers, journalFolder, datedFile, formMetadata, formEvidence, emotionCues, emotionCueStrength, outlineStrength, planningStrength, organizationalStrength };
       }
-      classificationPrior(signal, file, passages, key) {
-        const features = this.profileDocumentFeatures(file, passages), { source, lower, firstPerson, speakers, citations, analysisTerms, narrativeMarkers, reflectionMarkers, journalPath, outlineStrength, planningStrength, organizationalStrength } = features, journal = reflectionMarkers ? Math.max(0.82, journalPath ? 0.9 : 0) : firstPerson > 0.04 && organizationalStrength < 0.7 ? journalPath ? 0.58 : 0.48 : journalPath ? 0.22 : 0, form = { journal, conversation: speakers >= 2 ? 0.94 : /\b(?:asked|replied|said)\b/.test(lower) ? 0.42 : 0, outline: Math.max(outlineStrength, planningStrength >= 0.9 ? 0.92 : 0), reference: citations >= 3 ? 0.84 : citations ? 0.42 : 0, analysis: analysisTerms >= 4 ? 0.8 : analysisTerms >= 2 ? 0.52 : 0, narrative: narrativeMarkers >= 2 ? 0.86 : narrativeMarkers ? 0.64 : 0 }, purpose = { questioning: /\?/.test(source) || /\b(?:i wonder|whether|why does|how can|could .*\?)\b/i.test(source) ? 0.94 : 0, explaining: /\b(?:means that|is defined as|because|in other words|the reason|this explains)\b/i.test(source) ? 0.76 : 0, reflecting: reflectionMarkers ? 0.86 : firstPerson > 0.045 && organizationalStrength < 0.7 ? 0.48 : 0, persuading: /\b(?:should|must|therefore|clearly|ought|i argue|we should)\b/i.test(source) ? 0.74 : 0, comparing: /\b(?:whereas|compared with|in contrast|unlike|both|versus|on the other hand)\b/i.test(source) ? 0.84 : 0, planning: planningStrength >= 0.9 ? 0.95 : planningStrength > 0 || /\b(?:todo|next step|plan to|need to|going to|action item)\b/i.test(source) ? 0.88 : 0, summarizing: /\b(?:in summary|to summarize|overall|in short|the main point|summary)\b/i.test(source) ? 0.88 : 0 };
+      classificationPrior(signal, file, passages, key, preparedFeatures = null) {
+        const features = preparedFeatures || this.profileDocumentFeatures(file, passages), { source, lower, words, firstPerson, speakers, citations, analysisTerms, essayHeadings, narrativeMarkers, narrativeEvents, reflectionMarkers, journalFolder, datedFile, formMetadata, outlineStrength, planningStrength, organizationalStrength } = features, explicitAnalysis = formMetadata.scores.analysis > 0, explicitJournal = formMetadata.scores.journal > 0, sustainedReflection = reflectionMarkers >= 2 && firstPerson > 0.02, journal = explicitJournal ? 0.98 : reflectionMarkers ? explicitAnalysis ? Math.min(0.58, sustainedReflection ? 0.58 : 0.5) : journalFolder ? 0.9 : sustainedReflection ? datedFile ? 0.76 : 0.82 : datedFile ? 0.62 : 0.56 : firstPerson > 0.04 && organizationalStrength < 0.7 ? journalFolder ? 0.58 : datedFile ? 0.42 : 0.36 : journalFolder ? 0.22 : 0, analysis = Math.max(Number(formMetadata.scores.analysis || 0), essayHeadings >= 2 ? 0.9 : essayHeadings ? 0.72 : 0, analysisTerms >= 4 ? 0.82 : analysisTerms >= 2 ? 0.58 : 0, words.length >= 300 && analysisTerms ? 0.68 : 0), narrative = Number(formMetadata.scores.narrative || 0) || (narrativeMarkers >= 2 && narrativeEvents >= 2 ? 0.9 : narrativeMarkers && narrativeEvents >= 2 ? 0.76 : narrativeEvents >= 4 && firstPerson > 0.015 ? 0.68 : 0), form = { journal, conversation: Number(formMetadata.scores.conversation || 0) || (speakers >= 2 ? 0.94 : /\b(?:asked|replied|said)\b/.test(lower) ? 0.42 : 0), outline: Number(formMetadata.scores.outline || 0) || Math.max(outlineStrength, planningStrength >= 0.9 ? 0.92 : 0), reference: Number(formMetadata.scores.reference || 0) || (citations >= 3 ? 0.84 : citations ? 0.42 : 0), analysis, narrative }, purpose = { questioning: /\?/.test(source) || /\b(?:i wonder|whether|why does|how can|could .*\?)\b/i.test(source) ? 0.94 : 0, explaining: /\b(?:means that|is defined as|because|in other words|the reason|this explains)\b/i.test(source) ? 0.76 : 0, reflecting: reflectionMarkers ? 0.86 : firstPerson > 0.045 && organizationalStrength < 0.7 ? 0.48 : 0, persuading: /\b(?:i (?:argue|contend|maintain)|we (?:argue|contend|maintain|should)|(?:you|we|one) should|ought to|must (?:accept|act|admit|agree|change|choose|conclude|consider|recognize|reject|support))\b/i.test(source) ? 0.74 : 0, comparing: /\b(?:whereas|compared with|in contrast|unlike|both|versus|on the other hand)\b/i.test(source) ? 0.84 : 0, planning: planningStrength >= 0.9 ? 0.95 : planningStrength > 0 || /\b(?:todo|next step|plan to|need to|going to|action item)\b/i.test(source) ? 0.88 : 0, summarizing: /\b(?:in summary|to summarize|overall|in short|the main point|summary)\b/i.test(source) ? 0.88 : 0 };
         return Math.max(0, Math.min(1, (signal === "form" ? form : signal === "purpose" ? purpose : {})[key] || 0));
+      }
+      classificationEvidence(signal, features, key, fallback2 = "") {
+        return String(signal === "form" && features.formEvidence?.[key] || fallback2 || "").slice(0, 360);
       }
       calibratedClassificationScore(value) {
         return Math.max(0, Math.min(1, (Number(value) - 0.38) / 0.62));
@@ -72622,22 +72669,27 @@ var init_mobile_runtime = __esm({
           byFile.set(entry.item.file, rows);
         });
         for (const item of items) {
-          const rows = byFile.get(item.file) || [], scores = {}, evidence = {}, priors = {}, rawScores = {};
+          const rows = byFile.get(item.file) || [], scores = {}, evidence = {}, priors = {}, rawScores = {}, features = this.profileDocumentFeatures(item.file, item.passages);
           categories.forEach((category, index3) => {
-            const values = rows[index3] || [], maximum = Math.max(0, ...values.map((value) => value.score)), mean = values.reduce((sum, value) => sum + value.score, 0) / Math.max(1, values.length), prior = this.classificationPrior(signal, item.file, item.passages, category.key), best = values.reduce((winner, value) => !winner || value.score > winner.score ? value : winner, null), inferred = mean * 0.68 + maximum * 0.32;
+            const values = rows[index3] || [], maximum = Math.max(0, ...values.map((value) => value.score)), mean = values.reduce((sum, value) => sum + value.score, 0) / Math.max(1, values.length), prior = this.classificationPrior(signal, item.file, item.passages, category.key, features), best = values.reduce((winner, value) => !winner || value.score > winner.score ? value : winner, null), inferred = mean * 0.68 + maximum * 0.32;
             priors[category.id] = prior;
             rawScores[category.id] = inferred;
             if (signal === "purpose" || signal === "form") {
               const modelScore = this.calibratedClassificationScore(inferred);
               scores[category.id] = prior >= 0.72 ? Math.max(prior, modelScore) : prior > 0 ? Math.max(prior * 0.86, modelScore * 0.78 + prior * 0.22) : modelScore;
             } else scores[category.id] = inferred;
-            evidence[category.id] = best?.text?.slice(0, 360) || "";
+            evidence[category.id] = this.classificationEvidence(signal, features, category.key, best?.text);
           });
           if (signal === "purpose" || signal === "form") {
-            const dominantPrior = Math.max(0, ...Object.values(priors)), outlineStrong = signal === "form" && Number(priors["form:outline"] || 0) >= 0.8;
+            const dominantPrior = Math.max(0, ...Object.values(priors)), outlineStrong = signal === "form" && Number(priors["form:outline"] || 0) >= 0.8, explicitForms = new Set(signal === "form" ? features.formMetadata.explicit : []);
             for (const category of categories) {
-              if (dominantPrior >= 0.8 && Number(priors[category.id] || 0) < 0.3 && Number(rawScores[category.id] || 0) < 0.82) scores[category.id] = Math.min(scores[category.id], signal === "form" ? 0.18 : 0.3);
-              if (outlineStrong && category.key === "narrative" && Number(priors[category.id] || 0) < 0.3) scores[category.id] = Math.min(scores[category.id], 0.12);
+              const prior = Number(priors[category.id] || 0);
+              if (dominantPrior >= 0.8 && prior < 0.3 && Number(rawScores[category.id] || 0) < 0.82) scores[category.id] = Math.min(scores[category.id], signal === "form" ? 0.18 : 0.3);
+              if (signal === "form" && explicitForms.size && !explicitForms.has(category.key)) {
+                const reflectiveEssay = explicitForms.has("analysis") && category.key === "journal" && prior >= 0.5;
+                scores[category.id] = Math.min(scores[category.id], reflectiveEssay ? 0.62 : prior < 0.3 ? 0.18 : 0.48);
+              }
+              if (outlineStrong && category.key === "narrative" && prior < 0.3) scores[category.id] = Math.min(scores[category.id], 0.12);
             }
             const ranked = Object.entries(scores).sort((first, second2) => Number(second2[1]) - Number(first[1])), highest = Number(ranked[0]?.[1] || 0), second = Number(ranked[1]?.[1] || 0), topPrior = Number(priors[ranked[0]?.[0]] || 0), clear = highest >= 0.5 && (signal === "purpose" || highest - second >= 0.06 || topPrior >= 0.6);
             this.rememberTextProfile(item, signal, scores, evidence, output, { applicability: highest, threshold: 0.5, clear, reason: clear ? topPrior >= 0.6 ? "structural-evidence" : "clear" : "insufficient-evidence" });

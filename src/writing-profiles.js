@@ -1,6 +1,6 @@
 import { TEXT_ANALYSIS_VERSION, TEXT_SIGNAL_PROFILES } from './text-signals.js';
 
-export const WRITING_PROFILE_VERSION = 2;
+export const WRITING_PROFILE_VERSION = 3;
 export const WRITING_PROFILE_SIGNALS = Object.freeze(['emotion', 'purpose', 'form']);
 
 const FINDING_THRESHOLDS = Object.freeze({ emotion: .5, purpose: .5, form: .5 });

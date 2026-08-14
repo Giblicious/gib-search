@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.54.17
+
+- Uses explicit `type`, `form`, `kind`, and note-type frontmatter as first-class writing-form evidence, including reliable recognition of essays, journals, conversations, reference notes, narratives, and outlines.
+- Makes Analytical essay dominant for declared essays while retaining genuinely reflective Journal writing as a bounded secondary finding.
+- Requires chronological cues plus event language for Narrative, so logical uses of words such as “then” no longer turn analytical prose into a story.
+- Separates dated filenames from journal-folder evidence and removes bare logical connectives as automatic proof of persuasive purpose.
+- Grounds structural findings in the metadata, headings, or passages that caused them and invalidates older profile caches so corrected assessments rebuild automatically.
+- Defers a note when Obsidian's metadata cache is still loading, avoiding a premature profile without rereading the note or delaying semantic search.
+
 ## 0.54.16
 
 - Calibrates Writing Profile scores instead of presenting raw NLI entailment as confidence.
