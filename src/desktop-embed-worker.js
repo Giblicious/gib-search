@@ -7,6 +7,8 @@ const QUERY_PREFIX = 'Represent this sentence for searching relevant passages: '
 let configuration = null;
 let pipe = null;
 let modelPromise = null;
+let modelBackend = 'starting';
+let modelDtype = 'q8';
 let relationPipe = null;
 let relationPromise = null;
 let topicLabelPipe = null;
@@ -46,30 +48,80 @@ async function gunzipBase64(encoded, text = false) {
   return text ? new Response(stream).text() : new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+async function configureRuntime() {
+  const mobile = Boolean(configuration.mobile);
+  env.allowRemoteModels = true; env.allowLocalModels = false; env.useCustomCache = !mobile; env.customCache = mobile ? null : modelCache; env.useBrowserCache = mobile; env.useFSCache = false;
+  if (!env.backends?.onnx?.wasm || env.backends.onnx.wasm.wasmBinary) return;
+  const threaded = !mobile && self.crossOriginIsolated === true, requestedThreads = Math.max(1, Math.min(12, Number(configuration?.wasmThreads) || 1));
+  env.backends.onnx.wasm.numThreads = threaded ? requestedThreads : 1; env.backends.onnx.wasm.proxy = false;
+  const moduleSource = await gunzipBase64(configuration.wasmModuleGzip, true);
+  env.backends.onnx.wasm.wasmPaths = { mjs: URL.createObjectURL(new Blob([moduleSource], { type: 'text/javascript' })) };
+  env.backends.onnx.wasm.wasmBinary = await gunzipBase64(configuration.wasmGzip);
+}
+
+function progressCallback(progress) {
+  if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'progress', file: progress.file || 'BGE', progress: Number(progress.progress) });
+}
+
+async function loadEmbeddingModel(device, dtype) {
+  const loaded = await pipeline('feature-extraction', MODEL_ID, { device, dtype, progress_callback: progressCallback });
+  try { await loaded([`${QUERY_PREFIX}warm semantic search`], { pooling: 'mean', normalize: true }); return loaded; }
+  catch (error) { await disposePipeline(loaded); throw error; }
+}
+
+async function disposePipeline(value) {
+  try { await value?.dispose?.(); } catch {}
+}
+
+function reportRuntimeProfile(backend, dtype, details = {}) {
+  const mobile = Boolean(configuration?.mobile), requestedThreads = Math.max(1, Math.min(12, Number(configuration?.wasmThreads) || 1));
+  const threaded = !mobile && self.crossOriginIsolated === true, wasmThreads = backend === 'wasm' ? (threaded ? requestedThreads : 1) : 0;
+  self.postMessage({ type: 'runtime-profile', backend, dtype, wasmThreads, threaded, hardwareConcurrency: Number(configuration?.hardwareConcurrency) || 1, maximumEmbedBatchSize: backend === 'webgpu' ? 16 : Number(configuration?.maximumEmbedBatchSize) || 2, ...details });
+}
+
+async function activateWasm(fallbackError = null) {
+  const previous = pipe; pipe = null; await disposePipeline(previous);
+  if (fallbackError) self.postMessage({ type: 'backend-fallback', from: 'webgpu', to: 'wasm', message: fallbackError?.message || String(fallbackError) });
+  const loaded = await loadEmbeddingModel('wasm', 'q8');
+  pipe = loaded; modelBackend = 'wasm'; modelDtype = 'q8'; reportRuntimeProfile(modelBackend, modelDtype); return pipe;
+}
+
+async function tryActivateWebGpu() {
+  if (configuration.mobile || configuration.preferWebGpu === false || !globalThis.navigator?.gpu) return false;
+  let adapter = null;
+  try {
+    adapter = await globalThis.navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    if (!adapter) throw new Error('No high-performance WebGPU adapter is available');
+    if (env.backends?.onnx?.webgpu) { env.backends.onnx.webgpu.powerPreference = 'high-performance'; env.backends.onnx.webgpu.adapter = adapter; }
+    const dtype = adapter.features?.has?.('shader-f16') ? 'fp16' : 'fp32', loaded = await loadEmbeddingModel('webgpu', dtype);
+    pipe = loaded; modelBackend = 'webgpu'; modelDtype = dtype; reportRuntimeProfile(modelBackend, modelDtype); return true;
+  } catch (error) {
+    await disposePipeline(pipe); pipe = null;
+    self.postMessage({ type: 'backend-fallback', from: 'webgpu', to: 'wasm', message: error?.message || String(error) });
+    return false;
+  }
+}
+
 async function initializeModel() {
   if (pipe) return pipe;
   if (modelPromise) return modelPromise;
   modelPromise = (async () => {
-    const mobile = Boolean(configuration.mobile); env.allowRemoteModels = true; env.allowLocalModels = false; env.useCustomCache = !mobile; env.customCache = mobile ? null : modelCache; env.useBrowserCache = mobile; env.useFSCache = false;
-    if (env.backends?.onnx?.wasm) {
-      const threaded = !mobile && self.crossOriginIsolated === true, requestedThreads = Math.max(1, Math.min(12, Number(configuration?.wasmThreads) || 1)), wasmThreads = threaded ? requestedThreads : 1;
-      env.backends.onnx.wasm.numThreads = wasmThreads; env.backends.onnx.wasm.proxy = false; self.postMessage({ type: 'runtime-profile', wasmThreads, threaded, hardwareConcurrency: Number(configuration?.hardwareConcurrency) || 1 });
-      const moduleSource = await gunzipBase64(configuration.wasmModuleGzip, true);
-      env.backends.onnx.wasm.wasmPaths = { mjs: URL.createObjectURL(new Blob([moduleSource], { type: 'text/javascript' })) };
-      env.backends.onnx.wasm.wasmBinary = await gunzipBase64(configuration.wasmGzip);
-    }
-    const loaded = await pipeline('feature-extraction', MODEL_ID, { dtype: 'q8', progress_callback: progress => {
-      if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'progress', file: progress.file || 'BGE', progress: Number(progress.progress) });
-    } });
-    await loaded([`${QUERY_PREFIX}warm semantic search`], { pooling: 'mean', normalize: true });
-    pipe = loaded; self.postMessage({ type: 'ready' }); return pipe;
+    await configureRuntime();
+    if (!await tryActivateWebGpu()) await activateWasm();
+    self.postMessage({ type: 'ready' }); return pipe;
   })();
   try { return await modelPromise; } finally { modelPromise = null; }
 }
 
 async function embed(texts, query) {
   const model = await initializeModel(); const input = texts.map(text => query ? `${QUERY_PREFIX}${text}` : text);
-  const output = await model(input, { pooling: 'mean', normalize: true }); const dimension = output.dims.at(-1);
+  let output;
+  try { output = await model(input, { pooling: 'mean', normalize: true }); }
+  catch (error) {
+    if (modelBackend !== 'webgpu') throw error;
+    const fallback = await activateWasm(error); output = await fallback(input, { pooling: 'mean', normalize: true });
+  }
+  const dimension = output.dims.at(-1);
   const buffers = input.map((_, index) => new Float32Array(output.data.slice(index * dimension, (index + 1) * dimension)).buffer);
   return { buffers, transfer: buffers };
 }

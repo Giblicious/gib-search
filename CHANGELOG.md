@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.20
+
+- Uses a verified high-performance WebGPU adapter for desktop BGE embeddings, with fp16 inference and bounded batches that can make practical use of modern discrete GPUs.
+- Falls back automatically to the bundled q8 WASM engine when WebGPU is absent, initialization fails, or the GPU device is lost during inference; mobile remains on its existing conservative worker path.
+- Waits for active keyboard, pointer, touch, and scrolling input to become quiet before dispatching another desktop indexing batch, while preserving interactive search priority.
+- Reports the active WebGPU or WASM backend in local health diagnostics and adds an isolated browser-worker GPU smoke test without touching a real vault.
+- Remains self-contained: no CUDA, Python, native service, driver, or system dependency is installed.
+
 ## 0.54.19
 
 - Makes desktop semantic indexing hardware-aware, using additional WASM threads when Electron permits them while reserving CPU capacity for Obsidian.

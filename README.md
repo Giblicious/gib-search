@@ -27,7 +27,7 @@ Plugin settings are divided into Status, Search, and Console pages. Status repor
 3. Enter `Giblicious/gib-search`.
 4. Enable **Gib Search** under Community plugins.
 
-Gib Search supports Obsidian on desktop and mobile. Its WebAssembly inference engine is bundled with the plugin; Node.js, npm, external services, and runtime installers are not required. Desktop inference runs in an Electron Web Worker to keep the interface responsive.
+Gib Search supports Obsidian on desktop and mobile. Its fallback WebAssembly inference engine is bundled with the plugin; Node.js, npm, external services, and runtime installers are not required. Desktop inference runs in an Electron Web Worker and uses WebGPU when a verified high-performance adapter is available, with automatic fallback to the bundled engine. GPU batches remain bounded and wait for active keyboard, pointer, touch, and scrolling input.
 
 Each device builds its own local index. The first index can take several minutes, so keep Obsidian open until Settings reports that Gib Search is healthy.
 
@@ -36,8 +36,8 @@ Indexing runs cooperatively: model inference stays in a dedicated background wor
 ## Privacy and network use
 
 - Notes, queries, embeddings, and indexes remain on the local device.
-- Inference runs directly inside Obsidian using the bundled WebAssembly engine.
-- BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached. Enabling Writing Profile indexing also downloads the local MobileBERT MNLI analysis model.
+- Inference runs directly inside Obsidian using desktop WebGPU or the bundled WebAssembly fallback.
+- BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached. GPU-capable desktops cache its fp16 model; the fallback engine and mobile cache its q8 model. Enabling Writing Profile indexing also downloads the local MobileBERT MNLI analysis model.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 

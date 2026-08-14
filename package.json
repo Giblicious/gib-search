@@ -1,11 +1,12 @@
 {
   "name": "gib-search",
-  "version": "0.54.19",
+  "version": "0.54.20",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node scripts/check.mjs && node scripts/search-check.mjs && node scripts/terrain-check.mjs"
+    "check": "node scripts/check.mjs && node scripts/search-check.mjs && node scripts/terrain-check.mjs",
+    "smoke:webgpu": "node scripts/webgpu-smoke.mjs"
   },
   "devDependencies": {
     "@huggingface/transformers": "^3.8.1",
