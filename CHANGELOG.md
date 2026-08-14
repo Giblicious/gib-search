@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.4
+
+- Prevents Similar Notes from rebuilding when scrolling or merely moving focus between workspace leaves.
+- Ignores index status notifications unless the underlying indexed data changed.
+- Preserves the sidebar scroll position across legitimate same-note index refreshes.
+
 ## 0.54.3
 
 - Redesigns Similar Notes with the same result-card hierarchy as semantic search, including folder paths, note similarity, passage excerpts, and passage relevance scores.

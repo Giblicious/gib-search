@@ -1030,28 +1030,33 @@ class GraphView extends ItemView {
 }
 
 class SimilarNotesView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.filePath = null; this.refreshTimer = null; this.refreshVersion = 0; }
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.filePath = null; this.refreshTimer = null; this.refreshVersion = 0; this.indexMeta = null; this.indexVectors = null; this.pendingPreserveScroll = true; }
   getViewType() { return SIMILAR_NOTES_VIEW; }
   getDisplayText() { return 'Similar Notes'; }
   getIcon() { return 'git-compare-arrows'; }
   async onOpen() {
     this.contentEl.addClass('gib-similar-notes');
-    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.scheduleRefresh()));
-    this.indexOff = this.plugin.indexer.onChange(() => this.scheduleRefresh()); this.refresh();
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refreshForActiveNote()));
+    this.indexOff = this.plugin.indexer.onChange(() => this.refreshForIndexChange()); this.refresh();
   }
-  scheduleRefresh() { window.clearTimeout(this.refreshTimer); this.refreshTimer = window.setTimeout(() => this.refresh(), 180); }
-  async refresh() {
-    if (!this.contentEl?.isConnected) return; const version = ++this.refreshVersion; this.contentEl.empty(); const active = this.app.workspace.getActiveFile();
-    const header = this.contentEl.createDiv({ cls: 'gib-similar-header' }); header.createDiv({ cls: 'gib-similar-kicker', text: 'Similar Notes' }); header.createDiv({ cls: 'gib-similar-title', text: active?.basename || 'No active note' });
-    if (!(active instanceof TFile) || active.extension.toLowerCase() !== 'md') { this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Open a note to see semantically similar notes.' }); return; }
+  activeNote() { const file = this.app.workspace.getActiveFile(); return file instanceof TFile && file.extension.toLowerCase() === 'md' ? file : null; }
+  refreshForActiveNote() { const active = this.activeNote(); if (!active || active.path === this.filePath) return; this.scheduleRefresh(false); }
+  refreshForIndexChange() { const meta = this.plugin.search.meta, vectors = this.plugin.search.vectors; if (meta === this.indexMeta && vectors === this.indexVectors) return; this.indexMeta = meta; this.indexVectors = vectors; this.scheduleRefresh(true); }
+  scheduleRefresh(preserveScroll = false) { this.pendingPreserveScroll = this.refreshTimer ? this.pendingPreserveScroll && preserveScroll : preserveScroll; window.clearTimeout(this.refreshTimer); this.refreshTimer = window.setTimeout(() => { this.refreshTimer = null; const preserve = this.pendingPreserveScroll; this.pendingPreserveScroll = true; this.refresh(preserve); }, 180); }
+  renderHeader(active) { const header = this.contentEl.createDiv({ cls: 'gib-similar-header' }); header.createDiv({ cls: 'gib-similar-kicker', text: 'Similar Notes' }); header.createDiv({ cls: 'gib-similar-title', text: active?.basename || 'No active note' }); }
+  async refresh(preserveScroll = false) {
+    if (!this.contentEl?.isConnected) return; const version = ++this.refreshVersion, active = this.activeNote(), previousPath = this.filePath, currentList = this.contentEl.querySelector('.gib-similar-list'), retainCurrent = Boolean(preserveScroll && active?.path === previousPath && currentList), previousScroll = retainCurrent ? Number(currentList.scrollTop || 0) : 0; this.filePath = active?.path || null; this.indexMeta = this.plugin.search.meta; this.indexVectors = this.plugin.search.vectors;
+    if (!retainCurrent) { this.contentEl.empty(); this.renderHeader(active); }
+    if (!active) { if (retainCurrent) { this.contentEl.empty(); this.renderHeader(null); } this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Open a note to see semantically similar notes.' }); return; }
     const limit = Math.max(3, Math.min(30, Number(this.plugin.settings.similarNotesLimit) || 12)), minimum = Math.max(-1, Math.min(1, Number(this.plugin.settings.similarNotesMinScore) || 0));
     const neighbors = this.plugin.search.semanticNeighbors(active.path, Math.min(40, limit * 3)).nodes.filter(node => { const file = this.app.vault.getAbstractFileByPath(node.id); return file instanceof TFile && file.extension.toLowerCase() === 'md' && node.score >= minimum; }).slice(0, limit);
-    if (!neighbors.length) { this.contentEl.createDiv({ cls: 'gib-similar-empty', text: this.plugin.indexer.indexStable ? 'No similar indexed notes meet the current threshold.' : 'Similar notes will appear when indexing is ready.' }); return; }
-    const loading = this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Finding the strongest related passages…' });
+    if (!neighbors.length) { if (retainCurrent) { this.contentEl.empty(); this.renderHeader(active); } this.contentEl.createDiv({ cls: 'gib-similar-empty', text: this.plugin.indexer.indexStable ? 'No similar indexed notes meet the current threshold.' : 'Similar notes will appear when indexing is ready.' }); return; }
+    const loading = retainCurrent ? null : this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Finding the strongest related passages…' });
     try {
-      const passages = await this.plugin.search.relatedPassages(active.path, neighbors.map(node => node.id), 2); if (version !== this.refreshVersion || !this.contentEl?.isConnected) return; loading.remove(); const list = this.contentEl.createDiv({ cls: 'gib-similar-list' });
+      const passages = await this.plugin.search.relatedPassages(active.path, neighbors.map(node => node.id), 2); if (version !== this.refreshVersion || !this.contentEl?.isConnected) return; if (retainCurrent) { this.contentEl.empty(); this.renderHeader(active); } else loading?.remove(); const list = this.contentEl.createDiv({ cls: 'gib-similar-list' });
       for (const neighbor of neighbors) this.renderResult(list, neighbor, passages.get(neighbor.id) || []);
-    } catch (error) { if (version === this.refreshVersion) { loading.setText('Related passages are unavailable while the index is changing.'); this.plugin.logDiagnostic(`Similar Notes passage ranking failed: ${error.message}`, true); } }
+      if (previousScroll > 0) window.requestAnimationFrame(() => { if (version === this.refreshVersion && list.isConnected) list.scrollTop = previousScroll; });
+    } catch (error) { if (version === this.refreshVersion) { if (!retainCurrent) loading?.setText('Related passages are unavailable while the index is changing.'); this.plugin.logDiagnostic(`Similar Notes passage ranking failed: ${error.message}`, true); } }
   }
   renderResult(list, neighbor, passages) {
     const row = list.createDiv({ cls: 'gib-similar-card suggestion-item', attr: { role: 'button', tabindex: '0', title: neighbor.id } }), pathParts = neighbor.id.replace(/\.md$/i, '').split('/'), name = pathParts.pop() || neighbor.id, container = row.createDiv({ cls: 'gib-semantic-result' });
