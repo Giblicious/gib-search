@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.54.18
+
+- Replaces vault-wide rescans after every edit with a coalesced dirty-file queue that reads, embeds, and retries only changed notes while preserving the last searchable copy on failure.
+- Stores the mobile index in 64 independently updated buckets with transactional manifests and one-generation rollback, and delays/coalesces persistence so routine edits do not rewrite one giant index object.
+- Adds incremental field-weighted BM25 retrieval alongside semantic similarity, including body phrases, headings, paths, and selected metadata, while preserving semantic ranking and filename-only attachment behavior.
+- Renders ranked search results immediately and progressively enriches only the visible results with semantic phrase highlighting without changing their order or scroll position.
+- Improves Similar Notes with asynchronously prepared multi-centroid note representations and diverse source-passage matching, avoiding mean-vector topic collapse and unnecessary sidebar graph work.
+- Improves passage boundaries, revision-bundle overfetch and signature caching, quick-filter scopes, and beginning/end coverage for Writing Profile analysis.
+- Serializes all worker inference through an interactive-first priority queue, removes the synchronous `compromise` parser from the runtime, and adds indexing, retrieval, recovery, relevance, and performance regression checks.
+
 ## 0.54.17
 
 - Uses explicit `type`, `form`, `kind`, and note-type frontmatter as first-class writing-form evidence, including reliable recognition of essays, journals, conversations, reference notes, narratives, and outlines.

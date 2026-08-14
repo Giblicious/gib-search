@@ -23,13 +23,13 @@ function overlap(first, second) { if (!first?.size || !second?.size) return 0; l
 function titleSimilarity(first, second) { const a = new Set(first.split(' ').filter(Boolean)), b = new Set(second.split(' ').filter(Boolean)); if (!a.size || !b.size) return 0; let shared = 0; for (const value of a) if (b.has(value)) shared++; return 2 * shared / (a.size + b.size); }
 function inScope(path, folders) { return folders.some(folder => path === folder || path.startsWith(`${folder}/`)); }
 
-async function buildRevisionCatalog(files, metadataFor, textFor, folders, yieldWork = async () => {}) {
+async function buildRevisionCatalog(files, metadataFor, textFor, folders, yieldWork = async () => {}, signatureFor = null) {
   const scopes = [...new Set((folders || []).map(value => String(value).trim().replace(/^\/+|\/+$/g, '')).filter(Boolean))];
   if (!scopes.length) return { byFile: new Map(), series: new Map() };
   const eligible = files.filter(file => String(file.extension || '').toLowerCase() === 'md' && inScope(file.path, scopes)), records = [];
   for (let index = 0; index < eligible.length; index++) { const file = eligible[index];
     const frontmatter = metadataFor(file)?.frontmatter || {}, explicit = String(frontmatter['gib-search-series'] || '').trim(), excluded = frontmatter['gib-search-no-bundle'] === true;
-    const record = { file: file.path, folder: file.parent?.path || '', title: normalizeRevisionTitle(file.basename), date: revisionDate(file, frontmatter), explicit, excluded, signature: contentSignature(textFor(file.path)) }; if (!record.excluded && record.title) records.push(record); if (index % 12 === 11) await yieldWork();
+    const record = { file: file.path, folder: file.parent?.path || '', title: normalizeRevisionTitle(file.basename), date: revisionDate(file, frontmatter), explicit, excluded, signature: signatureFor ? signatureFor(file.path, () => contentSignature(textFor(file.path))) : contentSignature(textFor(file.path)) }; if (!record.excluded && record.title) records.push(record); if (index % 12 === 11) await yieldWork();
   }
   const parent = new Map(records.map(record => [record.file, record.file])), find = value => { let root = value; while (parent.get(root) !== root) root = parent.get(root); while (parent.get(value) !== value) { const next = parent.get(value); parent.set(value, root); value = next; } return root; }, join = (a, b) => { const first = find(a), second = find(b); if (first !== second) parent.set(second, first); };
   const exact = new Map(), explicit = new Map(), minhash = new Map(), candidates = new Set(), maximumCandidates = records.length * 80;

@@ -155,16 +155,21 @@ class FileModelCache {
 }
 class DesktopIndexStore {
   constructor(directory) { this.directory = directory; }
+  generationDirectory() { return path.join(this.directory, 'generations'); }
+  async readGeneration(generation) {
+    if (!generation) return null; const directory = this.generationDirectory(), meta = JSON.parse(await fs.promises.readFile(path.join(directory, `${generation}.meta.json`), 'utf8')), data = await fs.promises.readFile(path.join(directory, `${generation}.vectors.bin`));
+    if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index generation ${generation} is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`);
+    let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(directory, `${generation}.state.json`), 'utf8')); } catch {}
+    return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), generation, ...state };
+  }
   async get() {
     const existingDirectory = fs.existsSync(this.directory);
     let lastError = null;
     for (let attempt = 0; attempt < 40; attempt++) {
       try {
-        const meta = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.meta.json'), 'utf8')); const data = await fs.promises.readFile(path.join(this.directory, 'index.vectors.bin'));
-        if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index pair is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`);
-        let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.state.json'), 'utf8')); } catch {}
-        let legacyHighlights = false; try { legacyHighlights = (await fs.promises.stat(path.join(this.directory, 'index.highlights.bin'))).size > 0; } catch {}
-        return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), legacyHighlights, ...state };
+        let manifest = null; try { manifest = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.current.json'), 'utf8')); } catch {}
+        if (manifest?.current) { for (const generation of [manifest.current, manifest.previous].filter(Boolean)) try { const value = await this.readGeneration(generation); if (value) return value; } catch (error) { lastError = error; } }
+        const meta = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.meta.json'), 'utf8')), data = await fs.promises.readFile(path.join(this.directory, 'index.vectors.bin')); if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index pair is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`); let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.state.json'), 'utf8')); } catch {} let legacyHighlights = false; try { legacyHighlights = (await fs.promises.stat(path.join(this.directory, 'index.highlights.bin'))).size > 0; } catch {} return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), legacyHighlights, ...state };
       } catch (error) { lastError = error; if (attempt < 39) await new Promise(resolve => setTimeout(resolve, 250)); }
     }
     const hasIndexFiles = fs.existsSync(path.join(this.directory, 'index.meta.json')) || fs.existsSync(path.join(this.directory, 'index.vectors.bin'));
@@ -172,9 +177,10 @@ class DesktopIndexStore {
     if (!hasIndexFiles) throw new Error('Existing semantic index files are temporarily unavailable'); throw lastError || new Error('Could not load the semantic index');
   }
   async put(value) {
-    fs.mkdirSync(this.directory, { recursive: true });
-    await fs.promises.writeFile(path.join(this.directory, 'index.meta.json'), JSON.stringify(value.meta)); await fs.promises.writeFile(path.join(this.directory, 'index.vectors.bin'), Buffer.from(value.vectors)); await fs.promises.writeFile(path.join(this.directory, 'index.highlights.bin'), Buffer.alloc(0));
-    await fs.promises.writeFile(path.join(this.directory, 'index.state.json'), JSON.stringify({ lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null }));
+    fs.mkdirSync(this.directory, { recursive: true }); const generations = this.generationDirectory(); fs.mkdirSync(generations, { recursive: true }); let previous = null; try { previous = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.current.json'), 'utf8')); } catch {}
+    const generation = `${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`, metadataTarget = path.join(generations, `${generation}.meta.json`), vectorsTarget = path.join(generations, `${generation}.vectors.bin`), stateTarget = path.join(generations, `${generation}.state.json`); await fs.promises.writeFile(metadataTarget, JSON.stringify(value.meta)); await fs.promises.writeFile(vectorsTarget, Buffer.from(value.vectors)); await fs.promises.writeFile(stateTarget, JSON.stringify({ lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null }));
+    const manifest = { version: 2, current: generation, previous: previous?.current || previous?.previous || null, committedAt: Date.now() }, manifestTarget = path.join(this.directory, 'index.current.json'), manifestTemporary = `${manifestTarget}.download`; await fs.promises.writeFile(manifestTemporary, JSON.stringify(manifest)); await fs.promises.rename(manifestTemporary, manifestTarget);
+    const keep = new Set([manifest.current, manifest.previous].filter(Boolean)); try { for (const entry of await fs.promises.readdir(generations)) { const id = entry.replace(/\.(?:meta\.json|vectors\.bin|state\.json)$/, ''); if (!keep.has(id)) await fs.promises.unlink(path.join(generations, entry)); } } catch {}
   }
   async getRelations() { try { return JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.relationships.json'), 'utf8')); } catch { return []; } }
   async putRelations(entries) { fs.mkdirSync(this.directory, { recursive: true }); const target = path.join(this.directory, 'index.relationships.json'), temporary = `${target}.download`; await fs.promises.writeFile(temporary, JSON.stringify(entries)); await fs.promises.rename(temporary, target); }
@@ -227,9 +233,9 @@ class DesktopEmbedder {
     } catch (error) { this.worker?.postMessage({ type: 'cache-result', id: message.id, error: error?.message || String(error) }); }
   }
   fail(error) { const worker = this.worker; this.worker = null; this.disabled = true; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); this.ready = false; this.plugin.logDiagnostic(`Background embedding worker failed: ${error.message}`, true); if (!this.plugin.isMobile) this.plugin.reportOnce(`Desktop embedding worker failed: ${error.message}`); }
-  embedBatch(texts, query = false) {
+  embedBatch(texts, query = false, options = {}) {
     if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++;
-    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'embed', id, texts, query }); } catch (error) { this.pending.delete(id); reject(error); } });
+    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'embed', id, texts, query, priority: Number(options.priority ?? (query ? 0 : 2)) }); } catch (error) { this.pending.delete(id); reject(error); } });
   }
   classifyRelations(pairs, options = {}) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'relations', id, pairs, lowPriority: Boolean(options.lowPriority) }); } catch (error) { this.pending.delete(id); reject(error); } }); }
   generateTopicLabels(prompts) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'topic-labels', id, prompts }); } catch (error) { this.pending.delete(id); reject(error); } }); }
@@ -698,18 +704,22 @@ class SemanticSearchModal extends SuggestModal {
       try {
         const tweaks = activeTweaks(this.plugin);
         const requested = Math.max(this.visibleLimit || tweaks.topK, tweaks.topK);
-        const rawMultiplier = this.plugin.settings.revisionBundlingEnabled ? 8 : 4, rawLimit = this.filePath ? Math.min(1000, requested + 10) : Math.min(1000, Math.max(requested * rawMultiplier, 40));
-        const options = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 15, file: this.filePath };
+        const rawMultiplier = this.plugin.settings.revisionBundlingEnabled ? 5 : 4; let rawLimit = this.filePath ? Math.min(1000, requested + 10) : Math.min(1000, Math.max(requested * rawMultiplier, 40));
+        const options = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: false, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 15, file: this.filePath };
         if (!this.filePath && this.activeQuickFilterIds.size) options.files = await this.plugin.quickFilterPaths(this.activeQuickFilterIds, 'search');
         const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search);
-        const results = await runSearch(query, rawLimit, tweaks.minScore, options);
+        let results = await runSearch(query, rawLimit, tweaks.minScore, options), revisionCatalog = null; if (!this.filePath && this.plugin.settings.revisionBundlingEnabled) { revisionCatalog = await this.plugin.revisionCatalog(); for (let pass = 0; pass < 2 && results.length === rawLimit && rawLimit < 1000; pass++) { const preview = bundleRevisionResults(groupSearchResults(results, query, Number.MAX_SAFE_INTEGER), revisionCatalog); if (preview.length >= requested) break; rawLimit = Math.min(1000, rawLimit * 2); results = await runSearch(query, rawLimit, tweaks.minScore, options); } }
         if (version === this.searchVersion && query === this.lastQuery) {
-          const grouped = this.filePath ? passageSearchResults(results, query, results.length) : groupSearchResults(results, query, Number.MAX_SAFE_INTEGER), all = !this.filePath && this.plugin.settings.revisionBundlingEnabled ? bundleRevisionResults(grouped, await this.plugin.revisionCatalog()) : grouped;
+          const grouped = this.filePath ? passageSearchResults(results, query, results.length) : groupSearchResults(results, query, Number.MAX_SAFE_INTEGER), all = revisionCatalog ? bundleRevisionResults(grouped, revisionCatalog) : grouped;
           this.lastResults = all.slice(0, requested); this.mapResults = all;
           this.canLoadMore = all.length > requested || (results.length === rawLimit && rawLimit < 1000);
           this.updateSuggestions();
           window.setTimeout(() => { this.renderShowMore(); if (this.plugin.atlasEnabled) this.updateMap(); }, 0);
           if (this.plugin.atlasEnabled) this.applyView();
+          if (tweaks.semanticHighlights) {
+            const highlighted = results.slice(0, 15).map(result => ({ ...result })); await this.plugin.search.highlightResults(highlighted, query, options); if (version !== this.searchVersion || query !== this.lastQuery) return;
+            const byPassage = new Map(highlighted.map(result => [result.passageIndex, result])), enriched = results.map(result => byPassage.get(result.passageIndex) || result), highlightedGrouped = this.filePath ? passageSearchResults(enriched, query, enriched.length) : groupSearchResults(enriched, query, Number.MAX_SAFE_INTEGER), highlightedAll = revisionCatalog ? bundleRevisionResults(highlightedGrouped, revisionCatalog) : highlightedGrouped, resultsEl = this.resultContainerEl || this.modalEl.querySelector('.prompt-results'), scrollTop = resultsEl?.scrollTop || 0; this.lastResults = highlightedAll.slice(0, requested); this.mapResults = highlightedAll; this.updateSuggestions(); window.setTimeout(() => { const current = this.resultContainerEl || this.modalEl.querySelector('.prompt-results'); if (current) current.scrollTop = scrollTop; this.renderShowMore(); }, 0);
+          }
         }
       } catch (error) { if (error?.name !== 'AbortError') this.plugin.reportOnce(error.message); }
     }, immediate ? 0 : 75);
@@ -1121,7 +1131,7 @@ class SimilarNotesView extends ItemView {
     if (!active) { if (retainCurrent) { this.contentEl.empty(); this.renderHeader(null); } this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Open a note to see semantically similar notes.' }); return; }
     const limit = Math.max(3, Math.min(30, Number(this.plugin.settings.similarNotesLimit) || 12)), minimum = Math.max(-1, Math.min(1, Number(this.plugin.settings.similarNotesMinScore) || 0)), allowedPaths = this.activeQuickFilterIds.size ? await this.plugin.quickFilterPaths(this.activeQuickFilterIds, 'similar') : null;
     if (version !== this.refreshVersion || !this.contentEl?.isConnected) return;
-    const neighbors = this.plugin.search.semanticNeighbors(active.path, Math.min(40, limit * 3), allowedPaths).nodes.filter(node => { const file = this.app.vault.getAbstractFileByPath(node.id); return file instanceof TFile && file.extension.toLowerCase() === 'md' && node.score >= minimum; }).slice(0, limit);
+    await this.plugin.search.prepareFileCaches(); if (version !== this.refreshVersion || !this.contentEl?.isConnected) return; const neighbors = this.plugin.search.semanticNeighbors(active.path, Math.min(40, limit * 3), allowedPaths, { lightweight: true }).nodes.filter(node => { const file = this.app.vault.getAbstractFileByPath(node.id); return file instanceof TFile && file.extension.toLowerCase() === 'md' && node.score >= minimum; }).slice(0, limit);
     if (!neighbors.length) { if (retainCurrent) { this.contentEl.empty(); this.renderHeader(active); } this.contentEl.createDiv({ cls: 'gib-similar-empty', text: this.plugin.indexer.indexStable ? 'No similar indexed notes meet the current threshold.' : 'Similar notes will appear when indexing is ready.' }); return; }
     const loading = retainCurrent ? null : this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Finding the strongest related passages…' });
     try {
@@ -1370,14 +1380,14 @@ module.exports = class GibSearch extends Plugin {
   clearQuickFilterCache() { this.quickFilterScopeGeneration++; this.quickFilterScopeCache?.clear(); }
   async quickFilterPaths(activeIds, surface) {
     const ids = [...activeIds].sort(), key = JSON.stringify([this.quickFilterScopeGeneration, surface, ids, this.settings.quickFilters]); if (!ids.length) return null; const cached = this.quickFilterScopeCache.get(key); if (cached) return cached;
-    const files = this.app.vault.getFiles(), paths = []; for (let start = 0; start < files.length; start += 160) { paths.push(...resolveQuickFilterPaths(files.slice(start, start + 160), file => this.app.metadataCache.getFileCache(file), this.settings.quickFilters, ids)); if (start + 160 < files.length) await new Promise(resolve => window.setTimeout(resolve, 0)); }
+    const files = this.app.vault.getFiles(), paths = new Set(); for (let start = 0; start < files.length; start += 160) { for (const resolved of resolveQuickFilterPaths(files.slice(start, start + 160), file => this.app.metadataCache.getFileCache(file), this.settings.quickFilters, ids)) paths.add(resolved); if (start + 160 < files.length) await new Promise(resolve => window.setTimeout(resolve, 0)); } paths.scopeKey = key;
     this.quickFilterScopeCache.set(key, paths); if (this.quickFilterScopeCache.size > 12) this.quickFilterScopeCache.delete(this.quickFilterScopeCache.keys().next().value); return paths;
   }
   async revisionCatalog() {
     if (!this.settings.revisionBundlingEnabled || !this.settings.revisionBundleFolders.length) return { byFile: new Map(), series: new Map() };
-    const signature = JSON.stringify([this.settings.revisionBundleFolders, this.search.meta.length, this.search.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)]); if (this.revisionCatalogCache?.signature === signature) return this.revisionCatalogCache.catalog; if (this.revisionCatalogPending?.signature === signature) return this.revisionCatalogPending.promise;
-    const folders = this.settings.revisionBundleFolders, inScope = file => folders.some(folder => file === folder || file.startsWith(`${folder}/`)), text = new Map(); for (const item of this.search.meta) { if (item.filenameOnly || !inScope(item.file)) continue; const existing = text.get(item.file) || ''; if (existing.length < 120000) text.set(item.file, `${existing}\n${item.heading || ''}\n${item.text || ''}`.slice(0, 120000)); }
-    const promise = buildRevisionCatalog(this.app.vault.getFiles(), file => this.app.metadataCache.getFileCache(file), file => text.get(file) || '', this.settings.revisionBundleFolders, () => new Promise(resolve => window.setTimeout(resolve, 0))).then(catalog => { this.revisionCatalogCache = { signature, catalog }; return catalog; }).finally(() => { if (this.revisionCatalogPending?.signature === signature) this.revisionCatalogPending = null; }); this.revisionCatalogPending = { signature, promise }; return promise;
+    const folders = this.settings.revisionBundleFolders, inScope = file => folders.some(folder => file === folder || file.startsWith(`${folder}/`)), fingerprints = new Map(); for (const item of this.search.meta) if (!item.filenameOnly && inScope(item.file)) fingerprints.set(item.file, item.contentHash || item.mtime || 0); const signature = JSON.stringify([folders, [...fingerprints].sort((a, b) => a[0].localeCompare(b[0]))]); if (this.revisionCatalogCache?.signature === signature) return this.revisionCatalogCache.catalog; if (this.revisionCatalogPending?.signature === signature) return this.revisionCatalogPending.promise;
+    const text = new Map(); for (const item of this.search.meta) { if (item.filenameOnly || !inScope(item.file)) continue; const existing = text.get(item.file) || ''; if (existing.length < 120000) text.set(item.file, `${existing}\n${item.heading || ''}\n${item.text || ''}`.slice(0, 120000)); } this.revisionSignatureCache ||= new Map(); const signatureFor = (file, create) => { const fingerprint = fingerprints.get(file), cached = this.revisionSignatureCache.get(file); if (cached?.fingerprint === fingerprint) return cached.signature; const value = create(); this.revisionSignatureCache.set(file, { fingerprint, signature: value }); return value; };
+    const promise = buildRevisionCatalog(this.app.vault.getFiles(), file => this.app.metadataCache.getFileCache(file), file => text.get(file) || '', this.settings.revisionBundleFolders, () => new Promise(resolve => window.setTimeout(resolve, 0)), signatureFor).then(catalog => { this.revisionCatalogCache = { signature, catalog }; return catalog; }).finally(() => { if (this.revisionCatalogPending?.signature === signature) this.revisionCatalogPending = null; }); this.revisionCatalogPending = { signature, promise }; return promise;
   }
   recordActivity(channel, message, level = 'info') { const clean = String(message || '').replace(/\s+/g, ' ').trim(); if (!clean) return; this.activityLog ||= []; this.activityListeners ||= new Set(); const at = Date.now(), last = this.activityLog.at(-1); if (last && last.channel === channel && last.message === clean && at - last.at < 1500) { last.at = at; last.level = level; } else { this.activityLog.push({ at, channel: String(channel || 'System'), message: clean, level }); if (this.activityLog.length > 500) this.activityLog.splice(0, this.activityLog.length - 500); } for (const listener of this.activityListeners) listener(this.activityLog.at(-1)); }
   onActivity(listener) { this.activityListeners ||= new Set(); this.activityListeners.add(listener); return () => this.activityListeners.delete(listener); }
