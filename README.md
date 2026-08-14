@@ -6,7 +6,7 @@ Gib Search indexes note content, headings, filenames, and optional folder-path s
 
 The optional **Bundle note revisions** setting collapses editions inside user-selected folders into one result while retaining the strongest historical match. Automatic grouping uses dated titles and bounded textual ancestry checks, not topical similarity. Frontmatter can explicitly join or exclude notes with `gib-search-series`, `gib-search-revision-date`, and `gib-search-no-bundle`.
 
-The **Open Similar Notes** command opens a native sidebar that follows the active note and lists its nearest semantic neighbors from the existing local index.
+The **Open Similar Notes** command opens a native sidebar that follows the active note. It uses the search result card UI, ranks each note's strongest related passages from the existing local index, and opens at the best passage.
 
 The experimental Atlas and graph surfaces are temporarily disabled while they are redesigned. Their implementation and saved settings remain intact, but Gib Search does not load their views, run their analysis, or prepare graph caches in this release.
 

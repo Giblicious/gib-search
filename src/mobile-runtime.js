@@ -895,6 +895,25 @@ export class MobileSearchRuntime {
     const ranked = [...vectors.entries()].filter(([id]) => id !== file).map(([id, entry]) => ({ id, label: basename(id), score: dot(center.vector, entry.vector) })).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(40, limit)));
     const residuals = ranked.map(node => ({ id: node.id, vector: residualVector(vectors.get(node.id).vector, center.vector) })), positions = semanticProjection(file, center.vector, residuals), edges = []; for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(vectors.get(ranked[first].id).vector, vectors.get(ranked[second].id).vector), residualScore: dot(residuals[first].vector, residuals[second].vector) }); return { center: file, nodes: ranked.map(node => ({ ...node, ...(positions.get(node.id) || {}) })), edges };
   }
+  async relatedPassages(file, files, maximum = 2) {
+    this.ensureFileCaches(); const sourceAll = (this.passageIndicesByFile.get(file) || []).filter(index => this.vectors[index] && !this.meta[index]?.filenameOnly), sourceLimit = 24;
+    if (!sourceAll.length) return new Map();
+    const sourceIndices = sourceAll.length <= sourceLimit ? sourceAll : [...new Set(Array.from({ length: sourceLimit }, (_, index) => sourceAll[Math.round(index * (sourceAll.length - 1) / (sourceLimit - 1))]))], output = new Map(), wanted = Math.max(1, Math.min(3, Number(maximum) || 2)); let comparisons = 0;
+    for (const targetFile of [...new Set(files || [])]) {
+      const ranked = [];
+      for (const targetIndex of this.passageIndicesByFile.get(targetFile) || []) {
+        if (!this.vectors[targetIndex] || this.meta[targetIndex]?.filenameOnly) continue; let bestScore = -1, bestSource = null;
+        for (const sourceIndex of sourceIndices) { const score = dot(this.vectors[sourceIndex], this.vectors[targetIndex]); if (score > bestScore) { bestScore = score; bestSource = this.meta[sourceIndex]; } }
+        ranked.push({ ...this.meta[targetIndex], passageIndex: targetIndex, score: bestScore, sourceHeading: bestSource?.heading || '' });
+        if (++comparisons % 48 === 0) await yieldToUi();
+      }
+      ranked.sort((first, second) => second.score - first.score); const selected = [];
+      for (const passage of ranked) { if (selected.some(item => item.text === passage.text && item.heading === passage.heading)) continue; selected.push(passage); if (selected.length >= wanted) break; }
+      output.set(targetFile, selected);
+      await yieldToUi();
+    }
+    return output;
+  }
   async graph(k = 5, maxEdges = 2000) {
     const groups = new Map(); this.meta.forEach((item, index) => { const group = groups.get(item.file) || []; group.push(this.vectors[index]); groups.set(item.file, group); });
     const nodes = [...groups].map(([id, vectors]) => { const vector = new Float32Array(DIMENSION); vectors.forEach(value => value.forEach((number, index) => vector[index] += number)); let norm = Math.sqrt(dot(vector, vector)) || 1; vector.forEach((_, index) => vector[index] /= norm); return { id, label: basename(id), vector }; });

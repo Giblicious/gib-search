@@ -73725,6 +73725,39 @@ ${files.map((file, index3) => `${file}:${fingerprints[index3]}`).join("\n")}`);
         for (let first = 0; first < residuals.length; first++) for (let second = first + 1; second < residuals.length; second++) edges.push({ source: residuals[first].id, target: residuals[second].id, score: dot(vectors.get(ranked[first].id).vector, vectors.get(ranked[second].id).vector), residualScore: dot(residuals[first].vector, residuals[second].vector) });
         return { center: file, nodes: ranked.map((node) => ({ ...node, ...positions.get(node.id) || {} })), edges };
       }
+      async relatedPassages(file, files, maximum = 2) {
+        this.ensureFileCaches();
+        const sourceAll = (this.passageIndicesByFile.get(file) || []).filter((index3) => this.vectors[index3] && !this.meta[index3]?.filenameOnly), sourceLimit = 24;
+        if (!sourceAll.length) return /* @__PURE__ */ new Map();
+        const sourceIndices = sourceAll.length <= sourceLimit ? sourceAll : [...new Set(Array.from({ length: sourceLimit }, (_2, index3) => sourceAll[Math.round(index3 * (sourceAll.length - 1) / (sourceLimit - 1))]))], output = /* @__PURE__ */ new Map(), wanted = Math.max(1, Math.min(3, Number(maximum) || 2));
+        let comparisons = 0;
+        for (const targetFile of [...new Set(files || [])]) {
+          const ranked = [];
+          for (const targetIndex of this.passageIndicesByFile.get(targetFile) || []) {
+            if (!this.vectors[targetIndex] || this.meta[targetIndex]?.filenameOnly) continue;
+            let bestScore = -1, bestSource = null;
+            for (const sourceIndex of sourceIndices) {
+              const score = dot(this.vectors[sourceIndex], this.vectors[targetIndex]);
+              if (score > bestScore) {
+                bestScore = score;
+                bestSource = this.meta[sourceIndex];
+              }
+            }
+            ranked.push({ ...this.meta[targetIndex], passageIndex: targetIndex, score: bestScore, sourceHeading: bestSource?.heading || "" });
+            if (++comparisons % 48 === 0) await yieldToUi();
+          }
+          ranked.sort((first, second) => second.score - first.score);
+          const selected = [];
+          for (const passage of ranked) {
+            if (selected.some((item) => item.text === passage.text && item.heading === passage.heading)) continue;
+            selected.push(passage);
+            if (selected.length >= wanted) break;
+          }
+          output.set(targetFile, selected);
+          await yieldToUi();
+        }
+        return output;
+      }
       async graph(k3 = 5, maxEdges = 2e3) {
         const groups = /* @__PURE__ */ new Map();
         this.meta.forEach((item, index3) => {
@@ -78837,6 +78870,7 @@ var SimilarNotesView = class extends ItemView {
     this.plugin = plugin6;
     this.filePath = null;
     this.refreshTimer = null;
+    this.refreshVersion = 0;
   }
   getViewType() {
     return SIMILAR_NOTES_VIEW;
@@ -78857,8 +78891,9 @@ var SimilarNotesView = class extends ItemView {
     window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => this.refresh(), 180);
   }
-  refresh() {
+  async refresh() {
     if (!this.contentEl?.isConnected) return;
+    const version2 = ++this.refreshVersion;
     this.contentEl.empty();
     const active = this.app.workspace.getActiveFile();
     const header = this.contentEl.createDiv({ cls: "gib-similar-header" });
@@ -78877,23 +78912,65 @@ var SimilarNotesView = class extends ItemView {
       this.contentEl.createDiv({ cls: "gib-similar-empty", text: this.plugin.indexer.indexStable ? "No similar indexed notes meet the current threshold." : "Similar notes will appear when indexing is ready." });
       return;
     }
-    const list4 = this.contentEl.createDiv({ cls: "gib-similar-list" });
-    for (const neighbor of neighbors) {
-      const row = list4.createEl("button", { cls: "gib-similar-row", attr: { type: "button", title: neighbor.id } }), pathParts = neighbor.id.replace(/\.md$/i, "").split("/"), name = pathParts.pop();
-      const icon = row.createSpan({ cls: "gib-similar-icon" });
-      setIcon(icon, "sticky-note");
-      const copy3 = row.createSpan({ cls: "gib-similar-copy" });
-      copy3.createSpan({ cls: "gib-similar-name", text: name });
-      copy3.createSpan({ cls: "gib-similar-path", text: pathParts.join(" / ") || "Vault" });
-      row.createSpan({ cls: "gib-similar-score", text: `${Math.round(neighbor.score * 100)}%` });
-      row.addEventListener("click", async () => {
-        const file = this.app.vault.getAbstractFileByPath(neighbor.id);
-        if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
-      });
+    const loading = this.contentEl.createDiv({ cls: "gib-similar-empty", text: "Finding the strongest related passages\u2026" });
+    try {
+      const passages = await this.plugin.search.relatedPassages(active.path, neighbors.map((node) => node.id), 2);
+      if (version2 !== this.refreshVersion || !this.contentEl?.isConnected) return;
+      loading.remove();
+      const list4 = this.contentEl.createDiv({ cls: "gib-similar-list" });
+      for (const neighbor of neighbors) this.renderResult(list4, neighbor, passages.get(neighbor.id) || []);
+    } catch (error) {
+      if (version2 === this.refreshVersion) {
+        loading.setText("Related passages are unavailable while the index is changing.");
+        this.plugin.logDiagnostic(`Similar Notes passage ranking failed: ${error.message}`, true);
+      }
     }
+  }
+  renderResult(list4, neighbor, passages) {
+    const row = list4.createDiv({ cls: "gib-similar-card suggestion-item", attr: { role: "button", tabindex: "0", title: neighbor.id } }), pathParts = neighbor.id.replace(/\.md$/i, "").split("/"), name = pathParts.pop() || neighbor.id, container = row.createDiv({ cls: "gib-semantic-result" });
+    const meta = container.createDiv({ cls: "gib-semantic-result-meta" }), folder = meta.createDiv({ cls: "gib-semantic-result-folder" });
+    (pathParts.length ? pathParts : ["Vault"]).forEach((part, index3) => {
+      if (index3) folder.createSpan({ cls: "gib-semantic-result-folder-separator", text: "/" });
+      folder.createSpan({ text: part });
+    });
+    meta.createSpan({ cls: "gib-similar-relation-label", text: "Related note" });
+    const header = container.createDiv({ cls: "gib-semantic-result-header" }), icon = header.createSpan({ cls: "gib-semantic-result-icon" });
+    setIcon(icon, "sticky-note");
+    header.createSpan({ cls: "gib-semantic-result-file", text: name });
+    const score = header.createSpan({ cls: "gib-semantic-result-score", text: `${Math.round(neighbor.score * 100)}%` });
+    score.setAttribute("title", `Whole-note semantic similarity: ${Math.round(neighbor.score * 100)}%`);
+    const snippets = passages.length ? container.createDiv({ cls: "gib-semantic-snippets" }) : null;
+    passages.forEach((passage, index3) => {
+      const block = snippets.createDiv({ cls: "gib-semantic-snippet" }), heading = block.createDiv({ cls: "gib-similar-passage-heading" });
+      heading.createSpan({ text: passage.heading || "Strongest related passage" });
+      heading.createSpan({ cls: "gib-similar-passage-score", text: `${Math.round(passage.score * 100)}% passage` });
+      const preview = block.createDiv({ cls: "gib-semantic-result-preview", text: distillSnippet(passage.text, "", []) });
+      if (passage.sourceHeading) preview.setAttribute("title", `Most related to \u201C${passage.sourceHeading}\u201D in the active note`);
+      if (index3 < passages.length - 1) snippets.createDiv({ cls: "gib-semantic-snippet-divider" });
+    });
+    const open = async () => {
+      const file = this.app.vault.getAbstractFileByPath(neighbor.id);
+      if (!(file instanceof TFile)) return;
+      const leaf = this.app.workspace.getLeaf(false);
+      await leaf.openFile(file);
+      const best = passages[0];
+      if (Number(best?.lineStart) > 0) window.setTimeout(() => {
+        const editor = leaf.view?.editor;
+        if (!editor?.setCursor) return;
+        editor.setCursor({ line: best.lineStart, ch: 0 });
+        editor.scrollIntoView({ from: { line: best.lineStart, ch: 0 }, to: { line: best.lineEnd || best.lineStart, ch: 0 } }, true);
+      }, 100);
+    };
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      open();
+    });
   }
   async onClose() {
     window.clearTimeout(this.refreshTimer);
+    this.refreshVersion++;
     this.indexOff?.();
   }
 };

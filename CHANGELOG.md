@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.3
+
+- Redesigns Similar Notes with the same result-card hierarchy as semantic search, including folder paths, note similarity, passage excerpts, and passage relevance scores.
+- Opens a related note at its strongest matching passage.
+- Ranks passages cooperatively from existing vectors without rereading vault files or running new inference.
+
 ## 0.54.2
 
 - Adds optional, folder-scoped revision bundling that keeps every edition searchable while showing one result per writing series.
