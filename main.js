@@ -75093,6 +75093,7 @@ function renderQuickFilterBar(parent, plugin6, surface, activeIds, onChange) {
       button.setAttribute("aria-pressed", String(activeIds.has(filter2.id)));
     }
   }
+  render();
   return bar;
 }
 function propertyRulesText(rules2) {

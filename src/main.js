@@ -53,7 +53,7 @@ function renderQuickFilterBar(parent, plugin, surface, activeIds, onChange) {
     button.addEventListener('click', event => { updateQuickFilterSelection(activeIds, filter.id, event.shiftKey); render(); onChange(); }); buttons.push([filter, button]);
   }
   function render() { all.toggleClass('is-active', activeIds.size === 0); all.setAttribute('aria-pressed', String(activeIds.size === 0)); for (const [filter, button] of buttons) { button.toggleClass('is-active', activeIds.has(filter.id)); button.setAttribute('aria-pressed', String(activeIds.has(filter.id))); } }
-  return bar;
+  render(); return bar;
 }
 function propertyRulesText(rules) { return (rules || []).map(rule => rule.operator === 'exists' ? rule.key : `${rule.key}${rule.operator === 'not-equals' ? '!=' : rule.operator === 'contains' ? '~=' : '='}${rule.value}`).join(', '); }
 function parsePropertyRules(value) { return String(value || '').split(',').map(item => { const match = item.trim().match(/^([^=!~]+?)\s*(?:(!=|~=|=)\s*(.*))?$/); if (!match) return null; return normalizePropertyRule({ key: match[1], operator: match[2] === '!=' ? 'not-equals' : match[2] === '~=' ? 'contains' : match[2] === '=' ? 'equals' : 'exists', value: match[3] || '' }); }).filter(Boolean); }

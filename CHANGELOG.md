@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.10
+
+- Restores the active visual state when Similar Notes rebuilds its filter bar after applying a filter.
+- Keeps `aria-pressed` and the visible active class synchronized on both initial render and later selection changes.
+
 ## 0.54.9
 
 - Keeps Similar Notes anchored to its current note when its sidebar filter controls receive focus.
