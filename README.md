@@ -8,6 +8,8 @@ The optional **Bundle note revisions** setting collapses editions inside user-se
 
 The **Open Similar Notes** command opens a native sidebar that follows the active note. It uses the search result card UI, ranks each note's strongest related passages from the existing local index, and opens at the best passage.
 
+Select text in an editor and choose **Find similar to selection** from the context menu to temporarily reuse that sidebar for passage-level matches. The selection stays in memory only, excludes its source note, and can be dismissed with Back or Close to resume the usual active-note view.
+
 Search and Similar Notes result icons can optionally follow Iconic file or folder icons. The default uses the top-level folder's resolved Iconic icon and color; parent-depth, nearest-decorated-folder, file, file-type, and fixed sticky-note modes are also available. Iconic is never required.
 
 Optional custom quick-filter buttons can be shared by Search and Similar Notes or limited to either surface. Filters can use folders, file kinds or extensions, tags, frontmatter properties, path text, and recent file dates. Conditions within one filter combine as AND. A normal click selects one filter or clears the sole active filter; Shift-click adds or removes filters as OR. Each saved filter has an enable/disable switch so it can be hidden without deleting its definition. Scope resolution uses cached Obsidian metadata and runs before semantic ranking without reading files or creating new embeddings.

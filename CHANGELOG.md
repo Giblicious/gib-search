@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.12
+
+- Adds **Find similar to selection** to the editor context menu when text is selected.
+- Reuses the Similar Notes sidebar for temporary passage-level results without reindexing or persisting the selection.
+- Adds Back and Close controls to return to the normal active-note view and keeps quick filters available in selection mode.
+
 ## 0.54.11
 
 - Gives Search-modal quick filters a quieter tab-style treatment that fits the modal toolbar.

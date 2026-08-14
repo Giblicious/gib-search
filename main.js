@@ -79226,6 +79226,8 @@ var SimilarNotesView = class extends ItemView {
     this.plugin = plugin6;
     this.activeQuickFilterIds = defaultQuickFilterIds(plugin6, "similar");
     this.filePath = null;
+    this.selectionQuery = plugin6.pendingSimilarSelection ? { ...plugin6.pendingSimilarSelection } : null;
+    this.selectionSignature = "";
     this.refreshTimer = null;
     this.refreshVersion = 0;
     this.indexMeta = null;
@@ -79254,6 +79256,7 @@ var SimilarNotesView = class extends ItemView {
     return previous instanceof TFile && previous.extension.toLowerCase() === "md" ? previous : null;
   }
   refreshForActiveNote() {
+    if (this.selectionQuery) return;
     const active = this.activeNote();
     if (!active || active.path === this.filePath) return;
     this.scheduleRefresh(false);
@@ -79275,13 +79278,43 @@ var SimilarNotesView = class extends ItemView {
       this.refresh(preserve);
     }, 180);
   }
+  showSelection(text, sourcePath = "") {
+    const query = String(text || "").trim().replace(/\s+/g, " ");
+    if (query.length < 3) return;
+    this.selectionQuery = { text: query, sourcePath: String(sourcePath || "") };
+    this.selectionSignature = "";
+    window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+    this.refresh(false);
+  }
+  clearSelection() {
+    if (!this.selectionQuery) return this.refresh(false);
+    this.selectionQuery = null;
+    this.selectionSignature = "";
+    this.filePath = null;
+    window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+    this.refresh(false);
+  }
   renderHeader(active) {
-    const header = this.contentEl.createDiv({ cls: "gib-similar-header" });
-    header.createDiv({ cls: "gib-similar-kicker", text: "Similar Notes" });
-    header.createDiv({ cls: "gib-similar-title", text: active?.basename || "No active note" });
+    const header = this.contentEl.createDiv({ cls: "gib-similar-header" }), heading = header.createDiv({ cls: "gib-similar-heading-row" }), copy3 = heading.createDiv({ cls: "gib-similar-heading-copy" });
+    if (this.selectionQuery) {
+      copy3.createDiv({ cls: "gib-similar-kicker", text: "Similar to selection" });
+      copy3.createDiv({ cls: "gib-similar-title gib-similar-selection-title", text: `\u201C${this.selectionQuery.text.slice(0, 140)}${this.selectionQuery.text.length > 140 ? "\u2026" : ""}\u201D` });
+      const actions = heading.createDiv({ cls: "gib-similar-selection-actions" }), back = actions.createEl("button", { attr: { type: "button", "aria-label": "Back to similar notes", title: "Back to similar notes" } }), close = actions.createEl("button", { attr: { type: "button", "aria-label": "Close selection search", title: "Close selection search" } });
+      setIcon(back, "arrow-left");
+      back.createSpan({ text: "Back" });
+      setIcon(close, "x");
+      back.addEventListener("click", () => this.clearSelection());
+      close.addEventListener("click", () => this.clearSelection());
+    } else {
+      copy3.createDiv({ cls: "gib-similar-kicker", text: "Similar Notes" });
+      copy3.createDiv({ cls: "gib-similar-title", text: active?.basename || "No active note" });
+    }
     renderQuickFilterBar(header, this.plugin, "similar", this.activeQuickFilterIds, () => this.refresh(false));
   }
   async refresh(preserveScroll = false) {
+    if (this.selectionQuery) return this.refreshSelection(preserveScroll);
     if (!this.contentEl?.isConnected) return;
     const version2 = ++this.refreshVersion, active = this.activeNote(), previousPath = this.filePath, currentList = this.contentEl.querySelector(".gib-similar-list"), retainCurrent = Boolean(preserveScroll && active?.path === previousPath && currentList), previousScroll = retainCurrent ? Number(currentList.scrollTop || 0) : 0;
     this.filePath = active?.path || null;
@@ -79333,19 +79366,62 @@ var SimilarNotesView = class extends ItemView {
       }
     }
   }
-  renderResult(list4, neighbor, passages) {
+  async refreshSelection(preserveScroll = false) {
+    if (!this.contentEl?.isConnected || !this.selectionQuery) return;
+    const version2 = ++this.refreshVersion, selection = this.selectionQuery, signature = `${selection.sourcePath}\0${selection.text}`, currentList = this.contentEl.querySelector(".gib-similar-list"), retainCurrent = Boolean(preserveScroll && signature === this.selectionSignature && currentList), previousScroll = retainCurrent ? Number(currentList.scrollTop || 0) : 0;
+    this.selectionSignature = signature;
+    this.filePath = selection.sourcePath || null;
+    this.indexMeta = this.plugin.search.meta;
+    this.indexVectors = this.plugin.search.vectors;
+    if (!retainCurrent) {
+      this.contentEl.empty();
+      this.renderHeader(null);
+    }
+    const limit = Math.max(3, Math.min(30, Number(this.plugin.settings.similarNotesLimit) || 12)), minimum = Math.max(-1, Math.min(1, Number(this.plugin.settings.similarNotesMinScore) || 0)), allowedPaths = this.activeQuickFilterIds.size ? await this.plugin.quickFilterPaths(this.activeQuickFilterIds, "similar") : null;
+    if (version2 !== this.refreshVersion || this.selectionQuery !== selection || !this.contentEl?.isConnected) return;
+    const loading = retainCurrent ? null : this.contentEl.createDiv({ cls: "gib-similar-empty", text: "Finding notes related to the selection\u2026" });
+    try {
+      const tweaks = activeTweaks(this.plugin), options = { scoreWindow: Math.max(0.18, Number(tweaks.scoreWindow) || 0), folderPathBoost: 0, semanticHighlights: false };
+      if (allowedPaths !== null) options.files = allowedPaths;
+      const raw = await this.plugin.search.search(selection.text, Math.min(180, Math.max(48, limit * 6)), minimum, options);
+      if (version2 !== this.refreshVersion || this.selectionQuery !== selection || !this.contentEl?.isConnected) return;
+      const results = groupSearchResults(raw, selection.text, Number.MAX_SAFE_INTEGER).filter((result) => {
+        const file = this.app.vault.getAbstractFileByPath(result.file);
+        return file instanceof TFile && file.extension.toLowerCase() === "md" && result.file !== selection.sourcePath && result.score >= minimum;
+      }).slice(0, limit);
+      if (retainCurrent) {
+        this.contentEl.empty();
+        this.renderHeader(null);
+      } else loading?.remove();
+      if (!results.length) {
+        this.contentEl.createDiv({ cls: "gib-similar-empty", text: this.plugin.indexer.indexStable ? "No indexed notes meet the similarity threshold for this selection." : "Selection results will appear when indexing is ready." });
+        return;
+      }
+      const list4 = this.contentEl.createDiv({ cls: "gib-similar-list" });
+      for (const result of results) this.renderResult(list4, { id: result.file, score: result.score }, result.snippets || [], "Related to selection", `Selection similarity: ${Math.round(result.score * 100)}%`);
+      if (previousScroll > 0) window.requestAnimationFrame(() => {
+        if (version2 === this.refreshVersion && list4.isConnected) list4.scrollTop = previousScroll;
+      });
+    } catch (error) {
+      if (version2 === this.refreshVersion) {
+        if (!retainCurrent) loading?.setText("Selection search is unavailable while the index is changing.");
+        this.plugin.logDiagnostic(`Similar-to-selection search failed: ${error.message}`, true);
+      }
+    }
+  }
+  renderResult(list4, neighbor, passages, relationLabel = "Related note", scoreTitle = "") {
     const row = list4.createDiv({ cls: "gib-similar-card suggestion-item", attr: { role: "button", tabindex: "0", title: neighbor.id } }), pathParts = neighbor.id.replace(/\.md$/i, "").split("/"), name = pathParts.pop() || neighbor.id, container = row.createDiv({ cls: "gib-semantic-result" });
     const meta = container.createDiv({ cls: "gib-semantic-result-meta" }), folder = meta.createDiv({ cls: "gib-semantic-result-folder" });
     (pathParts.length ? pathParts : ["Vault"]).forEach((part, index3) => {
       if (index3) folder.createSpan({ cls: "gib-semantic-result-folder-separator", text: "/" });
       folder.createSpan({ text: part });
     });
-    meta.createSpan({ cls: "gib-similar-relation-label", text: "Related note" });
+    meta.createSpan({ cls: "gib-similar-relation-label", text: relationLabel });
     const header = container.createDiv({ cls: "gib-semantic-result-header" }), icon = header.createSpan({ cls: "gib-semantic-result-icon" });
     renderResultIcon(this.app, this.plugin.settings, icon, neighbor.id);
     header.createSpan({ cls: "gib-semantic-result-file", text: name });
     const score = header.createSpan({ cls: "gib-semantic-result-score", text: `${Math.round(neighbor.score * 100)}%` });
-    score.setAttribute("title", `Whole-note semantic similarity: ${Math.round(neighbor.score * 100)}%`);
+    score.setAttribute("title", scoreTitle || `Whole-note semantic similarity: ${Math.round(neighbor.score * 100)}%`);
     const snippets = passages.length ? container.createDiv({ cls: "gib-semantic-snippets" }) : null;
     passages.forEach((passage, index3) => {
       const block = snippets.createDiv({ cls: "gib-semantic-snippet" }), heading = block.createDiv({ cls: "gib-similar-passage-heading" });
@@ -79861,6 +79937,11 @@ module.exports = class GibSearch extends Plugin {
     this.registerEvent(this.app.vault.on("delete", invalidateQuickFilters));
     this.registerEvent(this.app.vault.on("rename", invalidateQuickFilters));
     this.registerView(SIMILAR_NOTES_VIEW, (leaf) => new SimilarNotesView(leaf, this));
+    this.registerEvent(this.app.workspace.on("editor-menu", (menu, editor, view) => {
+      const selection = String(editor?.getSelection?.() || "").trim();
+      if (selection.length < 3) return;
+      menu.addItem((item) => item.setTitle("Find similar to selection").setIcon("search").onClick(() => this.openSimilarToSelection(selection, view?.file?.path || this.app.workspace.getActiveFile()?.path || "")));
+    }));
     if (this.atlasEnabled) {
       this.registerView(GRAPH_VIEW, (leaf) => new GraphView(leaf, this));
       this.registerView(NAVIGATOR_VIEW, (leaf) => new AtlasNavigatorView(leaf, this));
@@ -80020,8 +80101,32 @@ ${item.text || ""}`.slice(0, 12e4));
       await leaf.setViewState({ type: SIMILAR_NOTES_VIEW, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
-    leaf.view?.refresh?.();
+    if (leaf.view instanceof SimilarNotesView && leaf.view.selectionQuery) leaf.view.clearSelection();
+    else leaf.view?.refresh?.();
     return leaf;
+  }
+  async openSimilarToSelection(selection, sourcePath = "") {
+    const normalized = String(selection || "").trim().replace(/\s+/g, " ");
+    if (normalized.length < 3) {
+      new Notice("Select at least three characters to find similar notes.");
+      return null;
+    }
+    const query = normalized.slice(0, 4e3);
+    if (normalized.length > query.length) new Notice("Using the first 4,000 characters of the selection.");
+    const pending = { text: query, sourcePath: String(sourcePath || "") };
+    this.pendingSimilarSelection = pending;
+    try {
+      let leaf = this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)[0];
+      if (!leaf) {
+        leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf("tab");
+        await leaf.setViewState({ type: SIMILAR_NOTES_VIEW, active: true });
+      }
+      this.app.workspace.revealLeaf(leaf);
+      if (leaf.view instanceof SimilarNotesView && (leaf.view.selectionQuery?.text !== query || leaf.view.selectionQuery?.sourcePath !== pending.sourcePath)) leaf.view.showSelection(query, pending.sourcePath);
+      return leaf;
+    } finally {
+      if (this.pendingSimilarSelection === pending) this.pendingSimilarSelection = null;
+    }
   }
   onunload() {
     this.runtime?.stop();
