@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.5
+
+- Adds optional Iconic-aware result icons to semantic search and Similar Notes.
+- Adds file, immediate parent, parent ×2, parent ×3, top-level folder, and nearest decorated folder modes.
+- Defaults results to the top-level folder's resolved Iconic icon and color, with file-type and sticky-note fallbacks when Iconic is unavailable.
+
 ## 0.54.4
 
 - Prevents Similar Notes from rebuilding when scrolling or merely moving focus between workspace leaves.

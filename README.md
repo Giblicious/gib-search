@@ -8,6 +8,8 @@ The optional **Bundle note revisions** setting collapses editions inside user-se
 
 The **Open Similar Notes** command opens a native sidebar that follows the active note. It uses the search result card UI, ranks each note's strongest related passages from the existing local index, and opens at the best passage.
 
+Search and Similar Notes result icons can optionally follow Iconic file or folder icons. The default uses the top-level folder's resolved Iconic icon and color; parent-depth, nearest-decorated-folder, file, file-type, and fixed sticky-note modes are also available. Iconic is never required.
+
 The experimental Atlas and graph surfaces are temporarily disabled while they are redesigned. Their implementation and saved settings remain intact, but Gib Search does not load their views, run their analysis, or prepare graph caches in this release.
 
 Plugin settings are divided into Status, Search, and Console pages. Status reports the search index and local model independently; Console provides a bounded live account of local work without logging note contents.
