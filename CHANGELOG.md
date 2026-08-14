@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.6
+
+- Adds optional custom quick-filter buttons shared by semantic search and Similar Notes.
+- Filters candidates before ranking by folders, file kinds or extensions, tags, frontmatter properties, path text, and recent creation or modification dates.
+- Combines selected buttons as OR while keeping each filter's conditions strict, and safely supports empty scopes without falling back to the whole vault.
+- Caches metadata-only scopes and yields during vault scans so filtering does not add inference, file reads, or disruptive mobile work.
+
 ## 0.54.5
 
 - Adds optional Iconic-aware result icons to semantic search and Similar Notes.

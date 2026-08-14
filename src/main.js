@@ -1,10 +1,11 @@
-const { Plugin, PluginSettingTab, Setting, SuggestModal, ItemView, Notice, TFile, setIcon, getIcon, Platform } = require('obsidian');
+const { Plugin, PluginSettingTab, Setting, SuggestModal, Modal, ItemView, Notice, TFile, setIcon, getIcon, Platform } = require('obsidian');
 const { MobileSearchRuntime } = require('./mobile-runtime');
 const { AtlasEngine, STANDARD_ATLAS_VIEWS, DEFAULT_ATLAS_VIEW } = require('./atlas-engine');
 const { TEXT_SIGNALS } = require('./text-signals');
 const { buildSemanticTerrain, normalizeLandscape } = require('./terrain-engine');
 const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bundles');
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
+const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, visibleQuickFilters } = require('./quick-filters');
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -28,7 +29,7 @@ const MODEL_TWEAK_DEFAULTS = {
 };
 const MAP_TUNING_DEFAULTS = { commonnessSuppression: .75, passageCoverage: .72, passageDiversity: .28, communitySensitivity: 1, communityMembership: .42, communityMinSize: 4, communityLabelSensitivity: .58, neighborhoodStability: .68, neighborhoodSeparation: .06, neighborhoodCoverage: .58, neighborhoodSpread: 1, showTopography: true, terrainSpread: 1, terrainContrast: 1 };
 function atlasId(value = 'view') { return `${String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'view'}-${Date.now().toString(36)}`; }
-const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, revisionBundlingEnabled: false, revisionBundleFolders: [], resultIconSource: 'iconic-top-level', similarNotesLimit: 12, similarNotesMinScore: .35, searchMapEnabled: false, searchMapGenerations: 1, atlasHomeViewId: DEFAULT_ATLAS_VIEW.id, atlasViews: [], magicGraphEnabled: true, graphSemanticColors: true, generatedTopicLabels: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000 };
+const DEFAULTS = { enabled: true, verboseLogging: false, allowExternalImageThumbnails: false, folderPathBoostEnabled: true, revisionBundlingEnabled: false, revisionBundleFolders: [], quickFiltersEnabled: false, quickFilters: [], resultIconSource: 'iconic-top-level', similarNotesLimit: 12, similarNotesMinScore: .35, searchMapEnabled: false, searchMapGenerations: 1, atlasHomeViewId: DEFAULT_ATLAS_VIEW.id, atlasViews: [], magicGraphEnabled: true, graphSemanticColors: true, generatedTopicLabels: true, mapTuning: MAP_TUNING_DEFAULTS, topK: 10, minScore: 0.5, semanticHighlights: true, highlightResultMinScore: 0.55, highlightSingleWordMinScore: 0.62, highlightPhraseMinScore: 0.56, highlightMaxPhrases: 3, graphK: 5, graphMaxEdges: 2000 };
 const ICONIC_THEME_COLORS = { red: '--color-red', orange: '--color-orange', yellow: '--color-yellow', green: '--color-green', cyan: '--color-cyan', blue: '--color-blue', purple: '--color-purple', pink: '--color-pink', gray: '--color-base-70' };
 function iconicPlugin(app) { try { return app?.plugins?.getPlugin?.('iconic') || app?.plugins?.plugins?.iconic || null; } catch { return null; } }
 function renderResultIcon(app, settings, parent, filePath) {
@@ -37,6 +38,46 @@ function renderResultIcon(app, settings, parent, filePath) {
   const color = iconic?.color, cssColor = color && ICONIC_THEME_COLORS[color] ? `var(${ICONIC_THEME_COLORS[color]})` : color && globalThis.CSS?.supports?.('color', color) ? color : '';
   if (cssColor) parent.style.setProperty('color', cssColor); else parent.style.removeProperty('color');
   parent.setAttribute('data-icon-source', iconic ? `iconic:${iconic.target}` : 'fallback');
+}
+function defaultQuickFilterIds(plugin, surface) { return new Set(visibleQuickFilters(plugin.settings.quickFilters, surface).filter(filter => filter.defaultActive).map(filter => filter.id)); }
+function renderQuickFilterBar(parent, plugin, surface, activeIds, onChange) {
+  const filters = plugin.settings.quickFiltersEnabled ? visibleQuickFilters(plugin.settings.quickFilters, surface) : []; if (!filters.length) return null;
+  const bar = parent.createDiv({ cls: 'gib-quick-filters', attr: { role: 'toolbar', 'aria-label': 'Quick filters' } });
+  const all = bar.createEl('button', { cls: 'gib-quick-filter', text: 'All', attr: { type: 'button', 'aria-pressed': String(activeIds.size === 0) } }); all.toggleClass('is-active', activeIds.size === 0);
+  all.addEventListener('click', () => { if (!activeIds.size) return; activeIds.clear(); render(); onChange(); });
+  const buttons = [];
+  for (const filter of filters) {
+    const button = bar.createEl('button', { cls: 'gib-quick-filter', attr: { type: 'button', 'aria-pressed': String(activeIds.has(filter.id)), title: filter.name } });
+    if (filter.icon) { const icon = button.createSpan({ cls: 'gib-quick-filter-icon' }); if (getIcon(filter.icon)) setIcon(icon, filter.icon); else icon.setText(filter.icon); }
+    button.createSpan({ text: filter.name }); if (filter.color && globalThis.CSS?.supports?.('color', filter.color)) button.style.setProperty('--gib-filter-color', filter.color);
+    button.addEventListener('click', () => { activeIds.has(filter.id) ? activeIds.delete(filter.id) : activeIds.add(filter.id); render(); onChange(); }); buttons.push([filter, button]);
+  }
+  function render() { all.toggleClass('is-active', activeIds.size === 0); all.setAttribute('aria-pressed', String(activeIds.size === 0)); for (const [filter, button] of buttons) { button.toggleClass('is-active', activeIds.has(filter.id)); button.setAttribute('aria-pressed', String(activeIds.has(filter.id))); } }
+  return bar;
+}
+function propertyRulesText(rules) { return (rules || []).map(rule => rule.operator === 'exists' ? rule.key : `${rule.key}${rule.operator === 'not-equals' ? '!=' : rule.operator === 'contains' ? '~=' : '='}${rule.value}`).join(', '); }
+function parsePropertyRules(value) { return String(value || '').split(',').map(item => { const match = item.trim().match(/^([^=!~]+?)\s*(?:(!=|~=|=)\s*(.*))?$/); if (!match) return null; return normalizePropertyRule({ key: match[1], operator: match[2] === '!=' ? 'not-equals' : match[2] === '~=' ? 'contains' : match[2] === '=' ? 'equals' : 'exists', value: match[3] || '' }); }).filter(Boolean); }
+
+class QuickFilterEditorModal extends Modal {
+  constructor(app, plugin, filter = null, onSave) { super(app); this.plugin = plugin; this.filter = { id: filter?.id || filterId(filter?.name), name: filter?.name || '', icon: filter?.icon || '', color: filter?.color || '', surfaces: filter?.surfaces || 'both', defaultActive: Boolean(filter?.defaultActive), folders: [...(filter?.folders || [])], excludeFolders: [...(filter?.excludeFolders || [])], types: [...(filter?.types || [])], tags: [...(filter?.tags || [])], pathTerms: [...(filter?.pathTerms || [])], properties: [...(filter?.properties || [])], modifiedWithinDays: Number(filter?.modifiedWithinDays || 0), createdWithinDays: Number(filter?.createdWithinDays || 0) }; this.onSaveFilter = onSave; }
+  onOpen() {
+    const { contentEl } = this; contentEl.empty(); contentEl.addClass('gib-quick-filter-editor'); contentEl.createEl('h2', { text: this.filter.name ? 'Edit quick filter' : 'Add quick filter' });
+    const text = (name, desc, value, placeholder, assign) => new Setting(contentEl).setName(name).setDesc(desc).addText(input => input.setValue(value).setPlaceholder(placeholder).onChange(assign));
+    text('Name', 'Button label.', this.filter.name, 'Writings', value => { this.filter.name = value.trim(); });
+    new Setting(contentEl).setName('Show in').setDesc('Choose which result surfaces show this button.').addDropdown(dropdown => dropdown.addOptions({ both: 'Search and Similar Notes', search: 'Search only', similar: 'Similar Notes only' }).setValue(this.filter.surfaces).onChange(value => { this.filter.surfaces = value; }));
+    text('Included folders', 'Comma-separated; any listed folder may match.', this.filter.folders.join(', '), 'Writings, Study', value => { this.filter.folders = value.split(',').map(item => item.trim()).filter(Boolean); });
+    text('Excluded folders', 'Comma-separated subtrees to omit.', this.filter.excludeFolders.join(', '), 'Archive, Templates', value => { this.filter.excludeFolders = value.split(',').map(item => item.trim()).filter(Boolean); });
+    text('File types', 'Kinds or extensions: markdown, pdf, image, audio, video, canvas, attachment, other, or md/png/etc.', this.filter.types.join(', '), 'markdown, pdf', value => { this.filter.types = value.split(',').map(item => item.trim()).filter(Boolean); });
+    text('Tags', 'Comma-separated tags; every listed tag must match.', this.filter.tags.join(', '), 'published, essay', value => { this.filter.tags = value.split(',').map(item => item.trim()).filter(Boolean); });
+    text('Path contains', 'Comma-separated alternatives matched against filename or path.', this.filter.pathTerms.join(', '), 'agency, philosophy', value => { this.filter.pathTerms = value.split(',').map(item => item.trim()).filter(Boolean); });
+    text('Properties', 'Comma-separated rules: status=draft, project!=archive, summary~=agency, published (exists).', propertyRulesText(this.filter.properties), 'status=draft, published', value => { this.filter.properties = parsePropertyRules(value); });
+    new Setting(contentEl).setName('Modified within days').setDesc('0 means any date.').addText(input => input.setValue(String(this.filter.modifiedWithinDays || 0)).onChange(value => { this.filter.modifiedWithinDays = Math.max(0, Number(value) || 0); }));
+    new Setting(contentEl).setName('Created within days').setDesc('0 means any date.').addText(input => input.setValue(String(this.filter.createdWithinDays || 0)).onChange(value => { this.filter.createdWithinDays = Math.max(0, Number(value) || 0); }));
+    text('Icon', 'Optional Lucide icon name or short text.', this.filter.icon, 'book-open', value => { this.filter.icon = value.trim(); }); text('Color', 'Optional CSS color.', this.filter.color, '#7c6fef', value => { this.filter.color = value.trim(); });
+    new Setting(contentEl).setName('Active by default').setDesc('Starts selected independently in each visible surface.').addToggle(toggle => toggle.setValue(this.filter.defaultActive).onChange(value => { this.filter.defaultActive = value; }));
+    new Setting(contentEl).addButton(button => button.setButtonText('Save filter').setCta().onClick(async () => { if (!this.filter.name.trim()) { new Notice('Quick filter needs a name'); return; } await this.onSaveFilter(this.filter); this.close(); })).addButton(button => button.setButtonText('Cancel').onClick(() => this.close()));
+  }
+  onClose() { this.contentEl.empty(); }
 }
 function activeIndexDir(plugin) {
   return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
@@ -633,7 +674,7 @@ class LivingSemanticMapCanvas extends SemanticMapCanvas {
 
 class SemanticSearchModal extends SuggestModal {
   constructor(app, plugin, filePath = null) {
-    super(app); this.plugin = plugin; this.filePath = filePath; this.debounceTimer = null; this.searchVersion = 0; this.lastResults = []; this.mapResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null; this.map = null; this.mapVersion = 0; this.viewAnalysisVersion = 0; this.viewId = plugin.settings.atlasHomeViewId; this.mapGenerations = Math.max(1, Math.min(3, Number(plugin.settings.searchMapGenerations) || 1));
+    super(app); this.plugin = plugin; this.filePath = filePath; this.activeQuickFilterIds = filePath ? new Set() : defaultQuickFilterIds(plugin, 'search'); this.debounceTimer = null; this.searchVersion = 0; this.lastResults = []; this.mapResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null; this.map = null; this.mapVersion = 0; this.viewAnalysisVersion = 0; this.viewId = plugin.settings.atlasHomeViewId; this.mapGenerations = Math.max(1, Math.min(3, Number(plugin.settings.searchMapGenerations) || 1));
     const fileName = filePath ? filePath.split('/').pop().replace(/\.md$/i, '') : '';
     this.setPlaceholder(filePath ? `Search within ${fileName}…` : 'Search vault by meaning…');
     this.setInstructions([{ command: 'Type', purpose: 'to search' }, { command: '↑↓', purpose: 'to navigate' }, { command: '↵', purpose: 'to open' }, { command: 'esc', purpose: 'to dismiss' }]);
@@ -652,6 +693,7 @@ class SemanticSearchModal extends SuggestModal {
         const requested = Math.max(this.visibleLimit || tweaks.topK, tweaks.topK);
         const rawMultiplier = this.plugin.settings.revisionBundlingEnabled ? 8 : 4, rawLimit = this.filePath ? Math.min(1000, requested + 10) : Math.min(1000, Math.max(requested * rawMultiplier, 40));
         const options = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: tweaks.semanticHighlights, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 15, file: this.filePath };
+        if (!this.filePath && this.activeQuickFilterIds.size) options.files = await this.plugin.quickFilterPaths(this.activeQuickFilterIds, 'search');
         const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search);
         const results = await runSearch(query, rawLimit, tweaks.minScore, options);
         if (version === this.searchVersion && query === this.lastQuery) {
@@ -757,6 +799,8 @@ class SemanticSearchModal extends SuggestModal {
   }
   onOpen() {
     super.onOpen();
+    this.modalEl.addClass('gib-search-modal');
+    if (!this.filePath) { const inputContainer = this.modalEl.querySelector('.prompt-input-container') || this.inputEl.parentElement; if (inputContainer?.parentElement) { const host = document.createElement('div'); host.className = 'gib-search-quick-filter-host'; inputContainer.insertAdjacentElement('afterend', host); renderQuickFilterBar(host, this.plugin, 'search', this.activeQuickFilterIds, () => { this.visibleLimit = activeTweaks(this.plugin).topK; if (this.lastQuery) this.triggerSearch(this.lastQuery, true); }); } }
     if (this.plugin.atlasEnabled) this.setupMap();
     this.navigationHandler = event => {
       if (event.key === 'Tab') {
@@ -1040,7 +1084,7 @@ class GraphView extends ItemView {
 }
 
 class SimilarNotesView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.filePath = null; this.refreshTimer = null; this.refreshVersion = 0; this.indexMeta = null; this.indexVectors = null; this.pendingPreserveScroll = true; }
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.activeQuickFilterIds = defaultQuickFilterIds(plugin, 'similar'); this.filePath = null; this.refreshTimer = null; this.refreshVersion = 0; this.indexMeta = null; this.indexVectors = null; this.pendingPreserveScroll = true; }
   getViewType() { return SIMILAR_NOTES_VIEW; }
   getDisplayText() { return 'Similar Notes'; }
   getIcon() { return 'git-compare-arrows'; }
@@ -1053,13 +1097,14 @@ class SimilarNotesView extends ItemView {
   refreshForActiveNote() { const active = this.activeNote(); if (!active || active.path === this.filePath) return; this.scheduleRefresh(false); }
   refreshForIndexChange() { const meta = this.plugin.search.meta, vectors = this.plugin.search.vectors; if (meta === this.indexMeta && vectors === this.indexVectors) return; this.indexMeta = meta; this.indexVectors = vectors; this.scheduleRefresh(true); }
   scheduleRefresh(preserveScroll = false) { this.pendingPreserveScroll = this.refreshTimer ? this.pendingPreserveScroll && preserveScroll : preserveScroll; window.clearTimeout(this.refreshTimer); this.refreshTimer = window.setTimeout(() => { this.refreshTimer = null; const preserve = this.pendingPreserveScroll; this.pendingPreserveScroll = true; this.refresh(preserve); }, 180); }
-  renderHeader(active) { const header = this.contentEl.createDiv({ cls: 'gib-similar-header' }); header.createDiv({ cls: 'gib-similar-kicker', text: 'Similar Notes' }); header.createDiv({ cls: 'gib-similar-title', text: active?.basename || 'No active note' }); }
+  renderHeader(active) { const header = this.contentEl.createDiv({ cls: 'gib-similar-header' }); header.createDiv({ cls: 'gib-similar-kicker', text: 'Similar Notes' }); header.createDiv({ cls: 'gib-similar-title', text: active?.basename || 'No active note' }); renderQuickFilterBar(header, this.plugin, 'similar', this.activeQuickFilterIds, () => this.refresh(false)); }
   async refresh(preserveScroll = false) {
     if (!this.contentEl?.isConnected) return; const version = ++this.refreshVersion, active = this.activeNote(), previousPath = this.filePath, currentList = this.contentEl.querySelector('.gib-similar-list'), retainCurrent = Boolean(preserveScroll && active?.path === previousPath && currentList), previousScroll = retainCurrent ? Number(currentList.scrollTop || 0) : 0; this.filePath = active?.path || null; this.indexMeta = this.plugin.search.meta; this.indexVectors = this.plugin.search.vectors;
     if (!retainCurrent) { this.contentEl.empty(); this.renderHeader(active); }
     if (!active) { if (retainCurrent) { this.contentEl.empty(); this.renderHeader(null); } this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Open a note to see semantically similar notes.' }); return; }
-    const limit = Math.max(3, Math.min(30, Number(this.plugin.settings.similarNotesLimit) || 12)), minimum = Math.max(-1, Math.min(1, Number(this.plugin.settings.similarNotesMinScore) || 0));
-    const neighbors = this.plugin.search.semanticNeighbors(active.path, Math.min(40, limit * 3)).nodes.filter(node => { const file = this.app.vault.getAbstractFileByPath(node.id); return file instanceof TFile && file.extension.toLowerCase() === 'md' && node.score >= minimum; }).slice(0, limit);
+    const limit = Math.max(3, Math.min(30, Number(this.plugin.settings.similarNotesLimit) || 12)), minimum = Math.max(-1, Math.min(1, Number(this.plugin.settings.similarNotesMinScore) || 0)), allowedPaths = this.activeQuickFilterIds.size ? await this.plugin.quickFilterPaths(this.activeQuickFilterIds, 'similar') : null;
+    if (version !== this.refreshVersion || !this.contentEl?.isConnected) return;
+    const neighbors = this.plugin.search.semanticNeighbors(active.path, Math.min(40, limit * 3), allowedPaths).nodes.filter(node => { const file = this.app.vault.getAbstractFileByPath(node.id); return file instanceof TFile && file.extension.toLowerCase() === 'md' && node.score >= minimum; }).slice(0, limit);
     if (!neighbors.length) { if (retainCurrent) { this.contentEl.empty(); this.renderHeader(active); } this.contentEl.createDiv({ cls: 'gib-similar-empty', text: this.plugin.indexer.indexStable ? 'No similar indexed notes meet the current threshold.' : 'Similar notes will appear when indexing is ready.' }); return; }
     const loading = retainCurrent ? null : this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Finding the strongest related passages…' });
     try {
@@ -1105,6 +1150,8 @@ class SearchSettings extends PluginSettingTab {
     new Setting(this.pageEl).setName('Rebuild semantic index').setDesc('Replace generated vectors and metadata. Notes and local models are untouched.').addButton(b => b.setButtonText('Rebuild').setWarning().onClick(() => { if (!window.confirm('Rebuild the entire semantic index? Generated vectors will be replaced; vault notes are not changed.')) return; this.plugin.indexer.rebuild(); new Notice('Gib Search started a full index rebuild'); this.refreshHealth(); }));
     this.unsubscribe = this.plugin.indexer.onChange(() => this.refreshHealth()); this.timer = window.setInterval(() => this.refreshHealth(), 2000); this.refreshHealth();
   }
+  async saveQuickFilters() { this.plugin.settings.quickFilters = normalizeQuickFilters(this.plugin.settings.quickFilters); this.plugin.clearQuickFilterCache(); await this.plugin.save(); for (const leaf of this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)) { leaf.view.activeQuickFilterIds = defaultQuickFilterIds(this.plugin, 'similar'); leaf.view?.refresh?.(); } }
+  openQuickFilterEditor(filter = null) { new QuickFilterEditorModal(this.app, this.plugin, filter, async updated => { const existing = this.plugin.settings.quickFilters.findIndex(item => item.id === updated.id); if (existing >= 0) this.plugin.settings.quickFilters.splice(existing, 1, updated); else this.plugin.settings.quickFilters.push(updated); await this.saveQuickFilters(); this.display(); }).open(); }
   renderSearchPage() {
     const tweaks = activeTweaks(this.plugin);
     new Setting(this.pageEl).setName('Ranking').setHeading();
@@ -1117,6 +1164,13 @@ class SearchSettings extends PluginSettingTab {
     new Setting(this.pageEl).setName('Result icon source').setDesc('Use Iconic when available. Folder modes fall back through nearer folders, then to the file type.').addDropdown(dropdown => dropdown.addOptions({ 'iconic-file': 'Iconic file icon', 'iconic-parent-1': 'Iconic immediate parent', 'iconic-parent-2': 'Iconic parent ×2', 'iconic-parent-3': 'Iconic parent ×3', 'iconic-top-level': 'Iconic top-level folder', 'iconic-nearest': 'Nearest folder with Iconic icon', 'file-type': 'File type', 'sticky-note': 'Sticky note' }).setValue(this.plugin.settings.resultIconSource).onChange(async value => { this.plugin.settings.resultIconSource = value; await this.plugin.save(); for (const leaf of this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)) leaf.view?.refresh?.(true); }));
     new Setting(this.pageEl).setName('Bundle note revisions').setDesc('Collapse detected editions into one search result. Disabled by default; only configured folders are analyzed.').addToggle(t => t.setValue(this.plugin.settings.revisionBundlingEnabled).onChange(async value => { this.plugin.settings.revisionBundlingEnabled = value; this.plugin.revisionCatalogCache = null; await this.plugin.save(); this.display(); }));
     if (this.plugin.settings.revisionBundlingEnabled) new Setting(this.pageEl).setName('Revision folders').setDesc('Comma-separated vault folders, for example Writings, Essays. Automatic detection never runs outside these folders.').addText(text => text.setPlaceholder('Writings, Essays').setValue(this.plugin.settings.revisionBundleFolders.join(', ')).onChange(async value => { this.plugin.settings.revisionBundleFolders = [...new Set(value.split(',').map(folder => folder.trim().replace(/^\/+|\/+$/g, '')).filter(Boolean))]; this.plugin.revisionCatalogCache = null; await this.plugin.save(); }));
+    new Setting(this.pageEl).setName('Quick filters').setHeading();
+    new Setting(this.pageEl).setName('Show custom quick-filter buttons').setDesc('Apply reusable metadata scopes before ranking in Search and Similar Notes. Disabled by default.').addToggle(toggle => toggle.setValue(this.plugin.settings.quickFiltersEnabled).onChange(async value => { this.plugin.settings.quickFiltersEnabled = value; this.plugin.clearQuickFilterCache(); await this.plugin.save(); this.display(); for (const leaf of this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)) leaf.view?.refresh?.(); }));
+    if (this.plugin.settings.quickFiltersEnabled) {
+      new Setting(this.pageEl).setName('Custom filters').setDesc('Active buttons combine as OR; conditions inside each filter combine as AND.').addButton(button => button.setButtonText('Add filter').setCta().onClick(() => this.openQuickFilterEditor()));
+      if (!this.plugin.settings.quickFilters.length) this.pageEl.createDiv({ cls: 'gib-settings-empty', text: 'No quick filters yet.' });
+      else { const list = this.pageEl.createDiv({ cls: 'gib-settings-view-list' }); for (const filter of this.plugin.settings.quickFilters) { const row = list.createDiv({ cls: 'gib-settings-view-row' }), copy = row.createDiv({ cls: 'gib-settings-view-copy' }); copy.createDiv({ cls: 'gib-settings-view-name', text: filter.name }); copy.createDiv({ cls: 'gib-settings-view-meta', text: `${filter.surfaces === 'both' ? 'Search + Similar Notes' : filter.surfaces === 'search' ? 'Search' : 'Similar Notes'}${filter.defaultActive ? ' · default' : ''}` }); const edit = row.createEl('button', { attr: { type: 'button', 'aria-label': `Edit ${filter.name}`, title: 'Edit filter' } }); setIcon(edit, 'pencil'); edit.addEventListener('click', () => this.openQuickFilterEditor(filter)); const remove = row.createEl('button', { attr: { type: 'button', 'aria-label': `Delete ${filter.name}`, title: 'Delete filter' } }); setIcon(remove, 'trash-2'); remove.addEventListener('click', async () => { if (!window.confirm(`Delete the “${filter.name}” quick filter?`)) return; this.plugin.settings.quickFilters = this.plugin.settings.quickFilters.filter(item => item.id !== filter.id); await this.saveQuickFilters(); this.display(); }); } }
+    }
     new Setting(this.pageEl).setName('Similar Notes sidebar').setHeading();
     new Setting(this.pageEl).setName('Notes shown').setDesc('Maximum notes listed for the active note.').addSlider(s => s.setLimits(3, 30, 1).setValue(this.plugin.settings.similarNotesLimit).setDynamicTooltip().onChange(async value => { this.plugin.settings.similarNotesLimit = value; await this.plugin.save(); for (const leaf of this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)) leaf.view?.refresh?.(); }));
     new Setting(this.pageEl).setName('Minimum similarity').setDesc('Hide weak semantic neighbors from the sidebar.').addSlider(s => s.setLimits(0, 1, .01).setValue(this.plugin.settings.similarNotesMinScore).setDynamicTooltip().onChange(async value => { this.plugin.settings.similarNotesMinScore = value; await this.plugin.save(); for (const leaf of this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)) leaf.view?.refresh?.(); }));
@@ -1193,6 +1247,7 @@ module.exports = class GibSearch extends Plugin {
       bge: Object.assign({}, MODEL_TWEAK_DEFAULTS.bge, legacyTweaks, loaded.modelTweaks?.mobile || {}, loaded.modelTweaks?.bge || {}),
     };
     this.settings.revisionBundleFolders = Array.isArray(loaded.revisionBundleFolders) ? loaded.revisionBundleFolders.map(value => String(value).trim().replace(/^\/+|\/+$/g, '')).filter(Boolean) : [];
+    this.settings.quickFilters = normalizeQuickFilters(loaded.quickFilters); this.quickFilterScopeCache = new Map(); this.quickFilterScopeGeneration = 0;
     this.legacyModelsPath = loaded.modelsPath || ''; delete this.settings.embeddingModel; delete this.settings.modelsPath;
     delete this.settings.nodePath;
     if (!loaded.folderPathBoostSettingsMigrated) {
@@ -1218,6 +1273,7 @@ module.exports = class GibSearch extends Plugin {
     }
     this.desktopEmbedder = new DesktopEmbedder(this);
     this.search = this.indexer = new MobileSearchRuntime(this); this.atlas = new AtlasEngine(this); this.runtime = { ready: () => true, install: async () => true, stop: () => this.desktopEmbedder?.stop(), storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) }; this.indexer.watch();
+    const invalidateQuickFilters = () => { this.quickFilterScopeGeneration++; this.quickFilterScopeCache.clear(); }; this.registerEvent(this.app.metadataCache.on('changed', invalidateQuickFilters)); this.registerEvent(this.app.vault.on('create', invalidateQuickFilters)); this.registerEvent(this.app.vault.on('delete', invalidateQuickFilters)); this.registerEvent(this.app.vault.on('rename', invalidateQuickFilters));
     this.registerView(SIMILAR_NOTES_VIEW, leaf => new SimilarNotesView(leaf, this));
     if (this.atlasEnabled) { this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this)); this.registerView(NAVIGATOR_VIEW, leaf => new AtlasNavigatorView(leaf, this)); this.registerView(NEIGHBORHOOD_VIEW, leaf => new NeighborhoodView(leaf, this)); }
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
@@ -1233,6 +1289,12 @@ module.exports = class GibSearch extends Plugin {
     this.indexer.start();
   }
   async save() { await this.saveData(this.settings); }
+  clearQuickFilterCache() { this.quickFilterScopeGeneration++; this.quickFilterScopeCache?.clear(); }
+  async quickFilterPaths(activeIds, surface) {
+    const ids = [...activeIds].sort(), key = JSON.stringify([this.quickFilterScopeGeneration, surface, ids, this.settings.quickFilters]); if (!ids.length) return null; const cached = this.quickFilterScopeCache.get(key); if (cached) return cached;
+    const files = this.app.vault.getFiles(), paths = []; for (let start = 0; start < files.length; start += 160) { paths.push(...resolveQuickFilterPaths(files.slice(start, start + 160), file => this.app.metadataCache.getFileCache(file), this.settings.quickFilters, ids)); if (start + 160 < files.length) await new Promise(resolve => window.setTimeout(resolve, 0)); }
+    this.quickFilterScopeCache.set(key, paths); if (this.quickFilterScopeCache.size > 12) this.quickFilterScopeCache.delete(this.quickFilterScopeCache.keys().next().value); return paths;
+  }
   async revisionCatalog() {
     if (!this.settings.revisionBundlingEnabled || !this.settings.revisionBundleFolders.length) return { byFile: new Map(), series: new Map() };
     const signature = JSON.stringify([this.settings.revisionBundleFolders, this.search.meta.length, this.search.meta.reduce((sum, item) => sum + Number(item.mtime || 0), 0)]); if (this.revisionCatalogCache?.signature === signature) return this.revisionCatalogCache.catalog; if (this.revisionCatalogPending?.signature === signature) return this.revisionCatalogPending.promise;
