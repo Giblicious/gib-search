@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.11
+
+- Gives Search-modal quick filters a quieter tab-style treatment that fits the modal toolbar.
+- Keeps the compact filled-button styling in Similar Notes unchanged.
+
 ## 0.54.10
 
 - Restores the active visual state when Similar Notes rebuilds its filter bar after applying a filter.
