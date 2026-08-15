@@ -58342,6 +58342,54 @@ var SimilarNotesView = class extends ItemView {
   }
 };
 var WRITING_PROFILE_ICONS = Object.freeze({ emotion: "heart", purpose: "target", form: "layout-list" });
+var WRITING_PROFILE_BLOOM_SIGNALS = Object.freeze([["purpose", "Purpose", 0], ["form", "Form", 120], ["emotion", "Emotion", 240]]);
+function renderWritingProfileBloom(parent, profile) {
+  const host = parent.createDiv({ cls: "gib-writing-profile-bloom" }), namespace = "http://www.w3.org/2000/svg", svg = document.createElementNS(namespace, "svg"), center = 80, innerRadius = 18, maximumLength = 48, petalWidth = 8, groups = WRITING_PROFILE_BLOOM_SIGNALS.map(([signal, label, angle]) => ({ signal, label, angle, findings: strongestProfileFindings2(profile, signal, 3), state: writingProfileSignalState2(profile, signal) }));
+  svg.setAttribute("viewBox", "0 0 160 160");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Writing profile bloom. ${groups.map((group) => group.findings.length ? `${group.label}: ${group.findings.map((item) => `${item.label}, ${Math.round(item.score * 100)} percent`).join("; ")}` : `${group.label}: ${group.state.emptyLabel}`).join(". ")}.`);
+  host.appendChild(svg);
+  const title = document.createElementNS(namespace, "title");
+  title.textContent = "Writing profile bloom";
+  svg.appendChild(title);
+  const petalPath = (length) => {
+    const base = center - innerRadius, tip = base - length;
+    return `M ${center} ${base} C ${center - petalWidth} ${base - length * 0.32} ${center - petalWidth * 0.72} ${tip + length * 0.16} ${center} ${tip} C ${center + petalWidth * 0.72} ${tip + length * 0.16} ${center + petalWidth} ${base - length * 0.32} ${center} ${base} Z`;
+  };
+  for (const group of groups) {
+    const offsets = group.findings.length === 1 ? [0] : group.findings.length === 2 ? [-11, 11] : [-18, 0, 18], count = Math.max(1, group.findings.length);
+    for (let index = 0; index < count; index++) {
+      const finding = group.findings[index] || null, wrapper = document.createElementNS(namespace, "g"), track = document.createElementNS(namespace, "path");
+      wrapper.setAttribute("transform", `rotate(${group.angle + (offsets[index] || 0)} ${center} ${center})`);
+      track.setAttribute("d", petalPath(maximumLength));
+      track.setAttribute("class", `gib-writing-profile-bloom-track${finding ? "" : " is-empty"}`);
+      wrapper.appendChild(track);
+      if (finding) {
+        const petal = document.createElementNS(namespace, "path"), hint = document.createElementNS(namespace, "title");
+        petal.setAttribute("d", petalPath(maximumLength * finding.score));
+        petal.setAttribute("class", "gib-writing-profile-bloom-petal");
+        petal.setAttribute("data-signal", group.signal);
+        petal.style.setProperty("--gib-profile-bloom-delay", `${(groups.indexOf(group) * 3 + index) * 35}ms`);
+        hint.textContent = `${group.label} \xB7 ${finding.label} \xB7 ${Math.round(finding.score * 100)}%`;
+        petal.appendChild(hint);
+        wrapper.appendChild(petal);
+      }
+      svg.appendChild(wrapper);
+    }
+  }
+  const core = document.createElementNS(namespace, "circle");
+  core.setAttribute("cx", center);
+  core.setAttribute("cy", center);
+  core.setAttribute("r", "13");
+  core.setAttribute("class", "gib-writing-profile-bloom-core");
+  svg.appendChild(core);
+  const legend = host.createDiv({ cls: "gib-writing-profile-bloom-legend" });
+  for (const group of groups) {
+    const item = legend.createDiv({ cls: "gib-writing-profile-bloom-legend-item", attr: { "data-signal": group.signal } });
+    item.createSpan({ cls: "gib-writing-profile-bloom-legend-dot" });
+    item.createSpan({ text: group.label });
+  }
+}
 function renderWritingProfileRow(parent, item, signal, primary = false) {
   const row = parent.createDiv({ cls: `gib-writing-profile-row${primary ? " is-primary" : ""}`, attr: { "data-signal": signal } }), line = row.createDiv({ cls: "gib-writing-profile-row-line" });
   line.createSpan({ cls: "gib-writing-profile-finding-label", text: item.label });
@@ -58438,7 +58486,9 @@ var WritingProfileView = class extends ItemView {
     const state = this.plugin.search.writingProfileState(active.path), status = header.createDiv({ cls: "gib-writing-profile-status" });
     status.setText(state.current ? `Indexed ${formatWhen(state.profile.analyzedAt)}` : state.stale ? "Refreshing after this note changed" : state.status.state === "paused" ? state.status.message : "Queued for quiet background analysis");
     if (state.profile) {
-      const body = this.contentEl.createDiv({ cls: "gib-writing-profile-body" }), summary = writingProfileSummary2(state.profile), overview = body.createDiv({ cls: "gib-writing-profile-overview" });
+      const body = this.contentEl.createDiv({ cls: "gib-writing-profile-body" }), summary = writingProfileSummary2(state.profile);
+      renderWritingProfileBloom(body, state.profile);
+      const overview = body.createDiv({ cls: "gib-writing-profile-overview" });
       overview.createDiv({ cls: "gib-writing-profile-overview-title", text: summary.title });
       const meta = overview.createDiv({ cls: "gib-writing-profile-overview-meta" });
       meta.createSpan({ cls: "gib-writing-profile-overview-confidence", text: summary.confidence });

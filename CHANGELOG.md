@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.25
+
+- Adds a compact profile bloom above the Writing Profile assessment, using independent radial petals to visualize meaningful Purpose, Form, and Emotion scores without implying relationships between adjacent dimensions.
+- Limits the bloom to above-threshold findings and leaves abstained sectors visibly empty, keeping the visualization consistent with the panel's reliability rules.
+- Adds exact-score hover labels, a complete screen-reader description, responsive sizing, theme-derived colors, and a reduced-motion fallback.
+
 ## 0.54.24
 
 - Restyles Writing Profile to use the same flat, quiet visual language as Gib Search results and Similar Notes, removing bespoke gradients, colored cards, and badge treatments.
