@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.24
+
+- Restyles Writing Profile to use the same flat, quiet visual language as Gib Search results and Similar Notes, removing bespoke gradients, colored cards, and badge treatments.
+- Replaces every fixed Writing Profile text size with Obsidian UI font tokens and keeps all panel text at the readable small UI size or larger.
+- Enlarges interactive disclosure and settings controls, with consistent hover and keyboard-focus states.
+
 ## 0.54.23
 
 - Replaces the Writing Profile radar charts with compact ranked cards and readable horizontal confidence bars designed for a narrow sidebar.
