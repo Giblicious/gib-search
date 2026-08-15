@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.29
+
+- Detects and reports partial BRAT installations whose manifest and executable bundle versions do not agree, rather than allowing commands to fail silently.
+- Routes every Search current file entry point through visible error reporting so unexpected editor-mount failures produce an actionable notice and diagnostic entry.
+- Keeps recovery styling for the older in-file-search markup so the control remains visible if BRAT updates the stylesheet before replacing the large executable bundle.
+
 ## 0.54.28
 
 - Rebuilds Search current file with Obsidian's native document-search structure, input treatment, match counter, clear control, navigation buttons, no-match state, spacing, and responsive behavior.

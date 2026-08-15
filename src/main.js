@@ -7,6 +7,7 @@ const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bund
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
+const BUILD_VERSION = '0.54.29';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -1401,6 +1402,7 @@ module.exports = class GibSearch extends Plugin {
       await this.save();
     }
     this.lastError = '';
+    this.installationMismatch = this.manifest.version !== BUILD_VERSION; if (this.installationMismatch) window.setTimeout(() => new Notice(`Gib Search installation is incomplete: manifest ${this.manifest.version}, code ${BUILD_VERSION}. Update Gib Search again with BRAT, then reload Obsidian.`, 12000), 0);
     this.embeddedWasmGzip = EMBEDDED_WASM_GZIP;
     this.embeddedWasmModuleGzip = EMBEDDED_WASM_MODULE_GZIP;
     if (!this.isMobile) {
@@ -1413,12 +1415,12 @@ module.exports = class GibSearch extends Plugin {
     this.registerView(SIMILAR_NOTES_VIEW, leaf => new SimilarNotesView(leaf, this));
     this.registerView(WRITING_PROFILE_VIEW, leaf => new WritingProfileView(leaf, this));
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => { if (!this.settings.writingProfileIndexEnabled) return; const file = this.app.workspace.getActiveFile(); if (file instanceof TFile && file.extension.toLowerCase() === 'md') this.search.prioritizeWritingProfile(file.path); }));
-    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, view) => { const file = view?.file || this.app.workspace.getActiveFile(); if (file instanceof TFile && file.extension.toLowerCase() === 'md') menu.addItem(item => item.setTitle('Search current file').setIcon('file-search').onClick(() => this.openFileSearch(file.path))); const selection = String(editor?.getSelection?.() || '').trim(); if (selection.length >= 3) menu.addItem(item => item.setTitle('Find similar to selection').setIcon('search').onClick(() => this.openSimilarToSelection(selection, file?.path || ''))); }));
-    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => { if (file instanceof TFile && file.extension.toLowerCase() === 'md') menu.addItem(item => item.setTitle('Search within file').setIcon('file-search').onClick(() => this.openFileSearch(file.path))); }));
+    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, view) => { const file = view?.file || this.app.workspace.getActiveFile(); if (file instanceof TFile && file.extension.toLowerCase() === 'md') menu.addItem(item => item.setTitle('Search current file').setIcon('file-search').onClick(() => this.launchFileSearch(file.path))); const selection = String(editor?.getSelection?.() || '').trim(); if (selection.length >= 3) menu.addItem(item => item.setTitle('Find similar to selection').setIcon('search').onClick(() => this.openSimilarToSelection(selection, file?.path || ''))); }));
+    this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => { if (file instanceof TFile && file.extension.toLowerCase() === 'md') menu.addItem(item => item.setTitle('Search within file').setIcon('file-search').onClick(() => this.launchFileSearch(file.path))); }));
     if (this.atlasEnabled) { this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this)); this.registerView(NAVIGATOR_VIEW, leaf => new AtlasNavigatorView(leaf, this)); this.registerView(NEIGHBORHOOD_VIEW, leaf => new NeighborhoodView(leaf, this)); }
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: 'semantic-search', name: 'Semantic search', callback: () => new SemanticSearchModal(this.app, this).open() });
-    this.addCommand({ id: 'search-current-file', name: 'Search current file', checkCallback: checking => { const file = this.app.workspace.getActiveFile(), available = file instanceof TFile && file.extension.toLowerCase() === 'md'; if (available && !checking) this.openFileSearch(file.path); return available; } });
+    this.addCommand({ id: 'search-current-file', name: 'Search current file', checkCallback: checking => { const file = this.app.workspace.getActiveFile(), available = file instanceof TFile && file.extension.toLowerCase() === 'md'; if (available && !checking) this.launchFileSearch(file.path); return available; } });
     this.addCommand({ id: 'open-similar-notes', name: 'Open Similar Notes', callback: () => this.openSimilarNotes() });
     this.addCommand({ id: 'open-writing-profile', name: 'Open Writing Profile', callback: () => this.openWritingProfile() });
     if (this.atlasEnabled) {
@@ -1464,6 +1466,7 @@ module.exports = class GibSearch extends Plugin {
   async openNeighborhood(filePath, pin = false, reveal = true) { let leaf = this.app.workspace.getLeavesOfType(NEIGHBORHOOD_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: NEIGHBORHOOD_VIEW, active: false }); } if (reveal) this.app.workspace.revealLeaf(leaf); if (filePath && leaf.view instanceof NeighborhoodView) await leaf.view.centerOn(filePath, pin); return leaf; }
   async openSimilarNotes() { let leaf = this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: SIMILAR_NOTES_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); if (leaf.view instanceof SimilarNotesView && leaf.view.selectionQuery) leaf.view.clearSelection(); else leaf.view?.refresh?.(); return leaf; }
   async openWritingProfile() { let leaf = this.app.workspace.getLeavesOfType(WRITING_PROFILE_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: WRITING_PROFILE_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); leaf.view?.refresh?.(); const active = this.app.workspace.getActiveFile(); if (active instanceof TFile && active.extension.toLowerCase() === 'md') this.search.prioritizeWritingProfile(active.path); return leaf; }
+  launchFileSearch(filePath = '') { if (this.installationMismatch) { this.reportOnce(`Installation mismatch: manifest ${this.manifest.version}, code ${BUILD_VERSION}. Update with BRAT and reload Obsidian.`); return null; } return this.openFileSearch(filePath).catch(error => { this.reportOnce(`Could not open current-file search: ${error?.message || error}`); return null; }); }
   async openFileSearch(filePath = '') {
     const file = this.app.vault.getAbstractFileByPath(String(filePath || '')); if (!(file instanceof TFile) || file.extension.toLowerCase() !== 'md') { new Notice('Open or choose a Markdown file to search within it.'); return null; }
     let leaf = null; this.app.workspace.iterateAllLeaves(candidate => { if (!leaf && candidate?.view?.file?.path === file.path) leaf = candidate; }); if (!leaf) { leaf = this.app.workspace.getLeaf('tab'); await leaf.openFile(file); } else this.app.workspace.revealLeaf(leaf);
