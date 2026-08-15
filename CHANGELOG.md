@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.36
+
+- Restyles the compact in-file search card to match Gib Search's primary modal surface, prompt input, spacing, border, and elevation.
+- Brings navigation and power controls into the modal's flat icon-button and quiet underlined toolbar language.
+- Preserves the centered sticky, non-blocking editor placement across native Obsidian, Butter Editor, and mobile.
+
 ## 0.54.35
 
 - Replaces the full-width in-file search strip with a compact sticky card centered at the top of native and Butter editors.
