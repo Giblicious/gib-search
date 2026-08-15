@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.38
+
+- Gives the in-file search glyph and semantic activity spinner one fixed leading status slot, preventing overlap with the query and result count.
+- Replaces the search glyph in place while semantic work is running instead of adding a second inline indicator that can wrap.
+- Suppresses Obsidian and browser-provided duplicate search decorations while preserving the plugin's accessible clear control.
+
 ## 0.54.37
 
 - Removes the residual native Obsidian focus border and shadow from the compact in-file search input so it behaves like the primary search prompt.
