@@ -7,7 +7,7 @@ const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bund
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
-const BUILD_VERSION = '0.54.32';
+const BUILD_VERSION = '0.54.33';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -333,7 +333,7 @@ function semanticPassagePool(results, query, maximum = 8) {
 }
 function inNoteSemanticPool(results) {
   const values = [], seen = new Set();
-  for (const hit of results || []) for (const item of hit.semanticPassages || []) { const sourcePhrase = String(item.sourcePhrase || item.phrase || '').trim(), displayPhrase = cleanSourceText(sourcePhrase || item.phrase), key = displayPhrase.toLowerCase(); if (!displayPhrase || !sourcePhrase || seen.has(key)) continue; seen.add(key); values.push({ phrase: sourcePhrase, displayPhrase, priority: 2, kind: 'semantic', score: Number(item.score || 0) }); }
+  for (const hit of results || []) for (const item of [...(hit.semanticPhrases || []), ...(hit.semanticPassages || [])]) { const sourcePhrase = String(item.sourcePhrase || item.phrase || '').trim(), displayPhrase = cleanSourceText(sourcePhrase || item.phrase), key = displayPhrase.toLowerCase(); if (!displayPhrase || !sourcePhrase || seen.has(key)) continue; seen.add(key); values.push({ phrase: sourcePhrase, displayPhrase, priority: 2, kind: 'semantic', score: Number(item.score || 0) }); }
   return values.sort((a, b) => b.score - a.score);
 }
 const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i;
@@ -949,7 +949,7 @@ class SemanticInNoteSearch {
     return matches.sort((a, b) => a.from - b.from);
   }
   matchRegex(candidate, rendered = false) { const phrase = rendered ? candidate.displayPhrase : candidate.phrase, escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), bounded = candidate.kind === 'semantic' || this.options.wholeWord, pattern = bounded ? `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])` : escaped, insensitive = candidate.kind === 'semantic' || !this.options.caseSensitive; return new RegExp(pattern, `gu${insensitive ? 'i' : ''}`); }
-  semanticTuning() { const presets = { precise: { resultMinScore: .46, passageMinScore: .52, resultWindow: .1, resultLimit: 4, sentenceLimit: 6, scoreWindow: .14, limit: 24 }, balanced: { resultMinScore: .3, passageMinScore: .43, resultWindow: .18, resultLimit: 6, sentenceLimit: 8, scoreWindow: .24, limit: 40 }, broad: { resultMinScore: .18, passageMinScore: .34, resultWindow: .28, resultLimit: 10, sentenceLimit: 8, scoreWindow: .38, limit: 64 } }; return presets[this.options.breadth] || presets.balanced; }
+  semanticTuning() { const presets = { precise: { resultMinScore: .46, passageMinScore: .52, phraseMinScore: .7, resultWindow: .1, resultLimit: 4, sentenceLimit: 6, scoreWindow: .14, limit: 24 }, balanced: { resultMinScore: .3, passageMinScore: .43, phraseMinScore: .58, resultWindow: .18, resultLimit: 6, sentenceLimit: 8, scoreWindow: .24, limit: 40 }, broad: { resultMinScore: .18, passageMinScore: .34, phraseMinScore: .48, resultWindow: .28, resultLimit: 10, sentenceLimit: 8, scoreWindow: .38, limit: 64 } }; return presets[this.options.breadth] || presets.balanced; }
   async sourceText() { return this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue(); }
   updateQuery(query) {
     const version = ++this.queryVersion; clearTimeout(this.timer); this.count?.removeClass('is-searching');
@@ -963,7 +963,7 @@ class SemanticInNoteSearch {
   }
   async searchSemantically(query, version) {
     try {
-      const tuning = this.semanticTuning(), options = { scoreWindow: tuning.scoreWindow, semanticHighlights: true, semanticPassages: true, semanticPassagesOnly: true, resultMinScore: tuning.resultMinScore, passageMinScore: tuning.passageMinScore, passageResultWindow: tuning.resultWindow, passageResultLimit: tuning.resultLimit, passageSentenceLimit: tuning.sentenceLimit, file: this.file.path };
+      const tuning = this.semanticTuning(), options = { scoreWindow: tuning.scoreWindow, semanticHighlights: true, semanticPassages: true, semanticPassagesOnly: true, resultMinScore: tuning.resultMinScore, passageMinScore: tuning.passageMinScore, localPhraseMinScore: tuning.phraseMinScore, passageResultWindow: tuning.resultWindow, passageResultLimit: tuning.resultLimit, passageSentenceLimit: tuning.sentenceLimit, file: this.file.path };
       const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), results = await runSearch(query, tuning.limit, 0, options); await this.refreshMatches(query, results, version, true);
     } catch (error) { if (version === this.queryVersion) { this.count?.setAttribute('title', 'Exact matches shown; semantic matching is not currently available'); this.plugin.logDiagnostic(`In-file semantic enrichment unavailable: ${error.message}`); } }
     finally { if (version === this.queryVersion) { this.count?.removeClass('is-searching'); this.updateCount(); } }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.33
+
+- Replaces the in-file toolbar presentation with a compact centered find console inside the full-width editor strip and an attached power-controls shelf.
+- Adds local phrase refinement after passage and sentence retrieval so strong paraphrases are highlighted directly instead of being diluted by their surrounding sentence.
+- Calibrates the concrete query “more study” to recover “further study,” where the local BGE model measures a strong 0.883 similarity.
+- Prefers concise semantic phrases when they are confident and falls back to a related sentence only when no local phrase clears the selected precision level.
+- Adds a regression test for local paraphrase selection and guards the alternate compact UI layout.
+
 ## 0.54.32
 
 - Corrects Butter Editor layout so the outer find strip spans the full editor while the search controls retain Obsidian's centered readable width.
