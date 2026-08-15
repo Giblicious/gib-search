@@ -8,7 +8,7 @@ const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
 const { registerCommandAlias } = require('./command-compat');
-const BUILD_VERSION = '0.54.47';
+const BUILD_VERSION = '0.54.48';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -903,7 +903,7 @@ class SemanticInNoteSearch {
     const container = this.view.containerEl || this.app.workspace.activeLeaf?.view?.containerEl, butterEditor = container?.matches?.('.butter-editor-view') ? container : container?.querySelector?.('.butter-editor-view');
     this.isButter = Boolean(butterEditor || container?.querySelector?.('.ProseMirror')); const host = this.isButter ? this.view.contentEl || butterEditor?.closest('.view-content') || butterEditor : container?.querySelector('.markdown-source-view') || this.view.contentEl || container?.querySelector('.view-content') || container;
     if (!host) { this.plugin.activeInNoteSearch = null; new Notice('Gib Search could not attach to the active editor'); return; }
-    this.host = host; this.host.addClass('gib-in-note-find-host'); this.el = document.createElement('div'); this.el.className = 'document-search-container gib-in-note-find';
+    this.host = host; this.host.addClass('gib-in-note-find-host'); this.frame = document.createElement('div'); this.frame.className = 'gib-in-note-find-frame'; this.halo = this.frame.createDiv({ cls: 'gib-in-note-find-halo', attr: { 'aria-hidden': 'true' } }); this.el = this.frame.createDiv({ cls: 'document-search-container gib-in-note-find' });
     const row = this.el.createDiv({ cls: 'document-search' }), inputContainer = row.createDiv({ cls: 'search-input-container gib-in-note-find-input' }); this.statusIcon = inputContainer.createSpan({ cls: 'gib-in-note-find-status-icon' }); this.searchIcon = this.statusIcon.createSpan({ cls: 'gib-in-note-find-search-icon', attr: { 'aria-hidden': 'true' } }); setIcon(this.searchIcon, 'search'); this.loading = this.statusIcon.createSpan({ cls: 'gib-in-note-find-loading', attr: { role: 'status', 'aria-label': 'Finding related wording by meaning', title: 'Finding related wording by meaning' } }); this.loading.hidden = true;
     this.input = inputContainer.createEl('input', { type: 'search', cls: 'document-search-input', placeholder: 'Find', attr: { 'aria-label': 'Find in current file by words or meaning', autocomplete: 'off', spellcheck: 'false' } });
     const clear = inputContainer.createDiv({ cls: 'search-input-clear-button', attr: { role: 'button', tabindex: '0', 'aria-label': 'Clear search' } }); this.count = inputContainer.createSpan({ cls: 'document-search-count gib-in-note-find-count', text: '0/0' });
@@ -912,8 +912,8 @@ class SemanticInNoteSearch {
     const clearSearch = () => { this.input.value = ''; this.updateQuery(''); this.input.focus(); }; clear.addEventListener('click', clearSearch); clear.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); clearSearch(); } }); previous.addEventListener('click', () => this.move(-1)); next.addEventListener('click', () => this.move(1)); close.addEventListener('click', () => this.close());
     tune.addEventListener('click', () => { const visible = this.optionsRow.hidden; this.optionsRow.hidden = !visible; tune.toggleClass('is-active', visible); tune.setAttribute('aria-expanded', String(visible)); if (!visible) this.input.focus(); });
     for (const button of this.el.querySelectorAll('button')) button.addEventListener('mousedown', event => event.preventDefault());
-    if (this.isButter) { this.butterEditor = butterEditor; this.el.addClass('is-butter-search'); this.placeButterSearch(); if (container) { this.toolbarObserver = new MutationObserver(() => { clearTimeout(this.toolbarTimer); this.toolbarTimer = window.setTimeout(() => this.placeButterSearch(), 20); }); this.toolbarObserver.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-toolbar-pos', 'data-toolbar-style'] }); } }
-    else { this.nativeSearchingWasActive = this.host.hasClass('is-searching'); this.host.addClass('is-searching'); this.host.appendChild(this.el); }
+    if (this.isButter) { this.butterEditor = butterEditor; this.frame.addClass('is-butter-search'); this.el.addClass('is-butter-search'); this.placeButterSearch(); if (container) { this.toolbarObserver = new MutationObserver(() => { clearTimeout(this.toolbarTimer); this.toolbarTimer = window.setTimeout(() => this.placeButterSearch(), 20); }); this.toolbarObserver.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-toolbar-pos', 'data-toolbar-style'] }); } }
+    else { this.nativeSearchingWasActive = this.host.hasClass('is-searching'); this.host.addClass('is-searching'); this.host.appendChild(this.frame); }
     this.input.addEventListener('input', () => this.updateQuery(this.input.value.trim()));
     this.input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); this.move(event.shiftKey ? -1 : 1); } else if (event.key === 'Escape') { event.preventDefault(); this.close(); } });
     this.keyScope = new Scope(this.app.scope); this.keyScope.register([], 'Escape', () => { this.close(); return false; }); this.app.keymap.pushScope(this.keyScope);
@@ -942,13 +942,13 @@ class SemanticInNoteSearch {
   }
   optionsChanged() { this.plugin.inNoteSearchOptions = { ...this.options }; this.syncOptionsUi(); this.updateQuery(this.input.value.trim()); this.input.focus(); }
   placeButterSearch() {
-    if (!this.isButter || !this.host || !this.el) return; const topToolbar = this.host.querySelector(':scope > .butter-toolbar-stack[data-toolbar-pos="top"]'), hostIsEditor = this.host.matches('.butter-editor-view'), editorSurface = hostIsEditor ? this.host.querySelector(':scope > .butter-editor-root') : this.host.querySelector(':scope > .butter-editor-view') || this.butterEditor;
-    this.el.toggleClass('is-butter-self-hosted', hostIsEditor);
-    if (topToolbar) { if (topToolbar.nextElementSibling !== this.el) topToolbar.insertAdjacentElement('afterend', this.el); }
-    else if (hostIsEditor) { if (this.host.firstElementChild !== this.el) this.host.prepend(this.el); }
-    else if (editorSurface && (this.el.parentElement !== this.host || this.el.nextElementSibling !== editorSurface)) this.host.insertBefore(this.el, editorSurface);
-    else if (!editorSurface && this.el.parentElement !== this.host) this.host.prepend(this.el);
-    this.el.style.setProperty('--gib-in-note-find-top', `${Math.ceil(topToolbar?.getBoundingClientRect().height || 0)}px`); if (this.observedButterToolbar !== topToolbar) { this.toolbarResizeObserver?.disconnect(); this.observedButterToolbar = topToolbar; if (topToolbar && typeof ResizeObserver === 'function') { this.toolbarResizeObserver = new ResizeObserver(() => this.placeButterSearch()); this.toolbarResizeObserver.observe(topToolbar); } }
+    if (!this.isButter || !this.host || !this.frame) return; const topToolbar = this.host.querySelector(':scope > .butter-toolbar-stack[data-toolbar-pos="top"]'), hostIsEditor = this.host.matches('.butter-editor-view'), editorSurface = hostIsEditor ? this.host.querySelector(':scope > .butter-editor-root') : this.host.querySelector(':scope > .butter-editor-view') || this.butterEditor;
+    this.frame.toggleClass('is-butter-self-hosted', hostIsEditor); this.el.toggleClass('is-butter-self-hosted', hostIsEditor);
+    if (topToolbar) { if (topToolbar.nextElementSibling !== this.frame) topToolbar.insertAdjacentElement('afterend', this.frame); }
+    else if (hostIsEditor) { if (this.host.firstElementChild !== this.frame) this.host.prepend(this.frame); }
+    else if (editorSurface && (this.frame.parentElement !== this.host || this.frame.nextElementSibling !== editorSurface)) this.host.insertBefore(this.frame, editorSurface);
+    else if (!editorSurface && this.frame.parentElement !== this.host) this.host.prepend(this.frame);
+    this.frame.style.setProperty('--gib-in-note-find-top', `${Math.ceil(topToolbar?.getBoundingClientRect().height || 0)}px`); if (this.observedButterToolbar !== topToolbar) { this.toolbarResizeObserver?.disconnect(); this.observedButterToolbar = topToolbar; if (topToolbar && typeof ResizeObserver === 'function') { this.toolbarResizeObserver = new ResizeObserver(() => this.placeButterSearch()); this.toolbarResizeObserver.observe(topToolbar); } }
   }
   compactPhrases(results, query, source) {
     const candidates = [...(this.options.lexical ? [{ phrase: String(query), displayPhrase: String(query), priority: 3, kind: 'lexical' }] : []), ...(this.options.semantic ? inNoteSemanticPool(results) : [])].filter(item => item.phrase && item.displayPhrase && item.displayPhrase.length >= (item.priority === 3 ? 1 : 3) && item.displayPhrase.length <= 220 && item.phrase.length <= 280);
@@ -1023,7 +1023,7 @@ class SemanticInNoteSearch {
   }
   clearHighlights() { for (const name of Object.values(this.highlightNames)) globalThis.CSS?.highlights?.delete(name); }
   close() {
-    clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.setSemanticLoading(false); if (this.keyScope) { this.app.keymap.popScope(this.keyScope); this.keyScope = null; } this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
+    clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.setSemanticLoading(false); if (this.keyScope) { this.app.keymap.popScope(this.keyScope); this.keyScope = null; } this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.frame?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
   }
 }
 

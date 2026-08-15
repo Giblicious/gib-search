@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.48
+
+- Adds a soft gradient-masked backdrop-blur halo behind Search in Current File while preserving the compact card and Butter Editor toolbar placement.
+- Uses a lighter mobile treatment and disables the halo when the operating system requests reduced transparency.
+
 ## 0.54.47
 
 - Restyles Similar Notes revision entries as passage-free result cards with normal file icons and titles, a `Version` relationship label, and an accent-derived directory pill.
