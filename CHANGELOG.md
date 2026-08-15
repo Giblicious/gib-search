@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.35
+
+- Replaces the full-width in-file search strip with a compact sticky card centered at the top of native and Butter editors.
+- Keeps advanced exact and meaning controls inside the same card without stretching its chrome across the editor.
+- Shows an accessible animated activity indicator while semantic results are being computed, including reduced-motion support.
+
 ## 0.54.34
 
 - Prevents weak sentence-level semantic fallbacks from appearing when the query already has a strong local phrase match elsewhere in the note.

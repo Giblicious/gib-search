@@ -7,7 +7,7 @@ const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bund
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
-const BUILD_VERSION = '0.54.34';
+const BUILD_VERSION = '0.54.35';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -895,7 +895,7 @@ class SemanticInNoteSearch {
     this.host = host; this.host.addClass('gib-in-note-find-host'); this.el = document.createElement('div'); this.el.className = 'document-search-container gib-in-note-find';
     const row = this.el.createDiv({ cls: 'document-search' }), inputContainer = row.createDiv({ cls: 'search-input-container gib-in-note-find-input' });
     this.input = inputContainer.createEl('input', { type: 'search', cls: 'document-search-input', placeholder: 'Find', attr: { 'aria-label': 'Find in current file by words or meaning', autocomplete: 'off', spellcheck: 'false' } });
-    const clear = inputContainer.createDiv({ cls: 'search-input-clear-button', attr: { role: 'button', tabindex: '0', 'aria-label': 'Clear search' } }); this.count = inputContainer.createSpan({ cls: 'document-search-count gib-in-note-find-count', text: '0/0' });
+    const clear = inputContainer.createDiv({ cls: 'search-input-clear-button', attr: { role: 'button', tabindex: '0', 'aria-label': 'Clear search' } }); this.loading = inputContainer.createSpan({ cls: 'gib-in-note-find-loading', attr: { role: 'status', 'aria-label': 'Finding related wording by meaning', title: 'Finding related wording by meaning' } }); this.loading.hidden = true; this.count = inputContainer.createSpan({ cls: 'document-search-count gib-in-note-find-count', text: '0/0' });
     const buttons = row.createDiv({ cls: 'document-search-buttons' }), previous = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Previous match', title: 'Previous match (Shift+Enter)' } }), next = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Next match', title: 'Next match (Enter)' } }), tune = buttons.createEl('button', { cls: 'clickable-icon document-search-button gib-in-note-find-tune', attr: { type: 'button', 'aria-label': 'Search options', title: 'Search options', 'aria-expanded': 'false' } }), close = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Close', title: 'Close (Esc)' } }); setIcon(previous, 'chevron-up'); setIcon(next, 'chevron-down'); setIcon(tune, 'sliders-horizontal'); setIcon(close, 'x'); this.previousButton = previous; this.nextButton = next;
     this.buildOptions();
     const clearSearch = () => { this.input.value = ''; this.updateQuery(''); this.input.focus(); }; clear.addEventListener('click', clearSearch); clear.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); clearSearch(); } }); previous.addEventListener('click', () => this.move(-1)); next.addEventListener('click', () => this.move(1)); close.addEventListener('click', () => this.close());
@@ -951,11 +951,12 @@ class SemanticInNoteSearch {
   matchRegex(candidate, rendered = false) { const phrase = rendered ? candidate.displayPhrase : candidate.phrase, escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), bounded = candidate.kind === 'semantic' || this.options.wholeWord, pattern = bounded ? `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])` : escaped, insensitive = candidate.kind === 'semantic' || !this.options.caseSensitive; return new RegExp(pattern, `gu${insensitive ? 'i' : ''}`); }
   semanticTuning() { const presets = { precise: { resultMinScore: .46, passageMinScore: .52, phraseMinScore: .7, fallbackMinScore: .64, fallbackLimit: 1, resultWindow: .1, resultLimit: 4, sentenceLimit: 6, scoreWindow: .14, limit: 24 }, balanced: { resultMinScore: .3, passageMinScore: .43, phraseMinScore: .58, fallbackMinScore: .57, fallbackLimit: 2, resultWindow: .18, resultLimit: 6, sentenceLimit: 8, scoreWindow: .24, limit: 40 }, broad: { resultMinScore: .18, passageMinScore: .34, phraseMinScore: .48, fallbackMinScore: .49, fallbackLimit: 4, resultWindow: .28, resultLimit: 10, sentenceLimit: 8, scoreWindow: .38, limit: 64 } }; return presets[this.options.breadth] || presets.balanced; }
   async sourceText() { return this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue(); }
+  setSemanticLoading(loading) { const active = Boolean(loading), loadingTitle = 'Finding related wording by meaning'; if (this.loading) this.loading.hidden = !active; this.count?.toggleClass('is-searching', active); this.input?.setAttribute('aria-busy', String(active)); if (active) this.count?.setAttribute('title', loadingTitle); else if (this.count?.getAttribute('title') === loadingTitle) this.count.removeAttribute('title'); }
   updateQuery(query) {
-    const version = ++this.queryVersion; clearTimeout(this.timer); this.count?.removeClass('is-searching');
+    const version = ++this.queryVersion; clearTimeout(this.timer); this.setSemanticLoading(false);
     if (!query) { this.matches = []; this.current = -1; this.highlightPhrases = []; this.updateCount(); this.clearHighlights(); return; }
     this.refreshMatches(query, [], version, false);
-    if (this.options.semantic && query.length >= 2) { this.count?.addClass('is-searching'); this.count?.setAttribute('title', 'Finding related wording by meaning'); this.timer = window.setTimeout(() => this.searchSemantically(query, version), 180); }
+    if (this.options.semantic && query.length >= 2) { this.setSemanticLoading(true); this.timer = window.setTimeout(() => this.searchSemantically(query, version), 180); }
   }
   async refreshMatches(query, results, version, preserveCurrent = false) {
     const source = await this.sourceText(); if (version !== this.queryVersion || !this.el?.isConnected) return;
@@ -966,7 +967,7 @@ class SemanticInNoteSearch {
       const tuning = this.semanticTuning(), options = { scoreWindow: tuning.scoreWindow, semanticHighlights: true, semanticPassages: true, semanticPassagesOnly: true, resultMinScore: tuning.resultMinScore, passageMinScore: tuning.passageMinScore, localPhraseMinScore: tuning.phraseMinScore, sentenceFallbackMinScore: tuning.fallbackMinScore, sentenceFallbackLimit: tuning.fallbackLimit, passageResultWindow: tuning.resultWindow, passageResultLimit: tuning.resultLimit, passageSentenceLimit: tuning.sentenceLimit, file: this.file.path };
       const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), results = await runSearch(query, tuning.limit, 0, options); await this.refreshMatches(query, results, version, true);
     } catch (error) { if (version === this.queryVersion) { this.count?.setAttribute('title', 'Exact matches shown; semantic matching is not currently available'); this.plugin.logDiagnostic(`In-file semantic enrichment unavailable: ${error.message}`); } }
-    finally { if (version === this.queryVersion) { this.count?.removeClass('is-searching'); this.updateCount(); } }
+    finally { if (version === this.queryVersion) { this.setSemanticLoading(false); this.updateCount(); } }
   }
   offsetToPos(offset) {
     if (typeof this.editor?.offsetToPos === 'function') return this.editor.offsetToPos(offset);
@@ -1010,7 +1011,7 @@ class SemanticInNoteSearch {
   }
   clearHighlights() { for (const name of Object.values(this.highlightNames)) globalThis.CSS?.highlights?.delete(name); }
   close() {
-    clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
+    clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.setSemanticLoading(false); this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
   }
 }
 
