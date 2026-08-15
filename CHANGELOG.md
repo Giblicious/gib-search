@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.37
+
+- Removes the residual native Obsidian focus border and shadow from the compact in-file search input so it behaves like the primary search prompt.
+- Uses Obsidian's theme-controlled large and small corner-radius variables for both search surfaces, prompt corners, and toolbar buttons.
+- Keeps keyboard focus behavior, caret visibility, semantic loading feedback, and the centered sticky placement intact.
+
 ## 0.54.36
 
 - Restyles the compact in-file search card to match Gib Search's primary modal surface, prompt input, spacing, border, and elevation.
