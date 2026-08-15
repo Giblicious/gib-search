@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.26
+
+- Adds a Search current file command that performs hybrid lexical and semantic passage retrieval inside the active Markdown note.
+- Adds Search current file to the editor context menu and Search within file to Markdown file context menus on desktop and mobile.
+- Shows the fixed file scope and Words + meaning mode in the search modal, highlights exact query wording alongside semantic phrases, and exposes lexical contribution in score details.
+- Applies the file constraint before retrieval and ranking so matching passages from other vault files cannot leak into in-file results.
+
 ## 0.54.25
 
 - Adds a compact profile bloom above the Writing Profile assessment, using independent radial petals to visualize meaningful Purpose, Form, and Emotion scores without implying relationships between adjacent dimensions.

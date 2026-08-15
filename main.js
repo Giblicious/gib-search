@@ -54498,12 +54498,13 @@ function groupSearchResults(results, query, maxFiles) {
     let group = files.get(hit.file);
     const rankingScore = Number(hit.rankingScore ?? hit.score ?? 0);
     if (!group) {
-      group = { file: hit.file, filenameOnly: Boolean(hit.filenameOnly), score: rankingScore, semanticScore: Number(hit.semanticScore ?? hit.score ?? 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), snippets: [], filenameHighlights: [] };
+      group = { file: hit.file, filenameOnly: Boolean(hit.filenameOnly), score: rankingScore, semanticScore: Number(hit.semanticScore ?? hit.score ?? 0), lexicalBoost: Number(hit.lexicalBoost || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), snippets: [], filenameHighlights: [] };
       files.set(hit.file, group);
     }
     if (rankingScore > group.score) {
       group.score = rankingScore;
       group.semanticScore = Number(hit.semanticScore ?? hit.score ?? 0);
+      group.lexicalBoost = Number(hit.lexicalBoost || 0);
       group.filenameBoost = Number(hit.filenameBoost || 0);
       group.folderPathBoost = Number(hit.folderPathBoost || 0);
     }
@@ -54521,14 +54522,14 @@ function passageSearchResults(results, query, maximum) {
     const semanticHighlights = (hit.semanticHighlights || []).map((item) => cleanSourceText(item.phrase)).filter(Boolean);
     const filenameHighlights = (hit.filenameHighlights || []).map((item) => cleanSourceText(item.phrase)).filter(Boolean);
     const headingHighlights = (hit.headingHighlights || []).map((item) => cleanSourceText(item.phrase)).filter(Boolean), text = distillSnippet(hit.text, query, semanticHighlights);
-    return { file: hit.file, filenameOnly: Boolean(hit.filenameOnly), score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.semanticScore ?? hit.score ?? 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: text ? [{ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) }] : [] };
+    return { file: hit.file, filenameOnly: Boolean(hit.filenameOnly), score: Number(hit.rankingScore ?? hit.score ?? 0), semanticScore: Number(hit.semanticScore ?? hit.score ?? 0), lexicalBoost: Number(hit.lexicalBoost || 0), filenameBoost: Number(hit.filenameBoost || 0), folderPathBoost: Number(hit.folderPathBoost || 0), filenameHighlights, snippets: text ? [{ text, heading: hit.heading, score: Number(hit.score || 0), lineStart: hit.lineStart, lineEnd: hit.lineEnd, semanticHighlights, headingHighlights, imageReferences: extractImageReferences(hit.text, [query, ...semanticHighlights]) }] : [] };
   }).filter((result) => result.filenameOnly || result.snippets.length);
 }
 function renderHighlighted(parent, text, query, semanticPhrases = []) {
-  const matches = [...new Set(semanticPhrases.filter((phrase) => {
+  const exact = cleanSourceText(query), matches = [.../* @__PURE__ */ new Set([...exact.length >= 2 && exact.length <= 160 && text.toLowerCase().includes(exact.toLowerCase()) ? [exact] : [], ...semanticPhrases.filter((phrase) => {
     const words = phrase.trim().split(/\s+/).length;
     return phrase.length >= 3 && phrase.length <= 60 && words >= 1 && words <= 3 && text.toLowerCase().includes(phrase.toLowerCase());
-  }))].sort((a, b) => b.length - a.length);
+  })])].sort((a, b) => b.length - a.length);
   if (!matches.length) {
     parent.setText(text);
     return;
@@ -56715,7 +56716,7 @@ var SemanticSearchModal = class extends SuggestModal {
     this.viewId = plugin.settings.atlasHomeViewId;
     this.mapGenerations = Math.max(1, Math.min(3, Number(plugin.settings.searchMapGenerations) || 1));
     const fileName = filePath ? filePath.split("/").pop().replace(/\.md$/i, "") : "";
-    this.setPlaceholder(filePath ? `Search within ${fileName}\u2026` : "Search vault by meaning\u2026");
+    this.setPlaceholder(filePath ? `Search ${fileName} by words or meaning\u2026` : "Search vault by meaning\u2026");
     this.setInstructions([{ command: "Type", purpose: "to search" }, { command: "\u2191\u2193", purpose: "to navigate" }, { command: "\u21B5", purpose: "to open" }, { command: "esc", purpose: "to dismiss" }]);
   }
   getSuggestions(query) {
@@ -56900,8 +56901,8 @@ var SemanticSearchModal = class extends SuggestModal {
     const fileTitle = header.createSpan({ cls: "gib-semantic-result-file" });
     renderHighlighted(fileTitle, fileName, this.lastQuery, result.filenameHighlights);
     const displayedScore = Number(result.viewScore ?? result.score ?? 0), score = header.createSpan({ cls: "gib-semantic-result-score", text: `${(displayedScore * 100).toFixed(0)}%` });
-    const semantic = Math.round(Number(result.semanticScore || 0) * 100), filename = Math.round(Number(result.filenameBoost || 0) * 100), folderBoost = Math.round(Number(result.folderPathBoost || 0) * 100);
-    score.setAttribute("title", `View score: ${(displayedScore * 100).toFixed(0)}% \xB7 Semantic: ${semantic}% \xB7 Filename: +${filename} \xB7 Folder: +${folderBoost}`);
+    const semantic = Math.round(Number(result.semanticScore || 0) * 100), lexical = Math.round(Number(result.lexicalBoost || 0) * 100), filename = Math.round(Number(result.filenameBoost || 0) * 100), folderBoost = Math.round(Number(result.folderPathBoost || 0) * 100);
+    score.setAttribute("title", `View score: ${(displayedScore * 100).toFixed(0)}% \xB7 Semantic: ${semantic}% \xB7 Lexical: +${lexical} \xB7 Filename: +${filename} \xB7 Folder: +${folderBoost}`);
     if (result.revisionCount > 1) {
       const bundle = container.createDiv({ cls: "gib-revision-bundle" }), matchedOlder = result.matchedFile && result.matchedFile !== result.primaryFile;
       bundle.createSpan({ text: `${result.revisionCount} editions${matchedOlder ? ` \xB7 best match: ${result.matchedFile.split("/").pop().replace(/\.md$/i, "")}` : ""}` });
@@ -56979,8 +56980,8 @@ var SemanticSearchModal = class extends SuggestModal {
   onOpen() {
     super.onOpen();
     this.modalEl.addClass("gib-search-modal");
+    const inputContainer = this.modalEl.querySelector(".prompt-input-container") || this.inputEl.parentElement;
     if (!this.filePath) {
-      const inputContainer = this.modalEl.querySelector(".prompt-input-container") || this.inputEl.parentElement;
       if (inputContainer?.parentElement) {
         const host = document.createElement("div");
         host.className = "gib-search-quick-filter-host";
@@ -56990,6 +56991,21 @@ var SemanticSearchModal = class extends SuggestModal {
           if (this.lastQuery) this.triggerSearch(this.lastQuery, true);
         });
       }
+    } else if (inputContainer?.parentElement) {
+      this.modalEl.addClass("is-file-search");
+      const scope = document.createElement("div");
+      scope.className = "gib-search-file-scope";
+      const icon = document.createElement("span");
+      icon.className = "gib-search-file-scope-icon";
+      setIcon(icon, "file-search");
+      const name = document.createElement("span");
+      name.className = "gib-search-file-scope-name";
+      name.textContent = this.filePath;
+      const mode = document.createElement("span");
+      mode.className = "gib-search-file-scope-mode";
+      mode.textContent = "Words + meaning";
+      scope.append(icon, name, mode);
+      inputContainer.insertAdjacentElement("afterend", scope);
     }
     if (this.plugin.atlasEnabled) this.setupMap();
     this.navigationHandler = (event) => {
@@ -59056,9 +59072,13 @@ module.exports = class GibSearch extends Plugin {
       if (file instanceof TFile && file.extension.toLowerCase() === "md") this.search.prioritizeWritingProfile(file.path);
     }));
     this.registerEvent(this.app.workspace.on("editor-menu", (menu, editor, view) => {
+      const file = view?.file || this.app.workspace.getActiveFile();
+      if (file instanceof TFile && file.extension.toLowerCase() === "md") menu.addItem((item) => item.setTitle("Search current file").setIcon("file-search").onClick(() => this.openFileSearch(file.path)));
       const selection = String(editor?.getSelection?.() || "").trim();
-      if (selection.length < 3) return;
-      menu.addItem((item) => item.setTitle("Find similar to selection").setIcon("search").onClick(() => this.openSimilarToSelection(selection, view?.file?.path || this.app.workspace.getActiveFile()?.path || "")));
+      if (selection.length >= 3) menu.addItem((item) => item.setTitle("Find similar to selection").setIcon("search").onClick(() => this.openSimilarToSelection(selection, file?.path || "")));
+    }));
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
+      if (file instanceof TFile && file.extension.toLowerCase() === "md") menu.addItem((item) => item.setTitle("Search within file").setIcon("file-search").onClick(() => this.openFileSearch(file.path)));
     }));
     if (this.atlasEnabled) {
       this.registerView(GRAPH_VIEW, (leaf) => new GraphView(leaf, this));
@@ -59067,6 +59087,11 @@ module.exports = class GibSearch extends Plugin {
     }
     this.addRibbonIcon("search", "Gib Search", () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: "semantic-search", name: "Semantic search", callback: () => new SemanticSearchModal(this.app, this).open() });
+    this.addCommand({ id: "search-current-file", name: "Search current file", checkCallback: (checking) => {
+      const file = this.app.workspace.getActiveFile(), available = file instanceof TFile && file.extension.toLowerCase() === "md";
+      if (available && !checking) this.openFileSearch(file.path);
+      return available;
+    } });
     this.addCommand({ id: "open-similar-notes", name: "Open Similar Notes", callback: () => this.openSimilarNotes() });
     this.addCommand({ id: "open-writing-profile", name: "Open Writing Profile", callback: () => this.openWritingProfile() });
     if (this.atlasEnabled) {
@@ -59246,6 +59271,16 @@ ${item.text || ""}`.slice(0, 12e4));
     const active = this.app.workspace.getActiveFile();
     if (active instanceof TFile && active.extension.toLowerCase() === "md") this.search.prioritizeWritingProfile(active.path);
     return leaf;
+  }
+  openFileSearch(filePath = "") {
+    const file = this.app.vault.getAbstractFileByPath(String(filePath || ""));
+    if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") {
+      new Notice("Open or choose a Markdown file to search within it.");
+      return null;
+    }
+    const modal = new SemanticSearchModal(this.app, this, file.path);
+    modal.open();
+    return modal;
   }
   async openSimilarToSelection(selection, sourcePath = "") {
     const normalized = String(selection || "").trim().replace(/\s+/g, " ");
