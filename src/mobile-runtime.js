@@ -2,6 +2,7 @@ import { pipeline, env } from '@huggingface/transformers';
 import { EMOTION_HYPOTHESES, TEXT_ANALYSIS_VERSION, TEXT_SIGNAL_PROFILES, signalHypothesis, validTextSignal } from './text-signals.js';
 import { WRITING_PROFILE_SIGNALS, WRITING_PROFILE_VERSION, combineWritingProfile, isCurrentWritingProfile } from './writing-profiles.js';
 import { IncrementalBm25, assembleIndexSegments, boundedTopK, centroidSimilarity, diverseCentroids, insertTopK } from './search-core.js';
+import { readMobileBootstrap, writeMobileBootstrap } from './mobile-bootstrap.js';
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
@@ -13,6 +14,7 @@ const GRAPH_METADATA_VERSION = 1;
 const GRAPH_EVIDENCE_VERSION = 3;
 const WRITING_PROFILE_BUCKETS = 64;
 const INDEX_BUCKETS = 64;
+const MOBILE_CHUNK_CHARACTERS = 1000;
 const EMOTION_CUE_PATTERNS = Object.freeze({
   joy: /\b(?:joy(?:ful)?|happ(?:y|iness)|delight(?:ed|ful)?|celebrat(?:e|ed|ion)|excited?)\b/i,
   contentment: /\b(?:contented|contentment|peaceful|satisfied|at ease|wellbeing)\b/i,
@@ -323,6 +325,7 @@ export class MobileSearchRuntime {
     this.pipe = null; this.modelPromise = null; this.startPromise = null; this.enabled = false; this.cancelRequested = false; this.phase = 'offline'; this.message = 'Semantic search is not started'; this.lastEvent = this.message; this.lastError = ''; this.process = null;
     this.listeners = new Set(); this.graphCacheListeners = new Set(); this.updateTimer = null; this.indexRun = null; this.indexAgain = false; this.indexForce = false; this.indexPendingPaths = new Set(); this.indexFullPending = false; this.dirtyPaths = new Set(); this.indexDirtyBuckets = new Set(); this.indexSaveTimer = null; this.indexSaveRun = null; this.indexDirty = false; this.indexGeneration = 0; this.indexRevision = 0; this.performanceStats = { lastScanMs: 0, lastCommitMs: 0, lastSaveMs: 0, lastSearchMs: 0, scannedFiles: 0, writtenFiles: 0 }; this.indexStable = false; this.startedAt = Date.now(); this.phaseStartedAt = this.startedAt; this.lastUserActivityAt = 0; this.lastIndexProgressAt = 0; this.mobileEmbedQueue = Promise.resolve(); this.indexingConfig = indexingHardwareProfile(this.isMobile); this.indexEmbedBatchSize = this.indexingConfig.maximumEmbedBatchSize; this.activeWasmThreads = 1;
     this.processedFiles = 0; this.totalFiles = 0; this.currentFile = ''; this.lastSuccessfulIndexAt = null;
+    this.mobileBootstrapTimer = null; this.mobileBootstrapRun = null; this.mobileBootstrapPending = null; this.mobileBootstrapGeneration = ''; this.mobileBootstrapStatus = { state: plugin.settings?.mobileBootstrapEnabled ? 'waiting' : 'disabled', message: '', files: 0, records: 0, createdAt: null };
     this.legacyIndexDir = `${plugin.app.vault.configDir}/plugins/${plugin.manifest.id}/embeddings/bge-small-en-v1.5-mobile`;
     this.indexKey = `${plugin.manifest.id}:${plugin.app.vault.adapter.getBasePath?.() || plugin.app.vault.getName()}:bge-small-en-v1.5`;
     this.database = null; this.queryCache = new Map(); this.resultCache = new Map(); this.conceptFacetCache = new Map(); this.livePending = null; this.liveRunning = false; this.modelBackend = 'wasm';
@@ -334,7 +337,7 @@ export class MobileSearchRuntime {
   changed() { for (const listener of this.listeners) listener(); }
   setState(phase, message) { if (phase !== this.phase) this.phaseStartedAt = Date.now(); this.phase = phase; this.message = message; this.lastEvent = message; this.lastError = phase === 'error' ? message : ''; this.plugin.recordActivity?.('Search', message, phase === 'error' ? 'error' : phase === 'ready' ? 'success' : ['offline'].includes(phase) ? 'neutral' : 'working'); this.changed(); }
   highlightPhraseCount() { return this.highlightPhraseVectors.size; }
-  workerStatus() { return { phase: this.phase, message: this.message, modelMessage: this.modelMessage || '', relationMessage: this.relationMessage || '', topicLabelMessage: this.topicLabelMessage || '', analysisMessage: this.analysisMessage || '', analysisStatus: { ...this.analysisStatus }, writingProfileStatus: { ...this.writingProfileStatus, cached: this.writingProfiles.size }, graphPreparing: Boolean(this.graphWarmPromise), topicLabelsPreparing: Boolean(this.topicLabelRefreshes?.size), modelPreparing: Boolean(this.modelPromise) || this.phase === 'loading_model', relationModelPreparing: Boolean(this.relationModelPromise), topicLabelModelPreparing: Boolean(this.topicLabelModelPromise), pid: 'mobile', startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }; }
+  workerStatus() { return { phase: this.phase, message: this.message, modelMessage: this.modelMessage || '', relationMessage: this.relationMessage || '', topicLabelMessage: this.topicLabelMessage || '', analysisMessage: this.analysisMessage || '', analysisStatus: { ...this.analysisStatus }, writingProfileStatus: { ...this.writingProfileStatus, cached: this.writingProfiles.size }, mobileBootstrapStatus: { ...this.mobileBootstrapStatus }, graphPreparing: Boolean(this.graphWarmPromise), topicLabelsPreparing: Boolean(this.topicLabelRefreshes?.size), modelPreparing: Boolean(this.modelPromise) || this.phase === 'loading_model', relationModelPreparing: Boolean(this.relationModelPromise), topicLabelModelPreparing: Boolean(this.topicLabelModelPromise), pid: 'mobile', startedAt: this.startedAt, phaseStartedAt: this.phaseStartedAt, updatedAt: Date.now(), indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), processedFiles: this.processedFiles, totalFiles: this.totalFiles || this.vaultFiles || 0, currentFile: this.currentFile, lastSuccessfulIndexAt: this.lastSuccessfulIndexAt }; }
   async health() { const desktopBackend = this.plugin.desktopEmbedder?.backend, relationBackend = this.plugin.desktopEmbedder?.relationBackend; return { indexedFiles: new Set(this.meta.map(item => item.file)).size, totalChunks: this.meta.length, highlightPhrases: this.highlightPhraseCount(), graphEntities: new Set(this.meta.flatMap(item => item.entities || [])).size, graphCacheReady: Boolean(this.graphEvidenceCache?.rootGraph), graphPreparing: Boolean(this.graphWarmPromise), graphCacheBuiltAt: this.graphEvidenceCache?.builtAt || null, cachedRelationships: this.relationCache.size, cachedTopicLabels: this.topicLabelCache.size, cachedTextAnalyses: this.analysisCache.size, writingProfileStatus: { ...this.writingProfileStatus, cached: this.writingProfiles.size }, analysisStatus: { ...this.analysisStatus }, vaultFiles: this.vaultFiles || 0, staleFiles: this.staleFiles || 0, isIndexing: this.phase === 'indexing', modelPreparing: Boolean(this.modelPromise) || this.phase === 'loading_model', relationModelPreparing: Boolean(this.relationModelPromise), topicLabelModelPreparing: Boolean(this.topicLabelModelPromise), modelLoaded: Boolean(this.pipe || this.plugin.desktopEmbedder?.ready), relationModelLoaded: Boolean(this.relationPipe || this.plugin.desktopEmbedder?.relationReady), relationModelBackend: relationBackend === 'webgpu' ? 'web-worker-webgpu' : relationBackend === 'wasm' ? 'web-worker-wasm' : relationBackend || this.modelBackend, topicLabelModelLoaded: Boolean(this.topicLabelPipe || this.plugin.desktopEmbedder?.topicLabelReady), modelProfile: 'bge', modelId: MODEL_ID, modelBackend: this.plugin.desktopEmbedder && !this.plugin.desktopEmbedder.disabled ? `web-worker-${desktopBackend === 'webgpu' ? 'webgpu' : desktopBackend === 'wasm' ? 'wasm' : 'starting'}` : this.modelBackend }; }
   async openDatabase() {
     if (this.database) return this.database;
@@ -349,7 +352,7 @@ export class MobileSearchRuntime {
     let stored; if (!this.isMobile) stored = await this.plugin.desktopIndexStore.get();
     else {
       const database = await this.openDatabase(), read = key => new Promise((resolve, reject) => { const request = database.transaction('indexes', 'readonly').objectStore('indexes').get(key); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }), readMany = keys => new Promise((resolve, reject) => { if (!keys.length) return resolve([]); const transaction = database.transaction('indexes', 'readonly'), store = transaction.objectStore('indexes'), values = Array(keys.length); keys.forEach((key, index) => { const request = store.get(key); request.onsuccess = () => { values[index] = request.result; }; }); transaction.oncomplete = () => resolve(values); transaction.onerror = () => reject(transaction.error); transaction.onabort = () => reject(transaction.error || new Error('Index segment read was aborted')); }), manifest = await read(`${this.indexKey}:manifest`);
-      if (manifest?.version === 3) for (const snapshot of [manifest.current, manifest.previous].filter(Boolean)) { try { const buckets = Object.keys(snapshot.buckets || {}).map(Number).sort((a, b) => a - b), segments = await readMany(buckets.map(bucket => `${this.indexKey}:segment:${snapshot.buckets[bucket]}`)); stored = { ...assembleIndexSegments(segments, DIMENSION), lastSuccessfulIndexAt: snapshot.lastSuccessfulIndexAt || null }; this.indexGeneration = Number(manifest.sequence || 0); break; } catch (error) { this.plugin.logDiagnostic?.(`Could not load an index generation: ${error?.message || error}`); } }
+      if (manifest?.version === 3) { this.mobileBootstrapGeneration = String(manifest.mobileBootstrapGeneration || ''); for (const snapshot of [manifest.current, manifest.previous].filter(Boolean)) { try { const buckets = Object.keys(snapshot.buckets || {}).map(Number).sort((a, b) => a - b), segments = await readMany(buckets.map(bucket => `${this.indexKey}:segment:${snapshot.buckets[bucket]}`)); stored = { ...assembleIndexSegments(segments, DIMENSION), lastSuccessfulIndexAt: snapshot.lastSuccessfulIndexAt || null }; this.indexGeneration = Number(manifest.sequence || 0); break; } catch (error) { this.plugin.logDiagnostic?.(`Could not load an index generation: ${error?.message || error}`); } } }
       else for (const generation of [manifest?.current, manifest?.previous].filter(Boolean)) { const candidate = await read(`${this.indexKey}:generation:${generation}`); if (candidate?.vectors && Number(candidate.vectors.byteLength || 0) === Number(candidate.meta?.length || 0) * DIMENSION * 4) { stored = candidate; this.indexGeneration = Number(manifest?.sequence || 0); break; } }
       if (!stored) stored = await read(this.indexKey);
     }
@@ -360,7 +363,7 @@ export class MobileSearchRuntime {
     const database = await this.openDatabase(), read = key => new Promise((resolve, reject) => { const request = database.transaction('indexes', 'readonly').objectStore('indexes').get(key); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }), previousManifest = await read(`${this.indexKey}:manifest`), sequence = Math.max(Number(previousManifest?.sequence || 0) + 1, Number(this.indexGeneration || 0) + 1), sourceVectors = value.vectorList || null, packed = sourceVectors ? null : new Float32Array(value.vectors), groups = new Map();
     stored.meta.forEach((item, index) => { const bucket = indexBucket(item.file), group = groups.get(bucket) || { meta: [], vectors: [] }; group.meta.push(item); group.vectors.push(sourceVectors ? sourceVectors[index] : packed.subarray(index * DIMENSION, (index + 1) * DIMENSION)); groups.set(bucket, group); }); const dirty = this.indexDirtyBuckets.size && previousManifest?.version === 3 ? new Set(this.indexDirtyBuckets) : new Set(Array.from({ length: INDEX_BUCKETS }, (_, bucket) => bucket)), currentBuckets = previousManifest?.version === 3 ? { ...(previousManifest.current?.buckets || {}) } : {}, segments = new Map();
     for (const bucket of dirty) { const group = groups.get(bucket) || { meta: [], vectors: [] }, bucketVectors = await this.packVectors(group.vectors), id = `${sequence}:${bucket}`; currentBuckets[bucket] = id; segments.set(id, { meta: group.meta, vectors: bucketVectors.buffer }); }
-    const current = { buckets: currentBuckets, lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null, committedAt: Date.now() }, previous = previousManifest?.version === 3 ? previousManifest.current : null, manifest = { version: 3, sequence, current, previous }, keep = new Set([...Object.values(current.buckets || {}), ...Object.values(previous?.buckets || {})]);
+    const current = { buckets: currentBuckets, lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null, committedAt: Date.now() }, previous = previousManifest?.version === 3 ? previousManifest.current : null, manifest = { version: 3, sequence, current, previous, mobileBootstrapGeneration: this.mobileBootstrapGeneration || previousManifest?.mobileBootstrapGeneration || '' }, keep = new Set([...Object.values(current.buckets || {}), ...Object.values(previous?.buckets || {})]);
     await new Promise((resolve, reject) => { const transaction = database.transaction('indexes', 'readwrite'), store = transaction.objectStore('indexes'); for (const [id, segment] of segments) store.put(segment, `${this.indexKey}:segment:${id}`); store.put(manifest, `${this.indexKey}:manifest`); if (previousManifest?.version === 3) for (const id of Object.values(previousManifest.previous?.buckets || {})) if (!keep.has(id)) store.delete(`${this.indexKey}:segment:${id}`); transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error); transaction.onabort = () => reject(transaction.error || new Error('Index generation commit was aborted')); }); this.indexGeneration = sequence;
   }
   async loadRelationCache() {
@@ -551,6 +554,13 @@ export class MobileSearchRuntime {
       await sleep(32); return;
     }
     if (scheduling?.isInputPending?.({ includeContinuous: true })) await sleep(24);
+    if (!document.hidden) await yieldToUi(); else await sleep(0);
+  }
+  async mobileBootstrapTurn() {
+    if (typeof document === 'undefined') { await yieldToUi(); return; }
+    while (!document.hidden && Date.now() - this.lastUserActivityAt < 160) await sleep(32);
+    while (this.liveRunning || this.livePending) await sleep(40);
+    if (navigator?.scheduling?.isInputPending?.({ includeContinuous: true })) await sleep(24);
     if (!document.hidden) await yieldToUi(); else await sleep(0);
   }
   setIndexProgress(message) {
@@ -784,11 +794,80 @@ export class MobileSearchRuntime {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
+  mobileBootstrapDirectory() {
+    const fallback = `${this.plugin.app.vault.configDir}/plugins/${this.plugin.manifest.id}/mobile-bootstrap`, requested = String(this.plugin.settings.mobileBootstrapPath || '').trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '');
+    if (!requested) return fallback;
+    if (requested.startsWith('/') || /^[A-Za-z]:/.test(requested) || requested.split('/').includes('..')) throw new Error('Mobile bootstrap folder must be a vault-relative path');
+    return requested;
+  }
+  async materializeMobileBootstrapFile(file) {
+    const filenameOnly = !isContentIndexable(file), semanticMetadata = filenameOnly ? '' : this.semanticMetadata(file);
+    if (filenameOnly) return { file, filenameOnly, semanticMetadata, representationHash: contentFingerprint(`filename-only-v2\0${file.path}`), chunks: [] };
+    const content = await this.plugin.app.vault.read(file), chunks = chunkMarkdown(content, MOBILE_CHUNK_CHARACTERS), representationHash = contentFingerprint(`${PASSAGE_INDEX_VERSION}\0${semanticMetadata}\0${chunks.map(chunk => embeddingText(file.path, chunk, semanticMetadata)).join('\0')}`);
+    return { file, filenameOnly, semanticMetadata, representationHash, chunks };
+  }
+  bootstrapReplacement(entry, embedded) {
+    const meta = [], vectors = [], file = entry.file;
+    if (entry.filenameOnly || !entry.chunks.length) {
+      const chunk = { heading: '', text: '', lineStart: 0, lineEnd: 0 }; meta.push({ file: file.path, filenameOnly: entry.filenameOnly || undefined, ...chunk, mtime: file.stat.mtime, contentHash: entry.representationHash, passageVersion: PASSAGE_INDEX_VERSION, semanticMetadata: entry.semanticMetadata, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: buildHighlightCandidates(file.path, chunk), graphVersion: GRAPH_METADATA_VERSION, entities: [] }); vectors.push(new Float32Array(DIMENSION));
+    } else entry.chunks.forEach((chunk, index) => { meta.push({ file: file.path, heading: chunk.heading, text: chunk.text, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, mtime: file.stat.mtime, contentHash: entry.representationHash, passageVersion: PASSAGE_INDEX_VERSION, semanticMetadata: entry.semanticMetadata, highlightVersion: HIGHLIGHT_INDEX_VERSION, highlightCandidates: buildHighlightCandidates(file.path, chunk), graphVersion: GRAPH_METADATA_VERSION, entities: extractGraphEntities(`${basename(file.path)} ${chunk.heading || ''} ${chunk.text}`) }); vectors.push(embedded[index]); });
+    return { meta, vectors };
+  }
+  async buildMobileBootstrap() {
+    if (this.isMobile) throw new Error('Build the mobile bootstrap package on desktop');
+    if (this.mobileBootstrapRun) return this.mobileBootstrapRun;
+    this.mobileBootstrapRun = (async () => {
+      const directory = this.mobileBootstrapDirectory(), files = this.files(), previousPackage = await readMobileBootstrap(this.adapter, directory).catch(() => null), previous = new Map();
+      if (previousPackage?.manifest?.modelId === MODEL_ID && previousPackage.manifest.passageVersion === PASSAGE_INDEX_VERSION && previousPackage.manifest.chunkCharacters === MOBILE_CHUNK_CHARACTERS) previousPackage.meta.forEach((item, index) => { const group = previous.get(item.file) || { meta: [], vectors: [] }; group.meta.push(unpackIndexMeta([item])[0]); group.vectors.push(previousPackage.vectors[index]); previous.set(item.file, group); });
+      const outputMeta = [], outputVectors = []; this.mobileBootstrapStatus = { state: 'building', message: 'Preparing mobile passages', files: 0, records: 0, createdAt: null }; this.changed();
+      for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+        if (!this.plugin.settings.mobileBootstrapEnabled) throw new Error('Mobile bootstrap build was stopped');
+        const entry = await this.materializeMobileBootstrapFile(files[fileIndex]), cached = previous.get(entry.file.path), reusable = cached?.meta?.length && cached.meta.every(item => item.contentHash === entry.representationHash && item.passageVersion === PASSAGE_INDEX_VERSION);
+        let replacement;
+        if (reusable) replacement = cached;
+        else {
+          const texts = entry.chunks.map(chunk => embeddingText(entry.file.path, chunk, entry.semanticMetadata)), embedded = [];
+          for (let offset = 0; offset < texts.length; offset += 8) { embedded.push(...await this.plugin.desktopEmbedder.embedMobileBootstrap(texts.slice(offset, offset + 8))); await yieldToUi(); }
+          replacement = this.bootstrapReplacement(entry, embedded);
+        }
+        outputMeta.push(...replacement.meta); outputVectors.push(...replacement.vectors); this.mobileBootstrapStatus = { ...this.mobileBootstrapStatus, files: fileIndex + 1, records: outputMeta.length, message: `${fileIndex + 1} of ${files.length} files` }; this.changed(); await this.mobileBootstrapTurn();
+      }
+      const manifest = await writeMobileBootstrap(this.adapter, directory, { meta: packIndexMeta(outputMeta), vectors: outputVectors, dimension: DIMENSION, modelId: MODEL_ID, passageVersion: PASSAGE_INDEX_VERSION, chunkCharacters: MOBILE_CHUNK_CHARACTERS });
+      this.mobileBootstrapStatus = { state: 'ready', message: `Package ready in ${directory}`, files: manifest.files, records: manifest.records, createdAt: manifest.createdAt }; this.plugin.logDiagnostic(`Built mobile bootstrap package ${manifest.generation}: ${manifest.files} files, ${manifest.records} records`); this.changed(); return manifest;
+    })().catch(error => { this.mobileBootstrapStatus = { ...this.mobileBootstrapStatus, state: 'error', message: error.message }; this.changed(); throw error; }).finally(async () => { this.mobileBootstrapRun = null; await this.plugin.desktopEmbedder.releaseMobileBootstrap().catch(() => {}); });
+    return this.mobileBootstrapRun;
+  }
+  async importMobileBootstrap(packageValue) {
+    const { manifest, meta: packedMeta, vectors } = packageValue;
+    if (manifest.modelId !== MODEL_ID || manifest.dimension !== DIMENSION || manifest.passageVersion !== PASSAGE_INDEX_VERSION || manifest.chunkCharacters !== MOBILE_CHUNK_CHARACTERS) throw new Error('Mobile bootstrap package is not compatible with this Gib Search version');
+    const packageMeta = unpackIndexMeta(packedMeta), byFile = new Map(); packageMeta.forEach((item, index) => { const group = byFile.get(item.file) || { meta: [], vectors: [] }; group.meta.push(item); group.vectors.push(vectors[index]); byFile.set(item.file, group); });
+    const replacements = new Map(), files = this.files(); this.mobileBootstrapStatus = { state: 'importing', message: 'Validating synced notes', files: 0, records: manifest.records, createdAt: manifest.createdAt }; this.changed();
+    for (let index = 0; index < files.length; index++) { const file = files[index], packaged = byFile.get(file.path); if (packaged) { const current = await this.materializeMobileBootstrapFile(file); if (packaged.meta.every(item => item.contentHash === current.representationHash)) replacements.set(file.path, { meta: packaged.meta.map(item => ({ ...item, mtime: file.stat.mtime })), vectors: packaged.vectors }); } this.mobileBootstrapStatus.files = index + 1; if (index % 4 === 3) await this.indexingTurn(); }
+    if (replacements.size) { this.replaceIndexedFiles(replacements); for (const file of replacements.keys()) this.indexDirtyBuckets.add(indexBucket(file)); }
+    this.mobileBootstrapGeneration = manifest.generation; await this.saveIndex();
+    this.mobileBootstrapStatus = { state: 'ready', message: `Imported ${replacements.size} current files; remaining changes will index normally`, files: replacements.size, records: [...replacements.values()].reduce((sum, value) => sum + value.meta.length, 0), createdAt: manifest.createdAt }; this.plugin.logDiagnostic(`Imported mobile bootstrap package ${manifest.generation}: ${replacements.size} current files`); this.changed();
+  }
+  async checkMobileBootstrap() {
+    if (!this.isMobile || !this.plugin.settings.mobileBootstrapEnabled || this.mobileBootstrapRun) return false;
+    this.mobileBootstrapRun = (async () => {
+      let packageValue; try { packageValue = await readMobileBootstrap(this.adapter, this.mobileBootstrapDirectory()); } catch (error) { this.plugin.logDiagnostic(`Mobile bootstrap is not complete yet: ${error.message}`); return false; }
+      if (!packageValue || packageValue.manifest.generation === this.mobileBootstrapGeneration) return false;
+      this.mobileBootstrapPending = packageValue;
+      if (this.indexRun) await this.indexRun;
+      await this.importMobileBootstrap(packageValue); this.mobileBootstrapPending = null; if (this.enabled) this.updateIndex(); return true;
+    })().catch(error => { this.mobileBootstrapPending = null; this.mobileBootstrapStatus = { ...this.mobileBootstrapStatus, state: 'error', message: error.message }; this.plugin.logDiagnostic(`Could not import mobile bootstrap: ${error.message}`, true); this.changed(); return false; }).finally(() => { this.mobileBootstrapRun = null; });
+    return this.mobileBootstrapRun;
+  }
+  scheduleMobileBootstrapCheck(delay = 20000) {
+    clearTimeout(this.mobileBootstrapTimer); this.mobileBootstrapTimer = null;
+    if (!this.isMobile || !this.plugin.settings.mobileBootstrapEnabled || !this.enabled) return;
+    this.mobileBootstrapTimer = setTimeout(async () => { this.mobileBootstrapTimer = null; await this.checkMobileBootstrap(); this.scheduleMobileBootstrapCheck(this.phase === 'indexing' ? 20000 : 60000); }, delay);
+  }
   async updateIndex(force = false, paths = null) {
     this.indexForce ||= force; if (paths === null) this.indexFullPending = true; else for (const value of paths instanceof Set || Array.isArray(paths) ? paths : [paths]) { const path = typeof value === 'string' ? value : value?.path; if (path) this.indexPendingPaths.add(path); }
     if (this.indexRun) return this.indexRun;
     this.indexRun = (async () => {
-      while ((this.indexFullPending || this.indexPendingPaths.size) && this.enabled && !this.cancelRequested) { const nextForce = this.indexForce, full = this.indexFullPending, requested = full ? null : new Set(this.indexPendingPaths); this.indexForce = false; this.indexFullPending = false; this.indexPendingPaths.clear(); await this.performDirtyIndexUpdate(nextForce, requested); }
+      while ((this.indexFullPending || this.indexPendingPaths.size) && this.enabled && !this.cancelRequested && !this.mobileBootstrapPending) { const nextForce = this.indexForce, full = this.indexFullPending, requested = full ? null : new Set(this.indexPendingPaths); this.indexForce = false; this.indexFullPending = false; this.indexPendingPaths.clear(); await this.performDirtyIndexUpdate(nextForce, requested); }
     })();
     try { return await this.indexRun; } finally { this.indexRun = null; }
   }
@@ -868,7 +947,7 @@ export class MobileSearchRuntime {
     this.totalFiles = Math.max(1, prepared.length); this.processedFiles = 0; let filesSinceCheckpoint = 0, checkpointAt = Date.now(), cursor = 0;
     if (!this.isMobile) this.plugin.logDiagnostic(`Desktop indexing will use adaptive batches of up to ${this.indexingConfig.maximumEmbedBatchSize} passages and checkpoint every ${this.indexingConfig.checkpointFiles} files`);
     while (cursor < prepared.length) {
-      if (this.cancelRequested || !this.enabled) return;
+      if (this.cancelRequested || !this.enabled || this.mobileBootstrapPending) { if (this.mobileBootstrapPending) { this.currentFile = ''; this.setState('indexing', 'Switching to the synced mobile bootstrap package…'); } return; }
       const groupSize = this.isMobile ? 1 : Math.min(prepared.length - cursor, Math.max(4, Math.min(10, this.indexingConfig.maximumEmbedBatchSize))), group = prepared.slice(cursor, cursor + groupSize), materialized = [];
       for (let groupIndex = 0; groupIndex < group.length; groupIndex++) {
         const entry = group[groupIndex], position = cursor + groupIndex; this.currentFile = entry.file.path; this.setIndexProgress(`Preparing ${position + 1} of ${prepared.length}: ${entry.file.path}`);
@@ -903,10 +982,10 @@ export class MobileSearchRuntime {
   start() {
     if (!this.plugin.settings.enabled) { this.setState('offline', 'Semantic index is disabled'); return false; }
     if (this.startPromise) return false; this.enabled = true; this.cancelRequested = false;
-    this.startPromise = (async () => { try { await this.loadIndex(); await this.cleanupLegacyGeneratedData(); this.setState('starting', 'Waiting for the vault to finish loading…'); await this.waitForVaultSettled(); await this.updateIndex(); if (this.plugin.atlasEnabled) this.warmGraphEvidence(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
+    this.startPromise = (async () => { try { await this.loadIndex(); await this.cleanupLegacyGeneratedData(); this.setState('starting', 'Waiting for the vault to finish loading…'); await this.waitForVaultSettled(); if (this.isMobile && this.plugin.settings.mobileBootstrapEnabled) await this.checkMobileBootstrap(); await this.updateIndex(); this.scheduleMobileBootstrapCheck(); if (this.plugin.atlasEnabled) this.warmGraphEvidence(); } catch (error) { this.setState('error', error.message); this.plugin.reportOnce(error.message); } finally { this.startPromise = null; } })();
     return true;
   }
-  stop() { this.cancelRequested = true; this.enabled = false; clearTimeout(this.updateTimer); this.updateTimer = null; this.flushIndexSave()?.catch?.(() => {}); this.stopWritingProfileIndex(); this.flushHighlightPhraseCache(); if (this.livePending) { this.livePending.reject(staleSearchError()); this.livePending = null; } this.setState('offline', 'Semantic search is paused'); return true; }
+  stop() { this.cancelRequested = true; this.enabled = false; clearTimeout(this.updateTimer); this.updateTimer = null; clearTimeout(this.mobileBootstrapTimer); this.mobileBootstrapTimer = null; this.flushIndexSave()?.catch?.(() => {}); this.stopWritingProfileIndex(); this.flushHighlightPhraseCache(); if (this.livePending) { this.livePending.reject(staleSearchError()); this.livePending = null; } this.setState('offline', 'Semantic search is paused'); return true; }
   restart() { this.stop(); const resume = () => this.startPromise ? setTimeout(resume, 100) : this.start(); resume(); return true; }
   rebuild() { this.stop(); const rebuild = () => { if (this.startPromise) return setTimeout(rebuild, 100); this.meta = []; this.vectors = []; this.highlightPhraseVectors.clear(); this.analysisCache.clear(); this.packedVectors = new Float32Array(); this.queryCache.clear(); this.resultCache.clear(); this.conceptFacetCache.clear(); this.graphEvidenceCache = null; this.invalidateGraphEvidence(); this.topicBasisCache = null; this.refreshLexical(); this.enabled = true; this.cancelRequested = false; this.startPromise = (async () => { try { await this.updateIndex(true); if (this.plugin.atlasEnabled) this.warmGraphEvidence(); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); }; rebuild(); return true; }
   watch() {

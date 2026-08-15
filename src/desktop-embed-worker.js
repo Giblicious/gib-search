@@ -9,6 +9,8 @@ let pipe = null;
 let modelPromise = null;
 let modelBackend = 'starting';
 let modelDtype = 'q8';
+let mobileBootstrapPipe = null;
+let mobileBootstrapPromise = null;
 let relationPipe = null;
 let relationPromise = null;
 let relationBackend = 'starting';
@@ -131,6 +133,18 @@ async function embed(texts, query) {
   return { buffers, transfer: buffers };
 }
 
+async function initializeMobileBootstrapModel() {
+  if (mobileBootstrapPipe) return mobileBootstrapPipe;
+  if (mobileBootstrapPromise) return mobileBootstrapPromise;
+  mobileBootstrapPromise = (async () => { await configureRuntime(); return loadEmbeddingModel('wasm', 'q8'); })();
+  try { mobileBootstrapPipe = await mobileBootstrapPromise; self.postMessage({ type: 'mobile-bootstrap-ready' }); return mobileBootstrapPipe; }
+  finally { mobileBootstrapPromise = null; }
+}
+async function embedMobileBootstrap(texts) {
+  const model = await initializeMobileBootstrapModel(), output = await model(texts, { pooling: 'mean', normalize: true }), dimension = output.dims.at(-1), buffers = texts.map((_, index) => new Float32Array(output.data.slice(index * dimension, (index + 1) * dimension)).buffer);
+  return { buffers, transfer: buffers };
+}
+
 function relationProgressCallback(progress) {
   if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'relation-progress', file: progress.file || 'relationship model', progress: Number(progress.progress) });
 }
@@ -194,6 +208,10 @@ async function handleEmbed(message) {
   try { const result = await embed(message.texts || [], Boolean(message.query)); self.postMessage({ type: 'result', id: message.id, buffers: result.buffers }, result.transfer); }
   catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
 }
+async function handleMobileBootstrap(message) {
+  try { const result = await embedMobileBootstrap(message.texts || []); self.postMessage({ type: 'result', id: message.id, buffers: result.buffers }, result.transfer); }
+  catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
+}
 async function handleRelations(message) { try { self.postMessage({ type: 'relation-result', id: message.id, results: await classifyRelations(message.pairs || [], Boolean(message.lowPriority)) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
 async function handleTopicLabels(message) { try { self.postMessage({ type: 'topic-label-result', id: message.id, labels: await generateTopicLabels(message.prompts || []) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
 
@@ -205,6 +223,8 @@ self.onmessage = event => {
   }
   if (message.type === 'init') { configuration = message; self.postMessage({ type: 'initialized' }); return; }
   if (message.type === 'embed') enqueueTask(message.priority ?? (message.query ? 0 : 2), () => handleEmbed(message));
+  else if (message.type === 'mobile-bootstrap') enqueueTask(5, () => handleMobileBootstrap(message));
+  else if (message.type === 'release-mobile-bootstrap') enqueueTask(5, async () => { const previous = mobileBootstrapPipe; mobileBootstrapPipe = null; await disposePipeline(previous); self.postMessage({ type: 'mobile-bootstrap-released', id: message.id }); });
   else if (message.type === 'relations') enqueueTask(message.lowPriority ? 4 : 2, () => handleRelations(message));
   else if (message.type === 'topic-labels') enqueueTask(5, () => handleTopicLabels(message));
 };

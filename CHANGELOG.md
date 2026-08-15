@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.22
+
+- Adds an optional, disabled-by-default mobile bootstrap package that desktop can build inside a configurable vault-relative folder for any existing sync tool to carry.
+- Builds the package with mobile-sized passages and the exact q8 mobile embedding model, while reusing unchanged files from the prior package and keeping the work in the low-priority inference queue.
+- Publishes immutable compressed segments and an atomic manifest with byte counts and SHA-256 hashes, so mobile ignores partial, corrupt, incompatible, or not-yet-synced packages.
+- Lets mobile begin normal indexing when no package exists, then pause between files and merge a package that arrives later without overwriting newer local progress.
+- Validates package entries against current note representations, imports only matching files, preserves locally indexed mismatches, and resumes normal indexing for the remainder.
+
 ## 0.54.21
 
 - Runs desktop Writing Profile emotion, purpose, and form classification through the verified WebGPU/fp16 worker when available.
