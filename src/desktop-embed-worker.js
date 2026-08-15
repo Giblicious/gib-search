@@ -2,6 +2,7 @@ const { pipeline, env } = require('@huggingface/transformers');
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
+const RERANKER_MODEL_ID = 'Xenova/ms-marco-TinyBERT-L-2-v2';
 const TOPIC_LABEL_MODEL_ID = 'Xenova/flan-t5-base';
 const QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';
 let configuration = null;
@@ -15,6 +16,8 @@ let relationPipe = null;
 let relationPromise = null;
 let relationBackend = 'starting';
 let relationDtype = 'q8';
+let rerankerPipe = null;
+let rerankerPromise = null;
 let topicLabelPipe = null;
 let topicLabelPromise = null;
 let nextCacheId = 1;
@@ -184,6 +187,39 @@ async function classifyRelations(pairs, lowPriority = false) {
   catch (error) { if (relationBackend !== 'webgpu') throw error; return classifyWithModel(await activateRelationWasm(error), pairs, lowPriority); }
 }
 
+function rerankerProgressCallback(progress) {
+  if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'reranker-progress', file: progress.file || 'passage reranker', progress: Number(progress.progress) });
+}
+async function loadRerankerModel(device, dtype) {
+  return pipeline('text-classification', RERANKER_MODEL_ID, { device, dtype, progress_callback: rerankerProgressCallback });
+}
+async function initializeRerankerModel() {
+  if (rerankerPipe) return rerankerPipe;
+  if (rerankerPromise) return rerankerPromise;
+  rerankerPromise = (async () => {
+    await configureRuntime();
+    const loaded = await loadRerankerModel('wasm', 'q8');
+    try {
+      const inputs = loaded.tokenizer(['related wording'], { text_pair: ['a relevant passage'], padding: true, truncation: true, max_length: 64 }), output = await loaded.model(inputs);
+      if (!output?.logits?.data?.length) throw new Error('Passage reranker warmup returned no scores');
+      rerankerPipe = loaded; self.postMessage({ type: 'reranker-ready', backend: 'wasm', dtype: 'q8' }); return rerankerPipe;
+    } catch (error) { await disposePipeline(loaded); throw error; }
+  })();
+  try { return await rerankerPromise; } finally { rerankerPromise = null; }
+}
+async function rerankPassages(pairs) {
+  const classifier = await initializeRerankerModel(), results = [], mobile = Boolean(configuration?.mobile), batchSize = mobile ? 6 : 24;
+  for (let offset = 0; offset < pairs.length; offset += batchSize) {
+    const batch = pairs.slice(offset, offset + batchSize), queries = batch.map(pair => String(pair.query || '').slice(0, 240)), passages = batch.map(pair => String(pair.passage || '').slice(0, 1400)), inputs = classifier.tokenizer(queries, { text_pair: passages, padding: true, truncation: true, max_length: 192 }), output = await classifier.model(inputs), width = Math.max(1, Number(output.logits.dims.at(-1)) || 1);
+    for (let index = 0; index < batch.length; index++) results.push(Number(output.logits.data[index * width]));
+      if (offset + batchSize < pairs.length) {
+        if (mobile) await new Promise(resolve => setTimeout(resolve, 10));
+        await serviceHigherPriorityTasks(1);
+      }
+  }
+  return results;
+}
+
 async function initializeTopicLabelModel() {
   if (topicLabelPipe) return topicLabelPipe;
   if (topicLabelPromise) return topicLabelPromise;
@@ -213,6 +249,7 @@ async function handleMobileBootstrap(message) {
   catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
 }
 async function handleRelations(message) { try { self.postMessage({ type: 'relation-result', id: message.id, results: await classifyRelations(message.pairs || [], Boolean(message.lowPriority)) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
+async function handleRerank(message) { try { self.postMessage({ type: 'rerank-result', id: message.id, scores: await rerankPassages(message.pairs || []) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
 async function handleTopicLabels(message) { try { self.postMessage({ type: 'topic-label-result', id: message.id, labels: await generateTopicLabels(message.prompts || []) }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } }
 
 self.onmessage = event => {
@@ -226,5 +263,6 @@ self.onmessage = event => {
   else if (message.type === 'mobile-bootstrap') enqueueTask(5, () => handleMobileBootstrap(message));
   else if (message.type === 'release-mobile-bootstrap') enqueueTask(5, async () => { const previous = mobileBootstrapPipe; mobileBootstrapPipe = null; await disposePipeline(previous); self.postMessage({ type: 'mobile-bootstrap-released', id: message.id }); });
   else if (message.type === 'relations') enqueueTask(message.lowPriority ? 4 : 2, () => handleRelations(message));
+  else if (message.type === 'rerank') enqueueTask(1, () => handleRerank(message));
   else if (message.type === 'topic-labels') enqueueTask(5, () => handleTopicLabels(message));
 };

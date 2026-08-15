@@ -1,12 +1,12 @@
 {
   "name": "gib-search",
-  "version": "0.54.41",
+  "version": "0.54.42",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs && node scripts/search-check.mjs && node scripts/terrain-check.mjs",
-    "audit:in-file": "node scripts/in-file-quality-check.mjs",
+    "audit:in-file": "node scripts/in-file-quality-check.mjs --all-budgets",
     "smoke:webgpu": "node scripts/webgpu-smoke.mjs"
   },
   "devDependencies": {

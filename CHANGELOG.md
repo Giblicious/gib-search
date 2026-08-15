@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.42
+
+- Adds a compact MS MARCO cross-encoder reranker after high-recall BGE retrieval, then combines their relative ranks so exact shared words cannot overwhelm the meaning of the complete query.
+- Reranks heading-aware sentences and compact source spans, preserving whole semantic units when relationships are distributed across a grammatical sentence.
+- Keeps direct complete-term matches authoritative, uses explicit concept and negation evidence as hard-negative safeguards, and falls back cleanly to dense retrieval if the reranker is unavailable or disagrees without strong evidence.
+- Loads the quantized reranker lazily in the background worker, caches bounded results, yields between small mobile batches, and leaves the vault index format and bulk-index workload unchanged.
+- Extends the release audit with heading-resolved discourse, distributed relational context, stricter false-positive labels, and repeatable multi-query checks against a supplied note.
+
 ## 0.54.41
 
 - Compares each candidate against the complete query and its individual concepts, rejecting shared-entity fragments such as `say that God` for `child of god` while retaining relational paraphrases such as `offspring of God`.

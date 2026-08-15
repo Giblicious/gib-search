@@ -7,7 +7,7 @@ const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bund
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
-const BUILD_VERSION = '0.54.41';
+const BUILD_VERSION = '0.54.42';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -197,7 +197,7 @@ class DesktopIndexStore {
   async putGraphEvidence(value) { fs.mkdirSync(this.directory, { recursive: true }); const metadataTarget = path.join(this.directory, 'index.graph.json'), binaryTarget = path.join(this.directory, 'index.graph.bin'), metadataTemporary = `${metadataTarget}.download`, binaryTemporary = `${binaryTarget}.download`, scores = Buffer.from(value.scores), entities = Buffer.from(value.entities); await fs.promises.writeFile(metadataTemporary, JSON.stringify({ version: value.version, signature: value.signature, files: value.files, fingerprints: value.fingerprints, tuning: value.tuning, builtAt: value.builtAt, rootTopology: value.rootTopology || null, rootGraph: value.rootGraph || null })); await fs.promises.writeFile(binaryTemporary, Buffer.concat([scores, entities])); await fs.promises.rename(binaryTemporary, binaryTarget); await fs.promises.rename(metadataTemporary, metadataTarget); }
 }
 class DesktopEmbedder {
-  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.topicLabelReady = false; this.disabled = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; }
+  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.disabled = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; }
   start() {
     if (this.worker) return true; if (this.disabled || typeof window === 'undefined' || typeof window.Worker !== 'function' || typeof DecompressionStream !== 'function') return false;
     try {
@@ -215,13 +215,16 @@ class DesktopEmbedder {
     if (message.type === 'backend-fallback') { const scope = message.scope === 'profile' ? 'Writing Profile' : 'Desktop'; this.plugin.logDiagnostic(`${scope} ${message.from || 'accelerated'} inference fell back to ${message.to || 'WASM'}: ${message.message || 'backend unavailable'}`, true); return; }
     if (message.type === 'ready') { this.ready = true; this.plugin.search?.modelReady?.(); return; }
     if (message.type === 'relation-ready') { this.relationReady = true; this.relationBackend = message.backend || 'wasm'; this.relationDtype = message.dtype || ''; this.plugin.logDiagnostic(`Writing Profile inference profile: ${this.relationBackend === 'webgpu' ? `WebGPU ${this.relationDtype || 'GPU'}` : `WASM ${this.relationDtype || 'q8'}`} in the prioritized background worker`); this.plugin.search?.relationActivity?.('Relationship intelligence ready'); return; }
+    if (message.type === 'reranker-ready') { this.rerankerReady = true; this.plugin.logDiagnostic('In-file passage reranker ready in the prioritized background worker'); return; }
     if (message.type === 'topic-label-ready') { this.topicLabelReady = true; this.plugin.search?.topicLabelActivity?.('Topic labeler ready'); return; }
     if (message.type === 'topic-label-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.topicLabelActivity?.(`Downloading topic labeler: ${percent}%`); return; }
     if (message.type === 'relation-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.relationActivity?.(`Downloading relationship model: ${percent}%`); return; }
+    if (message.type === 'reranker-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.modelActivity?.(`Downloading passage reranker: ${percent}%`); return; }
     if (message.type === 'progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.modelActivity?.(`Downloading ${message.file}: ${percent}%`); return; }
     const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id);
     if (message.type === 'error') pending.reject(new Error(message.message));
     else if (message.type === 'relation-result') pending.resolve(message.results || []);
+    else if (message.type === 'rerank-result') pending.resolve(message.scores || []);
     else if (message.type === 'topic-label-result') pending.resolve(message.labels || []);
     else pending.resolve((message.buffers || []).map(buffer => new Float32Array(buffer)));
   }
@@ -235,7 +238,7 @@ class DesktopEmbedder {
       }
     } catch (error) { this.worker?.postMessage({ type: 'cache-result', id: message.id, error: error?.message || String(error) }); }
   }
-  fail(error) { const worker = this.worker; this.worker = null; this.disabled = true; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); this.ready = false; this.backend = 'failed'; this.dtype = ''; this.relationBackend = 'failed'; this.relationDtype = ''; this.plugin.logDiagnostic(`Background embedding worker failed: ${error.message}`, true); if (!this.plugin.isMobile) this.plugin.reportOnce(`Desktop embedding worker failed: ${error.message}`); }
+  fail(error) { const worker = this.worker; this.worker = null; this.disabled = true; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); this.ready = false; this.rerankerReady = false; this.backend = 'failed'; this.dtype = ''; this.relationBackend = 'failed'; this.relationDtype = ''; this.plugin.logDiagnostic(`Background embedding worker failed: ${error.message}`, true); if (!this.plugin.isMobile) this.plugin.reportOnce(`Desktop embedding worker failed: ${error.message}`); }
   embedBatch(texts, query = false, options = {}) {
     if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++;
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'embed', id, texts, query, priority: Number(options.priority ?? (query ? 0 : 2)) }); } catch (error) { this.pending.delete(id); reject(error); } });
@@ -249,8 +252,9 @@ class DesktopEmbedder {
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'release-mobile-bootstrap', id }); } catch (error) { this.pending.delete(id); reject(error); } });
   }
   classifyRelations(pairs, options = {}) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'relations', id, pairs, lowPriority: Boolean(options.lowPriority) }); } catch (error) { this.pending.delete(id); reject(error); } }); }
+  rerankPassages(pairs) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'rerank', id, pairs }); } catch (error) { this.pending.delete(id); reject(error); } }); }
   generateTopicLabels(prompts) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'topic-labels', id, prompts }); } catch (error) { this.pending.delete(id); reject(error); } }); }
-  stop() { const worker = this.worker; this.worker = null; this.ready = false; this.relationReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) pending.reject(new Error('Desktop embedding worker stopped')); this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
+  stop() { const worker = this.worker; this.worker = null; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) pending.reject(new Error('Desktop embedding worker stopped')); this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
 }
 function activeTweaks(plugin) {
   return plugin.settings.modelTweaks.bge;
@@ -949,7 +953,7 @@ class SemanticInNoteSearch {
     return matches.sort((a, b) => a.from - b.from);
   }
   matchRegex(candidate, rendered = false) { const phrase = rendered ? candidate.displayPhrase : candidate.phrase, escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), bounded = candidate.kind === 'semantic' || this.options.wholeWord, pattern = bounded ? `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])` : escaped, insensitive = candidate.kind === 'semantic' || !this.options.caseSensitive; return new RegExp(pattern, `gu${insensitive ? 'i' : ''}`); }
-  semanticTuning() { const presets = { precise: { resultMinScore: .46, passageMinScore: .52, phraseMinScore: .7, clauseMinScore: .64, clauseMargin: .03, fallbackMinScore: .64, fallbackLimit: 1, sentenceBeam: 4, localLimit: 3, localWindow: .07, resultWindow: .1, resultLimit: 4, sentenceLimit: 24, scoreWindow: .14, limit: 24 }, balanced: { resultMinScore: .3, passageMinScore: .43, phraseMinScore: .57, clauseMinScore: .53, clauseMargin: .015, fallbackMinScore: .57, fallbackLimit: 2, sentenceBeam: 6, localLimit: 4, localWindow: .1, resultWindow: .18, resultLimit: 6, sentenceLimit: 32, scoreWindow: .24, limit: 40 }, broad: { resultMinScore: .18, passageMinScore: .34, phraseMinScore: .48, clauseMinScore: .44, clauseMargin: .005, fallbackMinScore: .49, fallbackLimit: 4, sentenceBeam: 8, localLimit: 6, localWindow: .16, resultWindow: .28, resultLimit: 10, sentenceLimit: 40, scoreWindow: .38, limit: 64 } }; return presets[this.options.breadth] || presets.balanced; }
+  semanticTuning() { const presets = { precise: { resultMinScore: .46, passageMinScore: .52, phraseMinScore: .7, clauseMinScore: .64, clauseMargin: .03, fallbackMinScore: .64, fallbackLimit: 1, sentenceBeam: 4, localLimit: 3, localWindow: .07, resultWindow: .1, resultLimit: 4, sentenceLimit: 24, scoreWindow: .14, limit: 24 }, balanced: { resultMinScore: .3, passageMinScore: .43, phraseMinScore: .54, clauseMinScore: .53, clauseMargin: .015, fallbackMinScore: .57, fallbackLimit: 2, sentenceBeam: 6, localLimit: 4, localWindow: .1, resultWindow: .18, resultLimit: 6, sentenceLimit: 32, scoreWindow: .24, limit: 40 }, broad: { resultMinScore: .18, passageMinScore: .34, phraseMinScore: .48, clauseMinScore: .44, clauseMargin: .005, fallbackMinScore: .49, fallbackLimit: 4, sentenceBeam: 8, localLimit: 6, localWindow: .16, resultWindow: .28, resultLimit: 10, sentenceLimit: 40, scoreWindow: .38, limit: 64 } }; return presets[this.options.breadth] || presets.balanced; }
   async sourceText() { return this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue(); }
   setSemanticLoading(loading) { const active = Boolean(loading), loadingTitle = 'Finding related wording by meaning'; if (this.loading) this.loading.hidden = !active; if (this.searchIcon) this.searchIcon.hidden = active; this.count?.toggleClass('is-searching', active); this.input?.setAttribute('aria-busy', String(active)); if (active) this.count?.setAttribute('title', loadingTitle); else if (this.count?.getAttribute('title') === loadingTitle) this.count.removeAttribute('title'); }
   updateQuery(query) {
