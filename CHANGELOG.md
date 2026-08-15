@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.27
+
+- Replaces the Search current file modal with a compact native-style find bar attached to the active editor.
+- Shows exact lexical matches immediately, then enriches the same result set with semantically related phrases and passages without discarding lexical results if semantic retrieval is unavailable.
+- Highlights every finding directly in the document, supports next/previous navigation, and preserves the active result while semantic matches arrive.
+- Supports both Obsidian's CodeMirror editor and Butter Editor's ProseMirror surface without modifying document content.
+
 ## 0.54.26
 
 - Adds a Search current file command that performs hybrid lexical and semantic passage retrieval inside the active Markdown note.

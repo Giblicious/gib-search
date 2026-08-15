@@ -320,6 +320,15 @@ function semanticPhrasePool(results) {
   }
   return phrases;
 }
+function semanticPassagePool(results, query, maximum = 8) {
+  const phrases = [];
+  for (const hit of results || []) {
+    const highlights = semanticPhrasePool([hit]), phrase = cleanSourceText(distillSnippet(hit.text, query, highlights, 150)).replace(/…$/, '').replace(/\s+/g, ' ').trim();
+    if (phrase.length >= 18 && phrase.length <= 160 && phrase.split(/\s+/).length <= 28 && !phrases.some(existing => existing.toLowerCase() === phrase.toLowerCase())) phrases.push(phrase);
+    if (phrases.length >= maximum) break;
+  }
+  return phrases;
+}
 const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i;
 function extractImageReferences(source, anchorPhrases = []) {
   const value = String(source || '').replace(/```[\s\S]*?```/g, ' '); const found = []; const seen = new Set(); const lower = value.toLowerCase();
@@ -867,32 +876,32 @@ class SemanticSearchModal extends SuggestModal {
 
 class SemanticInNoteSearch {
   constructor(app, plugin, activeEditor) {
-    this.app = app; this.plugin = plugin; this.view = activeEditor; this.editor = activeEditor.editor; this.file = activeEditor.file; this.matches = []; this.current = -1; this.timer = null; this.queryVersion = 0; this.highlightName = 'gib-search-semantic-find';
+    this.app = app; this.plugin = plugin; this.view = activeEditor; this.editor = activeEditor.editor || null; this.file = activeEditor.file; this.leaf = activeEditor.leaf || app.workspace.activeLeaf; this.matches = []; this.current = -1; this.timer = null; this.queryVersion = 0; this.highlightName = 'gib-search-semantic-find';
   }
   open() {
     this.plugin.activeInNoteSearch?.close(); this.plugin.activeInNoteSearch = this;
-    const container = this.view.containerEl || this.app.workspace.activeLeaf?.view?.containerEl;
-    const host = container?.querySelector('.markdown-source-view') || this.view.contentEl || container?.querySelector('.view-content') || container;
+    const container = this.view.containerEl || this.app.workspace.activeLeaf?.view?.containerEl, butterHost = container?.matches?.('.butter-editor-view') ? container : container?.querySelector?.('.butter-editor-view');
+    const host = butterHost || container?.querySelector('.markdown-source-view') || this.view.contentEl || container?.querySelector('.view-content') || container;
     if (!host) { this.plugin.activeInNoteSearch = null; new Notice('Gib Search could not attach to the active editor'); return; }
     this.host = host; this.host.addClass('gib-in-note-find-host'); this.isButter = this.host.matches('.butter-editor-view') || Boolean(this.host.querySelector('.ProseMirror'));
     this.el = this.host.createDiv({ cls: 'gib-in-note-find' });
-    this.input = this.el.createEl('input', { type: 'search', placeholder: 'Find by meaning…', attr: { 'aria-label': 'Semantic search in note' } });
+    this.input = this.el.createEl('input', { type: 'search', placeholder: 'Search current file', attr: { 'aria-label': 'Search current file by words or meaning', autocomplete: 'off', spellcheck: 'false' } });
     this.count = this.el.createSpan({ cls: 'gib-in-note-find-count', text: '0/0' });
     const previous = this.el.createEl('button', { attr: { type: 'button', 'aria-label': 'Previous match', title: 'Previous match (Shift+Enter)' } }); setIcon(previous, 'chevron-up');
     const next = this.el.createEl('button', { attr: { type: 'button', 'aria-label': 'Next match', title: 'Next match (Enter)' } }); setIcon(next, 'chevron-down');
     const close = this.el.createEl('button', { attr: { type: 'button', 'aria-label': 'Close', title: 'Close (Esc)' } }); setIcon(close, 'x');
     previous.addEventListener('click', () => this.move(-1)); next.addEventListener('click', () => this.move(1)); close.addEventListener('click', () => this.close());
-    this.input.addEventListener('input', () => { this.queryVersion++; clearTimeout(this.timer); this.timer = window.setTimeout(() => this.search(this.input.value.trim()), 250); });
+    this.input.addEventListener('input', () => this.updateQuery(this.input.value.trim()));
     this.input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); this.move(event.shiftKey ? -1 : 1); } else if (event.key === 'Escape') { event.preventDefault(); this.close(); } });
-    this.leafChangeRef = this.app.workspace.on('active-leaf-change', () => { if (this.app.workspace.activeEditor?.editor !== this.editor) this.close(); });
-    this.editorChangeRef = this.app.workspace.on('editor-change', editor => { if (editor !== this.editor || !this.input.value.trim()) return; clearTimeout(this.timer); this.timer = window.setTimeout(() => this.search(this.input.value.trim()), 350); });
+    this.leafChangeRef = this.app.workspace.on('active-leaf-change', leaf => { if (leaf !== this.leaf) this.close(); });
+    this.editorChangeRef = this.editor ? this.app.workspace.on('editor-change', editor => { if (editor !== this.editor || !this.input.value.trim()) return; this.updateQuery(this.input.value.trim()); }) : null;
     this.observer = new MutationObserver(() => { clearTimeout(this.paintTimer); this.paintTimer = window.setTimeout(() => this.paintHighlights(), 40); });
     const content = this.host.querySelector('.cm-content, .ProseMirror'); if (content) this.observer.observe(content, { childList: true, subtree: true, characterData: true });
     this.input.focus();
   }
   compactPhrases(results, query, source) {
-    const candidates = [query, ...queryTerms(query), ...semanticPhrasePool(results)].map(cleanSourceText).filter(Boolean).filter(phrase => phrase.length >= 3 && phrase.length <= 60 && phrase.split(/\s+/).length <= 3);
-    const unique = [...new Set(candidates.map(phrase => phrase.toLowerCase()))].sort((a, b) => b.length - a.length); this.highlightPhrases = unique;
+    const candidates = [{ phrase: query, priority: 3 }, ...semanticPhrasePool(results).map(phrase => ({ phrase, priority: 2 })), ...semanticPassagePool(results, query).map(phrase => ({ phrase, priority: 1 }))].map(item => ({ ...item, phrase: cleanSourceText(item.phrase) })).filter(item => item.phrase && item.phrase.length >= (item.priority === 3 ? 1 : 3) && item.phrase.length <= 160 && (item.priority !== 2 || item.phrase.split(/\s+/).length <= 3));
+    const byPhrase = new Map(); for (const item of candidates) { const key = item.phrase.toLowerCase(), previous = byPhrase.get(key); if (!previous || item.priority > previous.priority) byPhrase.set(key, item); } const unique = [...byPhrase.values()].sort((a, b) => b.priority - a.priority || b.phrase.length - a.phrase.length).map(item => item.phrase); this.highlightPhrases = unique;
     const occupied = []; const matches = [];
     for (const phrase of unique) {
       const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); const regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
@@ -900,19 +909,23 @@ class SemanticInNoteSearch {
     }
     return matches.sort((a, b) => a.from - b.from);
   }
-  async search(query) {
-    const version = ++this.queryVersion;
-    if (query.length < 2) { this.matches = []; this.current = -1; this.updateCount(); this.clearHighlights(); return; }
+  async sourceText() { return this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue(); }
+  updateQuery(query) {
+    const version = ++this.queryVersion; clearTimeout(this.timer); this.count?.removeClass('is-searching');
+    if (!query) { this.matches = []; this.current = -1; this.highlightPhrases = []; this.updateCount(); this.clearHighlights(); return; }
+    this.refreshMatches(query, [], version, false);
+    if (query.length >= 2) { this.count?.addClass('is-searching'); this.count?.setAttribute('title', 'Finding related wording by meaning'); this.timer = window.setTimeout(() => this.searchSemantically(query, version), 220); }
+  }
+  async refreshMatches(query, results, version, preserveCurrent = false) {
+    const source = await this.sourceText(); if (version !== this.queryVersion || !this.el?.isConnected) return;
+    const previousPosition = this.current, previous = preserveCurrent ? this.matches[this.current] : null; this.matches = this.compactPhrases(results, query, source); const previousIndex = previous ? this.matches.findIndex(match => match.from === previous.from && match.to === previous.to) : -1; this.current = this.matches.length ? previousIndex >= 0 ? previousIndex : preserveCurrent ? Math.min(Math.max(0, previousPosition), this.matches.length - 1) : 0 : -1; this.paintHighlights(); this.updateCount(); if (!preserveCurrent && this.current >= 0) this.revealCurrent();
+  }
+  async searchSemantically(query, version) {
     try {
-      const tweaks = activeTweaks(this.plugin);
-      const options = { scoreWindow: 1, semanticHighlights: true, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: 5, file: this.file.path };
-      const results = await this.plugin.search.search(query, 250, 0, options);
-      if (version !== this.queryVersion || !this.el?.isConnected) return;
-      const source = this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue();
-      if (version !== this.queryVersion || !this.el?.isConnected) return;
-      this.matches = this.compactPhrases(results, query, source); this.current = this.matches.length ? 0 : -1; this.paintHighlights(); this.updateCount();
-      if (this.current >= 0) this.revealCurrent();
-    } catch (error) { if (version === this.queryVersion) { this.matches = []; this.current = -1; this.updateCount(); this.plugin.reportOnce(error.message); } }
+      const tweaks = activeTweaks(this.plugin), options = { scoreWindow: 1, semanticHighlights: true, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: 5, file: this.file.path };
+      const results = await this.plugin.search.search(query, 250, 0, options); await this.refreshMatches(query, results, version, true);
+    } catch (error) { if (version === this.queryVersion) { this.count?.setAttribute('title', 'Exact matches shown; semantic matching is not currently available'); this.plugin.logDiagnostic(`In-file semantic enrichment unavailable: ${error.message}`); } }
+    finally { if (version === this.queryVersion) this.count?.removeClass('is-searching'); }
   }
   offsetToPos(offset) {
     if (typeof this.editor?.offsetToPos === 'function') return this.editor.offsetToPos(offset);
@@ -934,22 +947,22 @@ class SemanticInNoteSearch {
     if (typeof this.editor?.scrollIntoView === 'function') this.editor.scrollIntoView({ from, to }, true);
     window.setTimeout(() => this.paintHighlights(), 60);
   }
-  updateCount() { if (this.count) this.count.setText(this.matches.length ? `${this.current + 1}/${this.matches.length}` : '0/0'); }
+  updateCount() { if (this.count) { this.count.setText(this.matches.length ? `${this.current + 1}/${this.matches.length}` : '0/0'); this.count.setAttribute('aria-label', `${this.matches.length} search ${this.matches.length === 1 ? 'match' : 'matches'}`); } }
   paintHighlights() {
     if (!globalThis.CSS?.highlights || typeof globalThis.Highlight !== 'function' || !this.el?.isConnected) return;
     const root = this.host?.querySelector('.cm-content, .ProseMirror'); if (!root) return;
-    const phrases = this.highlightPhrases || []; const ranges = [], domMatches = [];
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let node;
-    while ((node = walker.nextNode())) {
-      const value = node.nodeValue || ''; if (!value.trim()) continue;
-      const nodeMatches = [];
-      for (const phrase of phrases) {
-        const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); const regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
-        for (const match of value.matchAll(regex)) { const from = match.index, to = from + match[0].length; if (!nodeMatches.some(item => from < item.to && to > item.from)) nodeMatches.push({ from, to, text: match[0] }); }
+    const phrases = this.highlightPhrases || [], textNodes = []; let value = ''; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let node;
+    while ((node = walker.nextNode())) { const text = node.nodeValue || ''; if (!text) continue; textNodes.push({ node, from: value.length, to: value.length + text.length }); value += text; }
+    const occupied = [], ranges = [], domMatches = [];
+    for (const phrase of phrases) {
+      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
+      for (const match of value.matchAll(regex)) {
+        const from = match.index, to = from + match[0].length; if (occupied.some(item => from < item.to && to > item.from)) continue;
+        const first = textNodes.find(item => from >= item.from && from < item.to), last = [...textNodes].reverse().find(item => to > item.from && to <= item.to); if (!first || !last) continue;
+        const range = new Range(); range.setStart(first.node, from - first.from); range.setEnd(last.node, to - last.from); occupied.push({ from, to }); ranges.push(range); domMatches.push({ range, text: match[0] });
       }
-      nodeMatches.sort((a, b) => a.from - b.from);
-      for (const match of nodeMatches) { const range = new Range(); range.setStart(node, match.from); range.setEnd(node, match.to); ranges.push(range); domMatches.push({ range, text: match.text }); }
     }
+    domMatches.sort((a, b) => a.range.compareBoundaryPoints(Range.START_TO_START, b.range));
     CSS.highlights.set(this.highlightName, new Highlight(...ranges));
     if (this.isButter) { const previous = this.current; this.matches = domMatches; this.current = domMatches.length ? Math.max(0, Math.min(previous < 0 ? 0 : previous, domMatches.length - 1)) : -1; this.updateCount(); const current = this.matches[this.current]; if (current?.range) CSS.highlights.set(`${this.highlightName}-current`, new Highlight(current.range)); }
   }
@@ -1444,12 +1457,18 @@ module.exports = class GibSearch extends Plugin {
   async openNeighborhood(filePath, pin = false, reveal = true) { let leaf = this.app.workspace.getLeavesOfType(NEIGHBORHOOD_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: NEIGHBORHOOD_VIEW, active: false }); } if (reveal) this.app.workspace.revealLeaf(leaf); if (filePath && leaf.view instanceof NeighborhoodView) await leaf.view.centerOn(filePath, pin); return leaf; }
   async openSimilarNotes() { let leaf = this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: SIMILAR_NOTES_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); if (leaf.view instanceof SimilarNotesView && leaf.view.selectionQuery) leaf.view.clearSelection(); else leaf.view?.refresh?.(); return leaf; }
   async openWritingProfile() { let leaf = this.app.workspace.getLeavesOfType(WRITING_PROFILE_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: WRITING_PROFILE_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); leaf.view?.refresh?.(); const active = this.app.workspace.getActiveFile(); if (active instanceof TFile && active.extension.toLowerCase() === 'md') this.search.prioritizeWritingProfile(active.path); return leaf; }
-  openFileSearch(filePath = '') { const file = this.app.vault.getAbstractFileByPath(String(filePath || '')); if (!(file instanceof TFile) || file.extension.toLowerCase() !== 'md') { new Notice('Open or choose a Markdown file to search within it.'); return null; } const modal = new SemanticSearchModal(this.app, this, file.path); modal.open(); return modal; }
+  async openFileSearch(filePath = '') {
+    const file = this.app.vault.getAbstractFileByPath(String(filePath || '')); if (!(file instanceof TFile) || file.extension.toLowerCase() !== 'md') { new Notice('Open or choose a Markdown file to search within it.'); return null; }
+    let leaf = null; this.app.workspace.iterateAllLeaves(candidate => { if (!leaf && candidate?.view?.file?.path === file.path) leaf = candidate; }); if (!leaf) { leaf = this.app.workspace.getLeaf('tab'); await leaf.openFile(file); } else this.app.workspace.revealLeaf(leaf);
+    const view = leaf?.view, editor = view?.editor || (this.app.workspace.activeEditor?.file?.path === file.path ? this.app.workspace.activeEditor.editor : null), container = view?.containerEl || view?.contentEl, butter = container?.matches?.('.butter-editor-view') || container?.querySelector?.('.ProseMirror');
+    if (!view || !editor && !butter) { new Notice('Search current file requires an editable Markdown or Butter Editor view.'); return null; }
+    const search = new SemanticInNoteSearch(this.app, this, { leaf, editor, file, containerEl: view.containerEl, contentEl: view.contentEl }); search.open(); return search;
+  }
   async openSimilarToSelection(selection, sourcePath = '') {
     const normalized = String(selection || '').trim().replace(/\s+/g, ' '); if (normalized.length < 3) { new Notice('Select at least three characters to find similar notes.'); return null; } const query = normalized.slice(0, 4000); if (normalized.length > query.length) new Notice('Using the first 4,000 characters of the selection.');
     const pending = { text: query, sourcePath: String(sourcePath || '') }; this.pendingSimilarSelection = pending;
     try { let leaf = this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: SIMILAR_NOTES_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); if (leaf.view instanceof SimilarNotesView && (leaf.view.selectionQuery?.text !== query || leaf.view.selectionQuery?.sourcePath !== pending.sourcePath)) leaf.view.showSelection(query, pending.sourcePath); return leaf; }
     finally { if (this.pendingSimilarSelection === pending) this.pendingSimilarSelection = null; }
   }
-  onunload() { this.runtime?.stop(); this.indexer?.stop(); }
+  onunload() { this.activeInNoteSearch?.close(); this.runtime?.stop(); this.indexer?.stop(); }
 };
