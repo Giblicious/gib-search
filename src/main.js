@@ -7,7 +7,7 @@ const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bund
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
-const BUILD_VERSION = '0.54.33';
+const BUILD_VERSION = '0.54.34';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -885,7 +885,7 @@ class SemanticInNoteSearch {
   constructor(app, plugin, activeEditor) {
     this.app = app; this.plugin = plugin; this.view = activeEditor; this.editor = activeEditor.editor || null; this.file = activeEditor.file; this.leaf = activeEditor.leaf || app.workspace.activeLeaf; this.matches = []; this.current = -1; this.timer = null; this.queryVersion = 0;
     this.options = { lexical: true, semantic: true, caseSensitive: false, wholeWord: false, breadth: 'balanced', ...(plugin.inNoteSearchOptions || {}) };
-    this.highlightNames = { lexical: 'gib-search-lexical-find', semantic: 'gib-search-semantic-find', current: 'gib-search-current-find' };
+    this.highlightNames = { lexical: 'gib-search-lexical-find', semantic: 'gib-search-semantic-find', lexicalCurrent: 'gib-search-lexical-current', semanticCurrent: 'gib-search-semantic-current' };
   }
   open() {
     this.plugin.activeInNoteSearch?.close(); this.plugin.activeInNoteSearch = this;
@@ -949,7 +949,7 @@ class SemanticInNoteSearch {
     return matches.sort((a, b) => a.from - b.from);
   }
   matchRegex(candidate, rendered = false) { const phrase = rendered ? candidate.displayPhrase : candidate.phrase, escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), bounded = candidate.kind === 'semantic' || this.options.wholeWord, pattern = bounded ? `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])` : escaped, insensitive = candidate.kind === 'semantic' || !this.options.caseSensitive; return new RegExp(pattern, `gu${insensitive ? 'i' : ''}`); }
-  semanticTuning() { const presets = { precise: { resultMinScore: .46, passageMinScore: .52, phraseMinScore: .7, resultWindow: .1, resultLimit: 4, sentenceLimit: 6, scoreWindow: .14, limit: 24 }, balanced: { resultMinScore: .3, passageMinScore: .43, phraseMinScore: .58, resultWindow: .18, resultLimit: 6, sentenceLimit: 8, scoreWindow: .24, limit: 40 }, broad: { resultMinScore: .18, passageMinScore: .34, phraseMinScore: .48, resultWindow: .28, resultLimit: 10, sentenceLimit: 8, scoreWindow: .38, limit: 64 } }; return presets[this.options.breadth] || presets.balanced; }
+  semanticTuning() { const presets = { precise: { resultMinScore: .46, passageMinScore: .52, phraseMinScore: .7, fallbackMinScore: .64, fallbackLimit: 1, resultWindow: .1, resultLimit: 4, sentenceLimit: 6, scoreWindow: .14, limit: 24 }, balanced: { resultMinScore: .3, passageMinScore: .43, phraseMinScore: .58, fallbackMinScore: .57, fallbackLimit: 2, resultWindow: .18, resultLimit: 6, sentenceLimit: 8, scoreWindow: .24, limit: 40 }, broad: { resultMinScore: .18, passageMinScore: .34, phraseMinScore: .48, fallbackMinScore: .49, fallbackLimit: 4, resultWindow: .28, resultLimit: 10, sentenceLimit: 8, scoreWindow: .38, limit: 64 } }; return presets[this.options.breadth] || presets.balanced; }
   async sourceText() { return this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue(); }
   updateQuery(query) {
     const version = ++this.queryVersion; clearTimeout(this.timer); this.count?.removeClass('is-searching');
@@ -963,7 +963,7 @@ class SemanticInNoteSearch {
   }
   async searchSemantically(query, version) {
     try {
-      const tuning = this.semanticTuning(), options = { scoreWindow: tuning.scoreWindow, semanticHighlights: true, semanticPassages: true, semanticPassagesOnly: true, resultMinScore: tuning.resultMinScore, passageMinScore: tuning.passageMinScore, localPhraseMinScore: tuning.phraseMinScore, passageResultWindow: tuning.resultWindow, passageResultLimit: tuning.resultLimit, passageSentenceLimit: tuning.sentenceLimit, file: this.file.path };
+      const tuning = this.semanticTuning(), options = { scoreWindow: tuning.scoreWindow, semanticHighlights: true, semanticPassages: true, semanticPassagesOnly: true, resultMinScore: tuning.resultMinScore, passageMinScore: tuning.passageMinScore, localPhraseMinScore: tuning.phraseMinScore, sentenceFallbackMinScore: tuning.fallbackMinScore, sentenceFallbackLimit: tuning.fallbackLimit, passageResultWindow: tuning.resultWindow, passageResultLimit: tuning.resultLimit, passageSentenceLimit: tuning.sentenceLimit, file: this.file.path };
       const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), results = await runSearch(query, tuning.limit, 0, options); await this.refreshMatches(query, results, version, true);
     } catch (error) { if (version === this.queryVersion) { this.count?.setAttribute('title', 'Exact matches shown; semantic matching is not currently available'); this.plugin.logDiagnostic(`In-file semantic enrichment unavailable: ${error.message}`); } }
     finally { if (version === this.queryVersion) { this.count?.removeClass('is-searching'); this.updateCount(); } }
@@ -980,7 +980,7 @@ class SemanticInNoteSearch {
     const match = this.matches[this.current]; if (!match) return;
     if (match.range) {
       const element = match.range.startContainer.parentElement; element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      if (globalThis.CSS?.highlights && typeof globalThis.Highlight === 'function') CSS.highlights.set(this.highlightNames.current, new Highlight(match.range));
+      if (globalThis.CSS?.highlights && typeof globalThis.Highlight === 'function') CSS.highlights.set(match.kind === 'semantic' ? this.highlightNames.semanticCurrent : this.highlightNames.lexicalCurrent, new Highlight(match.range));
       return;
     }
     const from = this.offsetToPos(match.from), to = this.offsetToPos(match.to);
@@ -991,7 +991,7 @@ class SemanticInNoteSearch {
   updateCount() { if (this.count) { const current = this.matches.length ? this.current + 1 : 0; this.count.setText(`${current}/${this.matches.length}`); this.count.setAttribute('aria-label', `${current} of ${this.matches.length} search matches`); this.input?.toggleClass('mod-no-match', Boolean(this.input.value && !this.matches.length && !this.count.hasClass('is-searching'))); this.previousButton?.toggleAttribute('disabled', !this.matches.length); this.nextButton?.toggleAttribute('disabled', !this.matches.length); } }
   paintHighlights() {
     if (!globalThis.CSS?.highlights || typeof globalThis.Highlight !== 'function' || !this.el?.isConnected) return;
-    CSS.highlights.delete(this.highlightNames.current);
+    CSS.highlights.delete(this.highlightNames.lexicalCurrent); CSS.highlights.delete(this.highlightNames.semanticCurrent);
     const root = this.host?.querySelector('.cm-content, .ProseMirror'); if (!root) return;
     const candidates = this.highlightPhrases || [], textNodes = []; let value = ''; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let node;
     while ((node = walker.nextNode())) { const text = node.nodeValue || ''; if (!text) continue; textNodes.push({ node, from: value.length, to: value.length + text.length }); value += text; }
@@ -1006,7 +1006,7 @@ class SemanticInNoteSearch {
     }
     domMatches.sort((a, b) => a.range.compareBoundaryPoints(Range.START_TO_START, b.range));
     CSS.highlights.set(this.highlightNames.lexical, new Highlight(...ranges.lexical)); CSS.highlights.set(this.highlightNames.semantic, new Highlight(...ranges.semantic));
-    if (this.isButter) { const previous = this.current; this.matches = domMatches; this.current = domMatches.length ? Math.max(0, Math.min(previous < 0 ? 0 : previous, domMatches.length - 1)) : -1; this.updateCount(); const current = this.matches[this.current]; if (current?.range) CSS.highlights.set(this.highlightNames.current, new Highlight(current.range)); }
+    if (this.isButter) { const previous = this.current; this.matches = domMatches; this.current = domMatches.length ? Math.max(0, Math.min(previous < 0 ? 0 : previous, domMatches.length - 1)) : -1; this.updateCount(); const current = this.matches[this.current]; if (current?.range) CSS.highlights.set(current.kind === 'semantic' ? this.highlightNames.semanticCurrent : this.highlightNames.lexicalCurrent, new Highlight(current.range)); }
   }
   clearHighlights() { for (const name of Object.values(this.highlightNames)) globalThis.CSS?.highlights?.delete(name); }
   close() {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.34
+
+- Prevents weak sentence-level semantic fallbacks from appearing when the query already has a strong local phrase match elsewhere in the note.
+- Applies stricter, globally capped sentence fallbacks only when phrase refinement finds nothing, reducing false positives for short semantic queries.
+- Keeps the active semantic result purple and the active lexical result yellow so navigation no longer makes semantic matches look lexical.
+- Adds regression coverage for suppressing an unrelated sentence while preserving the strong “more study” to “further study” match.
+
 ## 0.54.33
 
 - Replaces the in-file toolbar presentation with a compact centered find console inside the full-width editor strip and an attached power-controls shelf.
