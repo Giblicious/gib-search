@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.39
+
+- Makes in-file semantic highlighting search every sentence in ordinary passages, then refine strong sentences into conservative grammatical clauses and short exact source phrases.
+- Keeps clause analysis out of the vault-wide index, with content-fingerprinted local caches and persistent phrase vectors for fast repeat searches without increasing bulk-index cost.
+- Rejects weak local matches relative to the strongest result, bounds pathological passages, and cancels superseded work between stages to reduce noise and keep editing responsive.
+
 ## 0.54.38
 
 - Gives the in-file search glyph and semantic activity spinner one fixed leading status slot, preventing overlap with the query and result count.
