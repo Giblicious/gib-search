@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.41
+
+- Compares each candidate against the complete query and its individual concepts, rejecting shared-entity fragments such as `say that God` for `child of god` while retaining relational paraphrases such as `offspring of God`.
+- Searches a bounded beam of strong sentences and compact two-to-seven-word spans, with per-sentence candidate reservations so a misleading top sentence cannot hide a better passage elsewhere in the note.
+- Preserves literal in-file queries, distinguishes intensity modifiers from their semantic heads, recognizes exact times in Markdown rules, and keeps compact source wording when scores tie.
+- Adds a real-model release gate covering balanced and broad search, q8 production inference, positive paraphrases, and explicit hard negatives; developers can also audit an arbitrary note and query with the same harness.
+
 ## 0.54.40
 
 - Prioritizes compact passages containing every meaningful query term even when the wording is reordered or possessive, such as `gods power` matching `power of God`.
