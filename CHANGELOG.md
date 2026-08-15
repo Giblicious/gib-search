@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.53
+
+- Stages changed files into bounded index commits, eliminating repeated whole-index and lexical rebuilds after every note during large and mobile indexing runs.
+- Reduces checkpoint churn while preserving resumability, and flushes staged work before Obsidian is suspended or Gib Search is stopped.
+- Adds SHA-256 integrity verification with rollback for desktop index generations and bounds the grace period for an index that is not present yet at startup.
+- Makes cooperative pacing respond to pending input and observed UI-yield delays, while superseded searches now stop at additional query, scan, and highlighting boundaries.
+- Adds release-blocking performance budgets plus bounded local p50/p95 timing histories for search, index commits, persistence, and full index updates.
+
 ## 0.54.52
 
 - Adds compact thumbnails to direct attachment results: local images render lazily, while PDFs use first-page desktop previews loaded only when near the viewport.

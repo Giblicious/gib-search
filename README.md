@@ -31,7 +31,9 @@ Gib Search supports Obsidian on desktop and mobile. Its fallback WebAssembly inf
 
 Each device builds its own local index. The first index can take several minutes, so keep Obsidian open until Settings reports that Gib Search is healthy.
 
-Indexing runs cooperatively: model inference stays in a dedicated background worker, mobile passages are strictly bounded, work yields to Obsidian between units, active interaction receives priority, and indexing pauses while the app is in the background. Optional Writing Profile analysis is serialized one note and one signal at a time, waits until the semantic index and live searches are idle, yields between small low-priority model batches, and checkpoints without rewriting its full cache after every note. If a mobile device cannot provide background-worker support, automatic indexing pauses instead of running inference on Obsidian's UI thread. Completed checkpoints are retained so interrupted work can resume safely.
+Indexing runs cooperatively: model inference stays in a dedicated background worker, mobile passages are strictly bounded, work yields to Obsidian between units, active interaction receives priority, and indexing pauses while the app is in the background. Changed files are staged into bounded commits instead of rebuilding the in-memory search structures after every note. Checkpoints are flushed before suspension or shutdown, desktop generations carry integrity checksums and a rollback generation, and a warm index uses a short vault-settling path instead of repeating first-run delays. Optional Writing Profile analysis is serialized one note and one signal at a time, waits until the semantic index and live searches are idle, yields between small low-priority model batches, and checkpoints without rewriting its full cache after every note. If a mobile device cannot provide background-worker support, automatic indexing pauses instead of running inference on Obsidian's UI thread.
+
+The release-blocking synthetic performance budgets and local-only runtime measurements are documented in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Privacy and network use
 

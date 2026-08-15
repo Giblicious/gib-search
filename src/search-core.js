@@ -27,6 +27,32 @@ function boundedTopK(iterable, limit, scoreOf = item => Number(item?.score || 0)
   return output;
 }
 
+class BoundedMetricWindow {
+  constructor(maximumSamples = 64) { this.maximumSamples = Math.max(4, Math.min(256, Math.floor(Number(maximumSamples) || 64))); this.samples = new Map(); }
+  record(name, value) {
+    const number = Number(value); if (!Number.isFinite(number) || number < 0) return this.summary(name);
+    const values = this.samples.get(name) || []; values.push(number); if (values.length > this.maximumSamples) values.splice(0, values.length - this.maximumSamples); this.samples.set(name, values); return this.summary(name);
+  }
+  summary(name) {
+    const values = this.samples.get(name) || []; if (!values.length) return { count: 0, last: 0, p50: 0, p95: 0, max: 0 };
+    const sorted = values.slice().sort((first, second) => first - second), at = percentile => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * percentile) - 1))];
+    return { count: values.length, last: values.at(-1), p50: at(.5), p95: at(.95), max: sorted.at(-1) };
+  }
+  snapshot() { return Object.fromEntries([...this.samples.keys()].map(name => [name, this.summary(name)])); }
+}
+
+function mergeIndexReplacements(meta, vectors, replacements) {
+  if (!Array.isArray(meta) || !Array.isArray(vectors) || meta.length !== vectors.length) throw new Error('Current index metadata and vectors are not aligned');
+  const changed = new Set(replacements?.keys?.() || []); if (!changed.size) return { meta, vectors, changed };
+  const nextMeta = [], nextVectors = [];
+  for (let index = 0; index < meta.length; index++) if (!changed.has(meta[index]?.file)) { nextMeta.push(meta[index]); nextVectors.push(vectors[index]); }
+  for (const [file, replacement] of replacements) {
+    if (!Array.isArray(replacement?.meta) || !Array.isArray(replacement?.vectors) || replacement.meta.length !== replacement.vectors.length || replacement.meta.some(item => item?.file !== file)) throw new Error(`Replacement index records are incomplete for ${file}`);
+    nextMeta.push(...replacement.meta); nextVectors.push(...replacement.vectors);
+  }
+  return { meta: nextMeta, vectors: nextVectors, changed };
+}
+
 class IncrementalBm25 {
   constructor(options = {}) {
     this.k1 = Math.max(.2, Number(options.k1) || 1.2); this.b = Math.max(0, Math.min(1, Number(options.b) || .72));
@@ -111,4 +137,4 @@ function assembleIndexSegments(segments, dimension = 384) {
   const vectors = new Float32Array(meta.length * dimension); let offset = 0; for (const part of parts) { vectors.set(part, offset); offset += part.length; } return { meta, vectors: vectors.buffer };
 }
 
-export { IncrementalBm25, assembleIndexSegments, boundedTopK, centroidSimilarity, diverseCentroids, dotVector, insertTopK, reciprocalRankFusion, searchTerms };
+export { BoundedMetricWindow, IncrementalBm25, assembleIndexSegments, boundedTopK, centroidSimilarity, diverseCentroids, dotVector, insertTopK, mergeIndexReplacements, reciprocalRankFusion, searchTerms };

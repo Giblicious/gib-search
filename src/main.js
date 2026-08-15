@@ -8,7 +8,7 @@ const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
 const { registerCommandAlias } = require('./command-compat');
-const BUILD_VERSION = '0.54.52';
+const BUILD_VERSION = '0.54.53';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -158,14 +158,22 @@ class FileModelCache {
 class DesktopIndexStore {
   constructor(directory) { this.directory = directory; }
   generationDirectory() { return path.join(this.directory, 'generations'); }
+  checksum(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
   async readGeneration(generation) {
-    if (!generation) return null; const directory = this.generationDirectory(), meta = JSON.parse(await fs.promises.readFile(path.join(directory, `${generation}.meta.json`), 'utf8')), data = await fs.promises.readFile(path.join(directory, `${generation}.vectors.bin`));
+    if (!generation) return null; const directory = this.generationDirectory(), metadataSource = await fs.promises.readFile(path.join(directory, `${generation}.meta.json`), 'utf8'), meta = JSON.parse(metadataSource), data = await fs.promises.readFile(path.join(directory, `${generation}.vectors.bin`));
     if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index generation ${generation} is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`);
     let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(directory, `${generation}.state.json`), 'utf8')); } catch {}
+    if (state.integrity?.metadataSha256 && state.integrity.metadataSha256 !== this.checksum(metadataSource)) throw new Error(`Index generation ${generation} metadata checksum failed`);
+    if (state.integrity?.vectorsSha256 && state.integrity.vectorsSha256 !== this.checksum(data)) throw new Error(`Index generation ${generation} vector checksum failed`);
     return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), generation, ...state };
   }
   async get() {
-    const existingDirectory = fs.existsSync(this.directory);
+    let existingDirectory = fs.existsSync(this.directory);
+    for (let attempt = 0; !existingDirectory && attempt < 4; attempt++) { await new Promise(resolve => setTimeout(resolve, 250)); existingDirectory = fs.existsSync(this.directory); }
+    if (!existingDirectory) return undefined;
+    const candidates = () => fs.existsSync(path.join(this.directory, 'index.current.json')) || fs.existsSync(path.join(this.directory, 'index.meta.json')) || fs.existsSync(path.join(this.directory, 'index.vectors.bin')); let hasCandidate = candidates();
+    for (let attempt = 0; !hasCandidate && attempt < 4; attempt++) { await new Promise(resolve => setTimeout(resolve, 250)); hasCandidate = candidates(); }
+    if (!hasCandidate) return undefined;
     let lastError = null;
     for (let attempt = 0; attempt < 40; attempt++) {
       try {
@@ -180,7 +188,7 @@ class DesktopIndexStore {
   }
   async put(value) {
     fs.mkdirSync(this.directory, { recursive: true }); const generations = this.generationDirectory(); fs.mkdirSync(generations, { recursive: true }); let previous = null; try { previous = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.current.json'), 'utf8')); } catch {}
-    const generation = `${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`, metadataTarget = path.join(generations, `${generation}.meta.json`), vectorsTarget = path.join(generations, `${generation}.vectors.bin`), stateTarget = path.join(generations, `${generation}.state.json`); await fs.promises.writeFile(metadataTarget, JSON.stringify(value.meta)); await fs.promises.writeFile(vectorsTarget, Buffer.from(value.vectors)); await fs.promises.writeFile(stateTarget, JSON.stringify({ lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null }));
+    const generation = `${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`, metadataTarget = path.join(generations, `${generation}.meta.json`), vectorsTarget = path.join(generations, `${generation}.vectors.bin`), stateTarget = path.join(generations, `${generation}.state.json`), metadataSource = JSON.stringify(value.meta), vectorData = Buffer.from(value.vectors); await fs.promises.writeFile(metadataTarget, metadataSource); await fs.promises.writeFile(vectorsTarget, vectorData); await fs.promises.writeFile(stateTarget, JSON.stringify({ lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null, integrity: { version: 1, metadataSha256: this.checksum(metadataSource), vectorsSha256: this.checksum(vectorData) } }));
     const manifest = { version: 2, current: generation, previous: previous?.current || previous?.previous || null, committedAt: Date.now() }, manifestTarget = path.join(this.directory, 'index.current.json'), manifestTemporary = `${manifestTarget}.download`; await fs.promises.writeFile(manifestTemporary, JSON.stringify(manifest)); await fs.promises.rename(manifestTemporary, manifestTarget);
     const keep = new Set([manifest.current, manifest.previous].filter(Boolean)); try { for (const entry of await fs.promises.readdir(generations)) { const id = entry.replace(/\.(?:meta\.json|vectors\.bin|state\.json)$/, ''); if (!keep.has(id)) await fs.promises.unlink(path.join(generations, entry)); } } catch {}
   }
