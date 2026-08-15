@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.45
+
+- Adds the canonical `revision-group` property for guaranteed flat edition grouping across folders, with optional `revision-current` and `revision-date` ordering overrides.
+- Recognizes numbered or decorated revision folders, strips draft/WIP workflow prefixes, retains `Revises` links as a compatibility fallback, and prevents conflicting explicit groups from being merged automatically.
+- Moves same-series siblings out of ordinary Similar Notes cards into a compact title-only **Versions** history at the top, without consuming the normal result limit; this also applies to similar-to-selection mode.
+- Reuses revision catalogs and content signatures across sidebar refreshes, bounds cross-folder ancestry candidates, yields during scoped analysis, and adds focused regression coverage for grouping, ordering, conflicts, and UI integration.
+
 ## 0.54.44
 
 - Starts the desktop WebGPU semantic model as soon as the primary search opens, hiding first-query setup behind normal typing time while retaining the existing verified WASM fallback.
