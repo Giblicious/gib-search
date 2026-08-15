@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.47
+
+- Restyles Similar Notes revision entries as passage-free result cards with normal file icons and titles, a `Version` relationship label, and an accent-derived directory pill.
+- Moves the edition count and version controls onto the vault-search directory row, keeps **Show versions** aligned at the right edge, and expands to a clean title-only version list.
+
 ## 0.54.46
 
 - Adds a subtle backdrop blur behind the main vault-search modal while preserving Obsidian's theme-controlled dim overlay.
