@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.51
+
+- Rebalances the vault-search backdrop with a theme-derived neutral matte and reduced saturation so bright interface elements no longer bloom into glare.
+- Keeps the stronger blurred separation with a slightly moderated desktop radius, a lighter mobile treatment, and the existing reduced-transparency fallback.
+
 ## 0.54.50
 
 - Removes the ineffective gradient-blur halo from Search in Current File and restores the original compact sticky-card structure on desktop, mobile, and Butter Editor.
