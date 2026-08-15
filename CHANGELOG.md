@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.23
+
+- Replaces the Writing Profile radar charts with compact ranked cards and readable horizontal confidence bars designed for a narrow sidebar.
+- Adds a predominant-profile summary that combines the note's clearest purpose and form while explicitly abstaining when no expressed emotion is supported.
+- Distinguishes Strong, Moderate, Tentative, and Unclear classifications, with concise explanations for structural evidence, mixed findings, and insufficient evidence.
+- Shows only meaningful predominant and secondary findings by default, while keeping every diagnostic score available in a closed Full analysis disclosure.
+- Uses text-centered labels such as Persuasive purpose, Narrative form, and Grief-related expression so classifications describe the writing rather than the writer.
+
 ## 0.54.22
 
 - Adds an optional, disabled-by-default mobile bootstrap package that desktop can build inside a configurable vault-relative folder for any existing sync tool to carry.
