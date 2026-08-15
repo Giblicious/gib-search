@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.49
+
+- Replaces the vault-search result hover and keyboard-selection treatment with a quieter theme-neutral gray surface.
+- Strengthens the vault-search backdrop blur while retaining lighter mobile rendering and reduced-transparency support.
+- Moves expanded editions between the directory row and result title in a compact accent-based version table with current and best-match labels.
+
 ## 0.54.48
 
 - Adds a soft gradient-masked backdrop-blur halo behind Search in Current File while preserving the compact card and Butter Editor toolbar placement.
