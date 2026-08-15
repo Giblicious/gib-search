@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.52
+
+- Adds compact thumbnails to direct attachment results: local images render lazily, while PDFs use first-page desktop previews loaded only when near the viewport.
+- Keeps PDF work bounded to two idle previews at a time, unloads offscreen viewers, caps preview file sizes, and uses lightweight file-type covers on mobile or for formats without a safe visual preview.
+- Preserves filename-only indexing behavior; thumbnails use Obsidian resource URLs and never read binary files into the search index.
+
 ## 0.54.51
 
 - Rebalances the vault-search backdrop with a theme-derived neutral matte and reduced saturation so bright interface elements no longer bloom into glare.

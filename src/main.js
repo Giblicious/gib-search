@@ -8,7 +8,7 @@ const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
 const { registerCommandAlias } = require('./command-compat');
-const BUILD_VERSION = '0.54.51';
+const BUILD_VERSION = '0.54.52';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -727,13 +727,13 @@ class LivingSemanticMapCanvas extends SemanticMapCanvas {
 
 class SemanticSearchModal extends SuggestModal {
   constructor(app, plugin, filePath = null) {
-    super(app); this.plugin = plugin; this.filePath = filePath; this.activeQuickFilterIds = filePath ? new Set() : defaultQuickFilterIds(plugin, 'search'); this.debounceTimer = null; this.searchVersion = 0; this.lastResults = []; this.mapResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null; this.map = null; this.mapVersion = 0; this.viewAnalysisVersion = 0; this.viewId = plugin.settings.atlasHomeViewId; this.mapGenerations = Math.max(1, Math.min(3, Number(plugin.settings.searchMapGenerations) || 1));
+    super(app); this.plugin = plugin; this.filePath = filePath; this.activeQuickFilterIds = filePath ? new Set() : defaultQuickFilterIds(plugin, 'search'); this.debounceTimer = null; this.searchVersion = 0; this.lastResults = []; this.mapResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null; this.map = null; this.mapVersion = 0; this.viewAnalysisVersion = 0; this.viewId = plugin.settings.atlasHomeViewId; this.mapGenerations = Math.max(1, Math.min(3, Number(plugin.settings.searchMapGenerations) || 1)); this.assetPreviewObserver = null; this.assetPreviewIdleHandles = new Map(); this.assetPreviewGeneration = 0; this.activePdfPreviews = 0;
     const fileName = filePath ? filePath.split('/').pop().replace(/\.md$/i, '') : '';
     this.setPlaceholder(filePath ? `Search ${fileName} by words or meaning…` : 'Search vault by meaning…');
     this.setInstructions([{ command: 'Type', purpose: 'to search' }, { command: '↑↓', purpose: 'to navigate' }, { command: '↵', purpose: 'to open' }, { command: 'esc', purpose: 'to dismiss' }]);
   }
   getSuggestions(query) {
-    if (!query || query.trim().length < 2) { clearTimeout(this.debounceTimer); this.searchVersion++; this.viewAnalysisVersion++; const changed = Boolean(this.lastQuery); this.lastQuery = ''; this.lastResults = []; this.mapResults = []; if (changed) { this.map?.endQuery(); window.setTimeout(() => this.updateMap(), 0); } return []; }
+    if (!query || query.trim().length < 2) { clearTimeout(this.debounceTimer); this.searchVersion++; this.viewAnalysisVersion++; const changed = Boolean(this.lastQuery); this.lastQuery = ''; this.lastResults = []; this.mapResults = []; this.resetAssetPreviews(); if (changed) { this.map?.endQuery(); window.setTimeout(() => this.updateMap(), 0); } return []; }
     const trimmed = query.trim();
     if (trimmed !== this.lastQuery) { const entering = !this.lastQuery; this.lastQuery = trimmed; if (entering) this.map?.beginQuery(trimmed); this.visibleLimit = activeTweaks(this.plugin).topK; this.triggerSearch(trimmed); }
     return this.lastResults;
@@ -753,19 +753,19 @@ class SemanticSearchModal extends SuggestModal {
           const grouped = this.filePath ? passageSearchResults(results, query, results.length) : groupSearchResults(results, query, Number.MAX_SAFE_INTEGER), all = revisionCatalog ? bundleRevisionResults(grouped, revisionCatalog) : grouped;
           this.lastResults = all.slice(0, requested); this.mapResults = all;
           this.canLoadMore = all.length > requested || (results.length === rawLimit && rawLimit < 1000);
-          this.updateSuggestions();
+          this.refreshSuggestions();
           window.setTimeout(() => { this.renderShowMore(); if (this.plugin.atlasEnabled) this.updateMap(); }, 0);
           if (this.plugin.atlasEnabled) this.applyView();
           if (tweaks.semanticHighlights) {
             const highlighted = results.slice(0, 15).map(result => ({ ...result })); await this.plugin.search.highlightResults(highlighted, query, options); if (version !== this.searchVersion || query !== this.lastQuery) return;
-            const byPassage = new Map(highlighted.map(result => [result.passageIndex, result])), enriched = results.map(result => byPassage.get(result.passageIndex) || result), highlightedGrouped = this.filePath ? passageSearchResults(enriched, query, enriched.length) : groupSearchResults(enriched, query, Number.MAX_SAFE_INTEGER), highlightedAll = revisionCatalog ? bundleRevisionResults(highlightedGrouped, revisionCatalog) : highlightedGrouped, resultsEl = this.resultContainerEl || this.modalEl.querySelector('.prompt-results'), scrollTop = resultsEl?.scrollTop || 0; this.lastResults = highlightedAll.slice(0, requested); this.mapResults = highlightedAll; this.updateSuggestions(); window.setTimeout(() => { const current = this.resultContainerEl || this.modalEl.querySelector('.prompt-results'); if (current) current.scrollTop = scrollTop; this.renderShowMore(); }, 0);
+            const byPassage = new Map(highlighted.map(result => [result.passageIndex, result])), enriched = results.map(result => byPassage.get(result.passageIndex) || result), highlightedGrouped = this.filePath ? passageSearchResults(enriched, query, enriched.length) : groupSearchResults(enriched, query, Number.MAX_SAFE_INTEGER), highlightedAll = revisionCatalog ? bundleRevisionResults(highlightedGrouped, revisionCatalog) : highlightedGrouped, resultsEl = this.resultContainerEl || this.modalEl.querySelector('.prompt-results'), scrollTop = resultsEl?.scrollTop || 0; this.lastResults = highlightedAll.slice(0, requested); this.mapResults = highlightedAll; this.refreshSuggestions(); window.setTimeout(() => { const current = this.resultContainerEl || this.modalEl.querySelector('.prompt-results'); if (current) current.scrollTop = scrollTop; this.renderShowMore(); }, 0);
           }
         }
       } catch (error) { if (error?.name !== 'AbortError') this.plugin.reportOnce(error.message); }
     }, immediate ? 0 : 75);
   }
   commitViewResults(results, version) {
-    if (version !== this.viewAnalysisVersion || !this.lastQuery) return; const requested = Math.max(this.visibleLimit || activeTweaks(this.plugin).topK, activeTweaks(this.plugin).topK); this.lastResults = results.slice(0, requested); this.updateSuggestions(); window.setTimeout(() => { this.renderShowMore(); this.updateMap(); }, 0);
+    if (version !== this.viewAnalysisVersion || !this.lastQuery) return; const requested = Math.max(this.visibleLimit || activeTweaks(this.plugin).topK, activeTweaks(this.plugin).topK); this.lastResults = results.slice(0, requested); this.refreshSuggestions(); window.setTimeout(() => { this.renderShowMore(); this.updateMap(); }, 0);
   }
   async applyView() {
     const version = ++this.viewAnalysisVersion, state = this.plugin.atlas.state({ viewId: this.viewId }), query = this.lastQuery, source = this.mapResults.map(result => ({ ...result, viewLabel: '', viewScore: Number(result.score || 0), facet: undefined, contextScore: undefined })); if (!query || !source.length) return;
@@ -782,6 +782,45 @@ class SemanticSearchModal extends SuggestModal {
       this.commitViewResults(source, version);
     } catch (error) { if (version === this.viewAnalysisVersion) { this.plugin.logDiagnostic(`Search view analysis failed: ${error.message}`, true); this.commitViewResults(source, version); } }
     finally { if (version === this.viewAnalysisVersion) this.viewSelect?.removeClass('is-working'); }
+  }
+  refreshSuggestions() { this.resetAssetPreviews(); this.updateSuggestions(); }
+  resetAssetPreviews() {
+    this.assetPreviewObserver?.disconnect(); this.assetPreviewObserver = null;
+    for (const pending of this.assetPreviewIdleHandles.values()) { if (pending.idle && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(pending.handle); else window.clearTimeout(pending.handle); }
+    this.assetPreviewIdleHandles.clear(); this.assetPreviewGeneration++; this.activePdfPreviews = 0;
+    for (const frame of this.modalEl.querySelectorAll('.gib-file-result-pdf-frame')) frame.remove();
+  }
+  ensureAssetPreviewObserver() {
+    if (this.plugin.isMobile || this.assetPreviewObserver || typeof IntersectionObserver === 'undefined') return this.assetPreviewObserver;
+    const root = this.resultContainerEl || this.modalEl.querySelector('.prompt-results'), generation = this.assetPreviewGeneration;
+    this.assetPreviewObserver = new IntersectionObserver(entries => {
+      if (generation !== this.assetPreviewGeneration) return;
+      for (const entry of entries) { entry.target.dataset.gibVisible = String(entry.isIntersecting); if (!entry.isIntersecting) this.unloadPdfPreview(entry.target); }
+      this.fillPdfPreviewSlots();
+    }, { root, rootMargin: '80px 0px' });
+    return this.assetPreviewObserver;
+  }
+  observePdfPreview(element) { const observer = this.ensureAssetPreviewObserver(); if (observer) observer.observe(element); }
+  unloadPdfPreview(element) {
+    const state = element.dataset.gibPdfState; if (!['queued', 'loading', 'ready'].includes(state)) return;
+    const pending = this.assetPreviewIdleHandles.get(element); if (pending) { if (pending.idle && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(pending.handle); else window.clearTimeout(pending.handle); this.assetPreviewIdleHandles.delete(element); }
+    element.querySelector('.gib-file-result-pdf-frame')?.remove(); element.removeClass('is-ready'); element.dataset.gibPdfState = 'waiting'; this.activePdfPreviews = Math.max(0, this.activePdfPreviews - 1);
+  }
+  fillPdfPreviewSlots() {
+    if (this.plugin.isMobile || this.activePdfPreviews >= 2) return;
+    const candidates = this.modalEl.querySelectorAll('.gib-file-result-thumbnail.is-pdf[data-gib-visible="true"]');
+    for (const element of candidates) { if (this.activePdfPreviews >= 2) break; if (!element.isConnected || ['queued', 'loading', 'ready'].includes(element.dataset.gibPdfState)) continue; this.schedulePdfPreview(element); }
+  }
+  schedulePdfPreview(element) {
+    const generation = this.assetPreviewGeneration; this.activePdfPreviews++; element.dataset.gibPdfState = 'queued';
+    const load = () => {
+      this.assetPreviewIdleHandles.delete(element);
+      if (generation !== this.assetPreviewGeneration) return;
+      if (!element.isConnected || element.dataset.gibVisible !== 'true') { element.dataset.gibPdfState = 'waiting'; this.activePdfPreviews = Math.max(0, this.activePdfPreviews - 1); this.fillPdfPreviewSlots(); return; }
+      element.dataset.gibPdfState = 'loading'; const frame = element.createEl('iframe', { cls: 'gib-file-result-pdf-frame', attr: { src: element.dataset.gibPdfSrc, loading: 'lazy', tabindex: '-1', 'aria-hidden': 'true', referrerpolicy: 'no-referrer' } });
+      frame.addEventListener('load', () => { if (!element.isConnected) return; element.dataset.gibPdfState = 'ready'; element.addClass('is-ready'); }, { once: true });
+    };
+    const idle = typeof window.requestIdleCallback === 'function', handle = idle ? window.requestIdleCallback(load, { timeout: 700 }) : window.setTimeout(load, 180); this.assetPreviewIdleHandles.set(element, { handle, idle });
   }
   renderShowMore() {
     this.modalEl.querySelector('.gib-show-more')?.remove();
@@ -809,6 +848,18 @@ class SemanticSearchModal extends SuggestModal {
     }
     return null;
   }
+  resolveResultAsset(filePath) {
+    const file = this.app.vault.getAbstractFileByPath(filePath); if (!(file instanceof TFile) || file.extension.toLowerCase() === 'md') return null;
+    const extension = file.extension.toLowerCase(), kind = IMAGE_EXTENSION.test(file.path) ? 'image' : extension === 'pdf' ? 'pdf' : 'file', size = Number(file.stat?.size || 0), previewable = kind === 'image' ? !size || size <= 24 * 1024 * 1024 : kind === 'pdf' ? !size || size <= 12 * 1024 * 1024 : false;
+    return { file, extension, kind, size, previewable, src: this.app.vault.getResourcePath(file) };
+  }
+  renderResultAssetThumbnail(asset, host) {
+    const thumbnail = host.createDiv({ cls: `gib-file-result-thumbnail is-${asset.kind}`, attr: { role: 'img', 'aria-label': `${asset.extension.toUpperCase()} preview for ${asset.file.basename}`, title: asset.file.path } });
+    const cover = thumbnail.createDiv({ cls: 'gib-file-result-thumbnail-cover', attr: { 'aria-hidden': 'true' } }), coverIcon = cover.createSpan({ cls: 'gib-file-result-thumbnail-icon' }); setIcon(coverIcon, fileTypeResultIcon(asset.file.path)); cover.createSpan({ cls: 'gib-file-result-thumbnail-label', text: asset.extension.toUpperCase() || 'FILE' });
+    if (asset.kind === 'image' && asset.previewable) { const image = thumbnail.createEl('img', { attr: { src: asset.src, alt: '', loading: 'lazy', decoding: 'async', fetchpriority: 'low', referrerpolicy: 'no-referrer' } }); image.addEventListener('load', () => thumbnail.addClass('is-ready'), { once: true }); image.addEventListener('error', () => image.remove(), { once: true }); if (image.complete && image.naturalWidth) thumbnail.addClass('is-ready'); }
+    else if (asset.kind === 'pdf' && asset.previewable) { thumbnail.dataset.gibPdfSrc = `${asset.src}#page=1&view=FitH&toolbar=0&navpanes=0&scrollbar=0`; thumbnail.dataset.gibPdfState = 'waiting'; this.observePdfPreview(thumbnail); }
+    return thumbnail;
+  }
   renderSuggestion(result, el) {
     el.dataset.gibFile = result.file; el.addEventListener('pointerenter', () => this.map?.setHover(result.file)); el.addEventListener('pointerleave', () => this.map?.setHover(null));
     const pathParts = result.file.replace(/\.md$/i, '').split('/'); const fileName = pathParts.pop() || result.file.replace(/\.md$/i, '');
@@ -819,13 +870,14 @@ class SemanticSearchModal extends SuggestModal {
     if (result.viewLabel) meta.createSpan({ cls: 'gib-semantic-result-view-label', text: result.viewLabel });
     let revisionControls = null; if (hasRevisions) { const actions = meta.createDiv({ cls: 'gib-revision-actions' }), matchedOlder = result.matchedFile && result.matchedFile !== result.primaryFile, openMatched = matchedOlder ? actions.createEl('button', { text: 'Open matched', attr: { type: 'button' } }) : null, toggle = actions.createEl('button', { text: 'Show versions', attr: { type: 'button', 'aria-expanded': 'false' } }); if (openMatched) { openMatched.addEventListener('mousedown', event => event.stopPropagation()); openMatched.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); this.openResultFile(result.matchedFile, result.snippets[0]); }); } revisionControls = { toggle }; }
     if (revisionControls) { const timeline = container.createDiv({ cls: 'gib-revision-timeline', attr: { 'aria-label': 'Versions' } }); timeline.hide(); const tableHead = timeline.createDiv({ cls: 'gib-revision-timeline-head' }); tableHead.createSpan({ text: 'Version' }); tableHead.createSpan({ text: 'Relation' }); for (const revision of result.revisionSeries.revisions) { const title = revision.file.split('/').pop().replace(/\.md$/i, ''), relation = revision.file === result.primaryFile ? 'Current' : revision.file === result.matchedFile ? 'Best match' : '', button = timeline.createEl('button', { attr: { type: 'button', title: revision.file, 'aria-label': `Open version ${title}${relation ? `, ${relation}` : ''}` } }); button.createSpan({ cls: 'gib-revision-timeline-title', text: title }); button.createSpan({ cls: 'gib-revision-timeline-relation', text: relation }); button.addEventListener('mousedown', event => event.stopPropagation()); button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); this.openResultFile(revision.file); }); } const toggle = revisionControls.toggle; toggle.addEventListener('mousedown', event => event.stopPropagation()); toggle.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); const opening = timeline.style.display === 'none'; timeline.toggle(opening); toggle.textContent = opening ? 'Hide versions' : 'Show versions'; toggle.setAttribute('aria-expanded', String(opening)); }); }
-    const header = container.createDiv({ cls: 'gib-semantic-result-header' });
+    const asset = this.resolveResultAsset(result.file), body = asset ? container.createDiv({ cls: 'gib-file-result-body' }) : container; if (asset) this.renderResultAssetThumbnail(asset, body); const copy = asset ? body.createDiv({ cls: 'gib-file-result-copy' }) : container;
+    const header = copy.createDiv({ cls: 'gib-semantic-result-header' });
     const icon = header.createSpan({ cls: 'gib-semantic-result-icon' }); renderResultIcon(this.app, this.plugin.settings, icon, result.file);
     const fileTitle = header.createSpan({ cls: 'gib-semantic-result-file' }); renderHighlighted(fileTitle, fileName, this.lastQuery, result.filenameHighlights);
     const displayedScore = Number(result.viewScore ?? result.score ?? 0), score = header.createSpan({ cls: 'gib-semantic-result-score', text: `${(displayedScore * 100).toFixed(0)}%` });
     const semantic = Math.round(Number(result.semanticScore || 0) * 100), lexical = Math.round(Number(result.lexicalBoost || 0) * 100), filename = Math.round(Number(result.filenameBoost || 0) * 100), folderBoost = Math.round(Number(result.folderPathBoost || 0) * 100);
     score.setAttribute('title', `View score: ${(displayedScore * 100).toFixed(0)}% · Semantic: ${semantic}% · Lexical: +${lexical} · Filename: +${filename} · Folder: +${folderBoost}`);
-    const snippets = result.snippets.length ? container.createDiv({ cls: 'gib-semantic-snippets' }) : null;
+    const snippets = result.snippets.length ? copy.createDiv({ cls: 'gib-semantic-snippets' }) : null;
     result.snippets.forEach((snippet, index) => {
       const block = snippets.createDiv({ cls: 'gib-semantic-snippet' });
       if (snippet.heading) { const heading = block.createDiv({ cls: 'gib-semantic-result-heading' }); renderHighlighted(heading, snippet.heading, this.lastQuery, snippet.headingHighlights); }
@@ -869,7 +921,7 @@ class SemanticSearchModal extends SuggestModal {
   onClose() {
     clearTimeout(this.debounceTimer); this.searchVersion++; this.viewAnalysisVersion++;
     if (this.navigationHandler) this.modalEl.removeEventListener('keydown', this.navigationHandler, true);
-    this.map?.destroy(); this.map = null; this.selectionObserver?.disconnect();
+    this.map?.destroy(); this.map = null; this.selectionObserver?.disconnect(); this.resetAssetPreviews();
     super.onClose();
   }
   setupMap() {
