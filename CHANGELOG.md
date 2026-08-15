@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.54.50
+
+- Removes the ineffective gradient-blur halo from Search in Current File and restores the original compact sticky-card structure on desktop, mobile, and Butter Editor.
+
 ## 0.54.49
 
 - Replaces the vault-search result hover and keyboard-selection treatment with a quieter theme-neutral gray surface.
