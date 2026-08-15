@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.28
+
+- Rebuilds Search current file with Obsidian's native document-search structure, input treatment, match counter, clear control, navigation buttons, no-match state, spacing, and responsive behavior.
+- Places search in the editor's document-search row instead of a floating card that covers content.
+- Keeps the search row below Butter Editor's top toolbar in attached, detached, and integrated layouts, above bottom toolbars, and automatically repositions it when Butter's toolbar settings change.
+
 ## 0.54.27
 
 - Replaces the Search current file modal with a compact native-style find bar attached to the active editor.

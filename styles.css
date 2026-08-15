@@ -12,10 +12,9 @@
   font-size: var(--font-ui-small);
 }
 
-.gib-in-note-find-host{position:relative!important}.gib-in-note-find{position:absolute;z-index:100;top:8px;right:18px;display:flex;align-items:center;gap:2px;width:min(420px,calc(100% - 36px));padding:5px 6px 5px 10px;border:1px solid var(--background-modifier-border);border-radius:7px;background:var(--background-primary);box-shadow:var(--shadow-s)}
-.gib-in-note-find input{min-width:0;flex:1;height:28px;padding:0;border:0;background:transparent;box-shadow:none}.gib-in-note-find input:focus{box-shadow:none}
-.gib-in-note-find-count{min-width:42px;color:var(--text-muted);font-size:var(--font-ui-small);text-align:center;font-variant-numeric:tabular-nums}.gib-in-note-find-count.is-searching{color:var(--text-accent)}
-.gib-in-note-find button{display:flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;background:transparent;box-shadow:none;color:var(--text-muted)}.gib-in-note-find button:hover,.gib-in-note-find button:focus-visible{background:var(--background-modifier-hover);color:var(--text-normal)}.gib-in-note-find button svg{width:15px;height:15px}
+.gib-in-note-find-input{min-width:0;flex:1}.gib-in-note-find-input .document-search-input{padding-inline-end:var(--size-4-16)}.gib-in-note-find-count{min-width:38px;text-align:end}.gib-in-note-find-count.is-searching{color:var(--text-accent)}
+.gib-in-note-find.is-butter-search{position:sticky;top:var(--gib-in-note-find-top,0);z-index:9;flex:0 0 auto;background:var(--background-primary);border-bottom:var(--border-width,1px) solid var(--background-modifier-border)}
+.is-phone .gib-in-note-find{margin-inline:var(--size-4-2)}.is-phone .gib-in-note-find .document-search{padding-inline:0}
 ::highlight(gib-search-semantic-find){background-color:var(--text-highlight-bg);color:inherit}
 ::highlight(gib-search-semantic-find-current){background-color:color-mix(in srgb,var(--text-accent) 38%,var(--text-highlight-bg));color:inherit}
 

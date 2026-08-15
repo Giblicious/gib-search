@@ -880,17 +880,17 @@ class SemanticInNoteSearch {
   }
   open() {
     this.plugin.activeInNoteSearch?.close(); this.plugin.activeInNoteSearch = this;
-    const container = this.view.containerEl || this.app.workspace.activeLeaf?.view?.containerEl, butterHost = container?.matches?.('.butter-editor-view') ? container : container?.querySelector?.('.butter-editor-view');
-    const host = butterHost || container?.querySelector('.markdown-source-view') || this.view.contentEl || container?.querySelector('.view-content') || container;
+    const container = this.view.containerEl || this.app.workspace.activeLeaf?.view?.containerEl, butterEditor = container?.matches?.('.butter-editor-view') ? container : container?.querySelector?.('.butter-editor-view');
+    this.isButter = Boolean(butterEditor || container?.querySelector?.('.ProseMirror')); const host = this.isButter ? this.view.contentEl || butterEditor?.closest('.view-content') || butterEditor : container?.querySelector('.markdown-source-view') || this.view.contentEl || container?.querySelector('.view-content') || container;
     if (!host) { this.plugin.activeInNoteSearch = null; new Notice('Gib Search could not attach to the active editor'); return; }
-    this.host = host; this.host.addClass('gib-in-note-find-host'); this.isButter = this.host.matches('.butter-editor-view') || Boolean(this.host.querySelector('.ProseMirror'));
-    this.el = this.host.createDiv({ cls: 'gib-in-note-find' });
-    this.input = this.el.createEl('input', { type: 'search', placeholder: 'Search current file', attr: { 'aria-label': 'Search current file by words or meaning', autocomplete: 'off', spellcheck: 'false' } });
-    this.count = this.el.createSpan({ cls: 'gib-in-note-find-count', text: '0/0' });
-    const previous = this.el.createEl('button', { attr: { type: 'button', 'aria-label': 'Previous match', title: 'Previous match (Shift+Enter)' } }); setIcon(previous, 'chevron-up');
-    const next = this.el.createEl('button', { attr: { type: 'button', 'aria-label': 'Next match', title: 'Next match (Enter)' } }); setIcon(next, 'chevron-down');
-    const close = this.el.createEl('button', { attr: { type: 'button', 'aria-label': 'Close', title: 'Close (Esc)' } }); setIcon(close, 'x');
-    previous.addEventListener('click', () => this.move(-1)); next.addEventListener('click', () => this.move(1)); close.addEventListener('click', () => this.close());
+    this.host = host; this.host.addClass('gib-in-note-find-host'); this.el = document.createElement('div'); this.el.className = 'document-search-container gib-in-note-find';
+    const row = this.el.createDiv({ cls: 'document-search' }), inputContainer = row.createDiv({ cls: 'search-input-container gib-in-note-find-input' });
+    this.input = inputContainer.createEl('input', { type: 'search', cls: 'document-search-input', placeholder: 'Find', attr: { 'aria-label': 'Find in current file by words or meaning', autocomplete: 'off', spellcheck: 'false' } });
+    const clear = inputContainer.createDiv({ cls: 'search-input-clear-button', attr: { role: 'button', tabindex: '0', 'aria-label': 'Clear search' } }); this.count = inputContainer.createSpan({ cls: 'document-search-count gib-in-note-find-count', text: '0/0' });
+    const buttons = row.createDiv({ cls: 'document-search-buttons' }), previous = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Previous match', title: 'Previous match (Shift+Enter)' } }), next = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Next match', title: 'Next match (Enter)' } }), close = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Close', title: 'Close (Esc)' } }); setIcon(previous, 'chevron-up'); setIcon(next, 'chevron-down'); setIcon(close, 'x');
+    const clearSearch = () => { this.input.value = ''; this.updateQuery(''); this.input.focus(); }; clear.addEventListener('click', clearSearch); clear.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); clearSearch(); } }); previous.addEventListener('click', () => this.move(-1)); next.addEventListener('click', () => this.move(1)); close.addEventListener('click', () => this.close());
+    if (this.isButter) { this.butterEditor = butterEditor; this.el.addClass('is-butter-search'); this.placeButterSearch(); if (container) { this.toolbarObserver = new MutationObserver(() => { clearTimeout(this.toolbarTimer); this.toolbarTimer = window.setTimeout(() => this.placeButterSearch(), 20); }); this.toolbarObserver.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-toolbar-pos', 'data-toolbar-style'] }); } }
+    else { this.nativeSearchingWasActive = this.host.hasClass('is-searching'); this.host.addClass('is-searching'); this.host.appendChild(this.el); }
     this.input.addEventListener('input', () => this.updateQuery(this.input.value.trim()));
     this.input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); this.move(event.shiftKey ? -1 : 1); } else if (event.key === 'Escape') { event.preventDefault(); this.close(); } });
     this.leafChangeRef = this.app.workspace.on('active-leaf-change', leaf => { if (leaf !== this.leaf) this.close(); });
@@ -898,6 +898,13 @@ class SemanticInNoteSearch {
     this.observer = new MutationObserver(() => { clearTimeout(this.paintTimer); this.paintTimer = window.setTimeout(() => this.paintHighlights(), 40); });
     const content = this.host.querySelector('.cm-content, .ProseMirror'); if (content) this.observer.observe(content, { childList: true, subtree: true, characterData: true });
     this.input.focus();
+  }
+  placeButterSearch() {
+    if (!this.isButter || !this.host || !this.el) return; const topToolbar = this.host.querySelector(':scope > .butter-toolbar-stack[data-toolbar-pos="top"]'), editorSurface = this.host.querySelector(':scope > .butter-editor-view') || this.butterEditor;
+    if (topToolbar) { if (topToolbar.nextElementSibling !== this.el) topToolbar.insertAdjacentElement('afterend', this.el); }
+    else if (editorSurface && (this.el.parentElement !== this.host || this.el.nextElementSibling !== editorSurface)) this.host.insertBefore(this.el, editorSurface);
+    else if (!editorSurface && this.el.parentElement !== this.host) this.host.prepend(this.el);
+    this.el.style.setProperty('--gib-in-note-find-top', `${Math.ceil(topToolbar?.getBoundingClientRect().height || 0)}px`); if (this.observedButterToolbar !== topToolbar) { this.toolbarResizeObserver?.disconnect(); this.observedButterToolbar = topToolbar; if (topToolbar && typeof ResizeObserver === 'function') { this.toolbarResizeObserver = new ResizeObserver(() => this.placeButterSearch()); this.toolbarResizeObserver.observe(topToolbar); } }
   }
   compactPhrases(results, query, source) {
     const candidates = [{ phrase: query, priority: 3 }, ...semanticPhrasePool(results).map(phrase => ({ phrase, priority: 2 })), ...semanticPassagePool(results, query).map(phrase => ({ phrase, priority: 1 }))].map(item => ({ ...item, phrase: cleanSourceText(item.phrase) })).filter(item => item.phrase && item.phrase.length >= (item.priority === 3 ? 1 : 3) && item.phrase.length <= 160 && (item.priority !== 2 || item.phrase.split(/\s+/).length <= 3));
@@ -925,7 +932,7 @@ class SemanticInNoteSearch {
       const tweaks = activeTweaks(this.plugin), options = { scoreWindow: 1, semanticHighlights: true, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: 5, file: this.file.path };
       const results = await this.plugin.search.search(query, 250, 0, options); await this.refreshMatches(query, results, version, true);
     } catch (error) { if (version === this.queryVersion) { this.count?.setAttribute('title', 'Exact matches shown; semantic matching is not currently available'); this.plugin.logDiagnostic(`In-file semantic enrichment unavailable: ${error.message}`); } }
-    finally { if (version === this.queryVersion) this.count?.removeClass('is-searching'); }
+    finally { if (version === this.queryVersion) { this.count?.removeClass('is-searching'); this.updateCount(); } }
   }
   offsetToPos(offset) {
     if (typeof this.editor?.offsetToPos === 'function') return this.editor.offsetToPos(offset);
@@ -947,7 +954,7 @@ class SemanticInNoteSearch {
     if (typeof this.editor?.scrollIntoView === 'function') this.editor.scrollIntoView({ from, to }, true);
     window.setTimeout(() => this.paintHighlights(), 60);
   }
-  updateCount() { if (this.count) { this.count.setText(this.matches.length ? `${this.current + 1}/${this.matches.length}` : '0/0'); this.count.setAttribute('aria-label', `${this.matches.length} search ${this.matches.length === 1 ? 'match' : 'matches'}`); } }
+  updateCount() { if (this.count) { const current = this.matches.length ? this.current + 1 : 0; this.count.setText(`${current}/${this.matches.length}`); this.count.setAttribute('aria-label', `${current} of ${this.matches.length} search matches`); this.input?.toggleClass('mod-no-match', Boolean(this.input.value && !this.matches.length && !this.count.hasClass('is-searching'))); } }
   paintHighlights() {
     if (!globalThis.CSS?.highlights || typeof globalThis.Highlight !== 'function' || !this.el?.isConnected) return;
     const root = this.host?.querySelector('.cm-content, .ProseMirror'); if (!root) return;
@@ -968,7 +975,7 @@ class SemanticInNoteSearch {
   }
   clearHighlights() { globalThis.CSS?.highlights?.delete(this.highlightName); globalThis.CSS?.highlights?.delete(`${this.highlightName}-current`); }
   close() {
-    clearTimeout(this.timer); clearTimeout(this.paintTimer); this.queryVersion++; this.observer?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
+    clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
   }
 }
 

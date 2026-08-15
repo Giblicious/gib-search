@@ -1,7 +1,7 @@
 {
   "id": "gib-search",
   "name": "Gib Search",
-  "version": "0.54.27",
+  "version": "0.54.28",
   "minAppVersion": "1.4.5",
   "description": "Local semantic search for your Obsidian vault.",
   "author": "Giblicious",
