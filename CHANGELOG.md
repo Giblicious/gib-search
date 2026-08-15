@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.40
+
+- Prioritizes compact passages containing every meaningful query term even when the wording is reordered or possessive, such as `gods power` matching `power of God`.
+- Prevents generic phrase-generation limits from discarding obvious query-anchored wording before semantic scoring.
+- Requires stronger evidence from phrases with only partial or no query-term coverage, suppressing loose topical highlights when a complete concept match exists.
+
 ## 0.54.39
 
 - Makes in-file semantic highlighting search every sentence in ordinary passages, then refine strong sentences into conservative grammatical clauses and short exact source phrases.
