@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.43
+
+- Batches mobile-package passages across files instead of issuing undersized inference calls for each short note, using the desktop hardware profile up to 16 passages per exact mobile-q8 batch.
+- Reads and prepares notes with bounded concurrency while the background worker embeds the previous window, preserving UI yields and the worker's lowest-priority scheduling.
+- Adds a compact file manifest so unchanged package builds return immediately without rereading note contents or rerunning inference.
+- Refreshes only affected hash buckets, retaining the other package segments without decompressing, recompressing, hashing, or rewriting them.
+- Validates the complete 16-segment manifest and adds end-to-end regression coverage for batching, no-op refreshes, and single-bucket updates.
+
 ## 0.54.42
 
 - Adds a compact MS MARCO cross-encoder reranker after high-recall BGE retrieval, then combines their relative ranks so exact shared words cannot overwhelm the meaning of the complete query.

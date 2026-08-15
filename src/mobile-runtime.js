@@ -2,7 +2,7 @@ import { pipeline, env } from '@huggingface/transformers';
 import { EMOTION_HYPOTHESES, TEXT_ANALYSIS_VERSION, TEXT_SIGNAL_PROFILES, signalHypothesis, validTextSignal } from './text-signals.js';
 import { WRITING_PROFILE_SIGNALS, WRITING_PROFILE_VERSION, combineWritingProfile, isCurrentWritingProfile } from './writing-profiles.js';
 import { IncrementalBm25, assembleIndexSegments, boundedTopK, centroidSimilarity, diverseCentroids, insertTopK } from './search-core.js';
-import { readMobileBootstrap, writeMobileBootstrap } from './mobile-bootstrap.js';
+import { MOBILE_BOOTSTRAP_SEGMENTS, bootstrapBucket, mobileBootstrapFileIndex, readMobileBootstrap, readMobileBootstrapManifest, readMobileBootstrapSegment, writeMobileBootstrap } from './mobile-bootstrap.js';
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
@@ -190,6 +190,11 @@ export function indexingHardwareProfile(mobile = false, hardwareConcurrency = nu
   return { cores, memoryGiB, wasmThreads, maximumEmbedBatchSize, maximumBatchCharacters: Math.max(9600, Math.min(32000, maximumEmbedBatchSize * 2200)), checkpointFiles: cores >= 12 ? 24 : 16, checkpointMs: 20000, metadataYieldEvery: 96 };
 }
 function sampleEvenly(items, maximum) { if (items.length <= maximum) return items; return Array.from({ length: maximum }, (_, index) => items[Math.round(index * (items.length - 1) / (maximum - 1))]); }
+export function mobileBootstrapEmbeddingBatches(entries, maximum = 16) {
+  const size = Math.max(1, Math.floor(Number(maximum) || 1)), batches = []; let batch = [];
+  entries.forEach((entry, entryIndex) => entry.chunks.forEach((_, chunkIndex) => { batch.push({ entryIndex, chunkIndex }); if (batch.length >= size) { batches.push(batch); batch = []; } }));
+  if (batch.length) batches.push(batch); return batches;
+}
 function contentProfileSimilarity(first, second, coverageWeight = .72) { if (!first?.length || !second?.length) return -1; const directional = (source, target) => { let total = 0, weights = 0; for (const passage of source) { const best = Math.max(...target.map(other => dot(passage.vector, other.vector))); total += best * passage.weight; weights += passage.weight; } return total / Math.max(.001, weights); }, coverage = (directional(first, second) + directional(second, first)) / 2, strongest = []; for (const a of first) for (const b of second) strongest.push({ score: dot(a.vector, b.vector), weight: Math.sqrt(a.weight * b.weight) }); strongest.sort((a, b) => b.score * b.weight - a.score * a.weight); const selected = strongest.slice(0, 3), peak = selected.reduce((sum, item) => sum + item.score * item.weight, 0) / Math.max(.001, selected.reduce((sum, item) => sum + item.weight, 0)), blend = Math.max(0, Math.min(1, Number(coverageWeight))); return Math.max(-1, Math.min(1, coverage * blend + peak * (1 - blend))); }
 
 function frontmatterBoundary(content) {
@@ -850,6 +855,19 @@ export class MobileSearchRuntime {
     const content = await this.plugin.app.vault.read(file), chunks = chunkMarkdown(content, MOBILE_CHUNK_CHARACTERS), representationHash = contentFingerprint(`${PASSAGE_INDEX_VERSION}\0${semanticMetadata}\0${chunks.map(chunk => embeddingText(file.path, chunk, semanticMetadata)).join('\0')}`);
     return { file, filenameOnly, semanticMetadata, representationHash, chunks };
   }
+  async prepareMobileBootstrapFiles(files, concurrency = 4) {
+    const output = new Array(files.length); let cursor = 0;
+    const workers = Array.from({ length: Math.max(1, Math.min(files.length, Math.floor(Number(concurrency) || 1))) }, async () => { for (;;) { const index = cursor++; if (index >= files.length) return; output[index] = await this.materializeMobileBootstrapFile(files[index]); if (index % 4 === 3) await yieldToUi(); } });
+    await Promise.all(workers); return output;
+  }
+  async embedMobileBootstrapEntries(entries, batchSize, onBatch = null) {
+    const vectors = entries.map(entry => new Array(entry.chunks.length));
+    for (const batch of mobileBootstrapEmbeddingBatches(entries, batchSize)) {
+      const texts = batch.map(({ entryIndex, chunkIndex }) => { const entry = entries[entryIndex], chunk = entry.chunks[chunkIndex]; return embeddingText(entry.file.path, chunk, entry.semanticMetadata); }), embedded = await this.plugin.desktopEmbedder.embedMobileBootstrap(texts);
+      batch.forEach(({ entryIndex, chunkIndex }, index) => { vectors[entryIndex][chunkIndex] = embedded[index]; }); onBatch?.(batch.length); await this.mobileBootstrapTurn();
+    }
+    return vectors;
+  }
   bootstrapReplacement(entry, embedded) {
     const meta = [], vectors = [], file = entry.file;
     if (entry.filenameOnly || !entry.chunks.length) {
@@ -861,23 +879,34 @@ export class MobileSearchRuntime {
     if (this.isMobile) throw new Error('Build the mobile bootstrap package on desktop');
     if (this.mobileBootstrapRun) return this.mobileBootstrapRun;
     this.mobileBootstrapRun = (async () => {
-      const directory = this.mobileBootstrapDirectory(), files = this.files(), previousPackage = await readMobileBootstrap(this.adapter, directory).catch(() => null), previous = new Map();
-      if (previousPackage?.manifest?.modelId === MODEL_ID && previousPackage.manifest.passageVersion === PASSAGE_INDEX_VERSION && previousPackage.manifest.chunkCharacters === MOBILE_CHUNK_CHARACTERS) previousPackage.meta.forEach((item, index) => { const group = previous.get(item.file) || { meta: [], vectors: [] }; group.meta.push(unpackIndexMeta([item])[0]); group.vectors.push(previousPackage.vectors[index]); previous.set(item.file, group); });
-      const outputMeta = [], outputVectors = []; this.mobileBootstrapStatus = { state: 'building', message: 'Preparing mobile passages', files: 0, records: 0, createdAt: null }; this.changed();
-      for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
-        if (!this.plugin.settings.mobileBootstrapEnabled) throw new Error('Mobile bootstrap build was stopped');
-        const entry = await this.materializeMobileBootstrapFile(files[fileIndex]), cached = previous.get(entry.file.path), reusable = cached?.meta?.length && cached.meta.every(item => item.contentHash === entry.representationHash && item.passageVersion === PASSAGE_INDEX_VERSION);
-        let replacement;
-        if (reusable) replacement = cached;
-        else {
-          const texts = entry.chunks.map(chunk => embeddingText(entry.file.path, chunk, entry.semanticMetadata)), embedded = [];
-          for (let offset = 0; offset < texts.length; offset += 8) { embedded.push(...await this.plugin.desktopEmbedder.embedMobileBootstrap(texts.slice(offset, offset + 8))); await yieldToUi(); }
-          replacement = this.bootstrapReplacement(entry, embedded);
-        }
-        outputMeta.push(...replacement.meta); outputVectors.push(...replacement.vectors); this.mobileBootstrapStatus = { ...this.mobileBootstrapStatus, files: fileIndex + 1, records: outputMeta.length, message: `${fileIndex + 1} of ${files.length} files` }; this.changed(); await this.mobileBootstrapTurn();
+      const directory = this.mobileBootstrapDirectory(), files = this.files(), previousManifest = await readMobileBootstrapManifest(this.adapter, directory).catch(() => null), compatible = previousManifest?.modelId === MODEL_ID && previousManifest.dimension === DIMENSION && previousManifest.passageVersion === PASSAGE_INDEX_VERSION && previousManifest.chunkCharacters === MOBILE_CHUNK_CHARACTERS, previousIndex = compatible ? mobileBootstrapFileIndex(previousManifest) : new Map(), currentByPath = new Map(files.map(file => [file.path, file])), dirtyBuckets = new Set();
+      if (!compatible || previousIndex.size !== Number(previousManifest?.files || 0)) for (let bucket = 0; bucket < MOBILE_BOOTSTRAP_SEGMENTS; bucket++) dirtyBuckets.add(bucket);
+      else {
+        for (const file of files) { const state = previousIndex.get(file.path), bucket = bootstrapBucket(file.path, MOBILE_BOOTSTRAP_SEGMENTS); if (!state || state.bucket !== bucket || state.mtime !== Number(file.stat.mtime || 0) || state.size !== Number(file.stat.size || 0)) dirtyBuckets.add(bucket); }
+        for (const [path, state] of previousIndex) if (!currentByPath.has(path)) dirtyBuckets.add(state.bucket);
+        for (const segment of previousManifest.segments) if (!await this.adapter.exists(`${directory}/${segment.name}`)) dirtyBuckets.add(Number(segment.bucket));
       }
-      const manifest = await writeMobileBootstrap(this.adapter, directory, { meta: packIndexMeta(outputMeta), vectors: outputVectors, dimension: DIMENSION, modelId: MODEL_ID, passageVersion: PASSAGE_INDEX_VERSION, chunkCharacters: MOBILE_CHUNK_CHARACTERS });
-      this.mobileBootstrapStatus = { state: 'ready', message: `Package ready in ${directory}`, files: manifest.files, records: manifest.records, createdAt: manifest.createdAt }; this.plugin.logDiagnostic(`Built mobile bootstrap package ${manifest.generation}: ${manifest.files} files, ${manifest.records} records`); this.changed(); return manifest;
+      if (!dirtyBuckets.size) { this.mobileBootstrapStatus = { state: 'ready', message: `Package already current in ${directory}`, files: previousManifest.files, records: previousManifest.records, createdAt: previousManifest.createdAt }; this.changed(); return previousManifest; }
+      const previousByFile = new Map(); if (compatible) await Promise.all([...dirtyBuckets].map(async bucket => { try { const stored = await readMobileBootstrapSegment(this.adapter, directory, previousManifest, bucket), unpacked = unpackIndexMeta(stored.meta); unpacked.forEach((item, index) => { const group = previousByFile.get(item.file) || { meta: [], vectors: [] }; group.meta.push(item); group.vectors.push(stored.vectors[index]); previousByFile.set(item.file, group); }); } catch (error) { this.plugin.logDiagnostic?.(`Rebuilding mobile package bucket ${bucket}: ${error?.message || error}`); } }));
+      const outputBuckets = new Map([...dirtyBuckets].map(bucket => [bucket, { meta: [], vectors: [] }])), nextIndex = new Map(), changedFiles = [], batchSize = Math.max(8, Math.min(16, Number(this.indexingConfig.maximumEmbedBatchSize) || 8)), preparationWindow = Math.max(24, batchSize * 4), readConcurrency = Math.max(2, Math.min(6, Math.floor(Number(this.indexingConfig.cores || 8) / 4))), cleanFiles = files.filter(file => !dirtyBuckets.has(bootstrapBucket(file.path, MOBILE_BOOTSTRAP_SEGMENTS)));
+      cleanFiles.forEach(file => { const state = previousIndex.get(file.path); if (state) nextIndex.set(file.path, state); }); let completedFiles = cleanFiles.length, completedRecords = cleanFiles.reduce((sum, file) => sum + Number(previousIndex.get(file.path)?.records || 0), 0), reusedFiles = cleanFiles.length, embeddedPassages = 0;
+      const accept = (file, replacement, contentHash) => { const bucket = bootstrapBucket(file.path, MOBILE_BOOTSTRAP_SEGMENTS), group = outputBuckets.get(bucket); group.meta.push(...replacement.meta); group.vectors.push(...replacement.vectors); nextIndex.set(file.path, { mtime: Number(file.stat.mtime || 0), size: Number(file.stat.size || 0), contentHash, bucket, records: replacement.meta.length }); completedFiles++; completedRecords += replacement.meta.length; };
+      for (const file of files) {
+        const bucket = bootstrapBucket(file.path, MOBILE_BOOTSTRAP_SEGMENTS); if (!dirtyBuckets.has(bucket)) continue; const state = previousIndex.get(file.path), cached = previousByFile.get(file.path);
+        if (state && cached?.meta?.length && state.mtime === Number(file.stat.mtime || 0) && state.size === Number(file.stat.size || 0) && cached.meta.every(item => item.contentHash === state.contentHash && item.passageVersion === PASSAGE_INDEX_VERSION)) { accept(file, cached, state.contentHash); reusedFiles++; }
+        else changedFiles.push(file);
+      }
+      this.mobileBootstrapStatus = { state: 'building', message: `Preparing ${changedFiles.length} changed files in ${dirtyBuckets.size} package buckets`, files: completedFiles, records: completedRecords, createdAt: null }; this.changed();
+      let offset = 0, preparedPromise = this.prepareMobileBootstrapFiles(changedFiles.slice(0, preparationWindow), readConcurrency);
+      while (offset < changedFiles.length) {
+        if (!this.plugin.settings.mobileBootstrapEnabled) throw new Error('Mobile bootstrap build was stopped');
+        const prepared = await preparedPromise, nextOffset = offset + prepared.length; preparedPromise = nextOffset < changedFiles.length ? this.prepareMobileBootstrapFiles(changedFiles.slice(nextOffset, nextOffset + preparationWindow), readConcurrency) : Promise.resolve([]); const needsEmbedding = [];
+        for (const entry of prepared) { const cached = previousByFile.get(entry.file.path), reusable = cached?.meta?.length && cached.meta.every(item => item.contentHash === entry.representationHash && item.passageVersion === PASSAGE_INDEX_VERSION); if (reusable) { accept(entry.file, cached, entry.representationHash); reusedFiles++; } else needsEmbedding.push(entry); }
+        const embedded = await this.embedMobileBootstrapEntries(needsEmbedding, batchSize, count => { embeddedPassages += count; this.mobileBootstrapStatus = { ...this.mobileBootstrapStatus, message: `${completedFiles} of ${files.length} files · ${embeddedPassages} new passages · batches up to ${batchSize}` }; this.changed(); });
+        needsEmbedding.forEach((entry, index) => accept(entry.file, this.bootstrapReplacement(entry, embedded[index]), entry.representationHash)); offset = nextOffset; this.mobileBootstrapStatus = { ...this.mobileBootstrapStatus, files: completedFiles, records: completedRecords, message: `${completedFiles} of ${files.length} files · ${reusedFiles} reused · ${embeddedPassages} new passages` }; this.changed(); await this.mobileBootstrapTurn();
+      }
+      const packedBuckets = new Map([...outputBuckets].map(([bucket, group]) => [bucket, { meta: packIndexMeta(group.meta), vectors: group.vectors }])), manifest = await writeMobileBootstrap(this.adapter, directory, { buckets: packedBuckets, previousManifest: compatible ? previousManifest : null, fileIndex: nextIndex, dimension: DIMENSION, modelId: MODEL_ID, passageVersion: PASSAGE_INDEX_VERSION, chunkCharacters: MOBILE_CHUNK_CHARACTERS });
+      this.mobileBootstrapStatus = { state: 'ready', message: `Package ready in ${directory} · ${manifest.changedSegments} buckets written, ${manifest.reusedSegments} reused`, files: manifest.files, records: manifest.records, createdAt: manifest.createdAt }; this.plugin.logDiagnostic(`Built mobile bootstrap package ${manifest.generation}: ${manifest.files} files, ${manifest.records} records, ${manifest.changedSegments} buckets written, ${manifest.reusedSegments} reused, ${embeddedPassages} passages embedded in cross-file batches of up to ${batchSize}`); this.changed(); return manifest;
     })().catch(error => { this.mobileBootstrapStatus = { ...this.mobileBootstrapStatus, state: 'error', message: error.message }; this.changed(); throw error; }).finally(async () => { this.mobileBootstrapRun = null; await this.plugin.desktopEmbedder.releaseMobileBootstrap().catch(() => {}); });
     return this.mobileBootstrapRun;
   }
