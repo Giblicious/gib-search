@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.32
+
+- Corrects Butter Editor layout so the outer find strip spans the full editor while the search controls retain Obsidian's centered readable width.
+- Replaces unreliable concept-only in-file semantic matches with a two-stage search that ranks indexed passages and then the actual sentences inside the strongest passages.
+- Uses cached sentence vectors, cancellable live queries, and breadth-specific limits so semantic refinement remains responsive on desktop and mobile.
+- Preserves raw Markdown and rendered-text variants of semantic findings so highlights and navigation work in both Obsidian source mode and Butter Editor.
+- Adds regression coverage for sentence selection, Markdown-aware semantic highlighting, and the full-width-strip/native-width-control layout.
+
 ## 0.54.31
 
 - Polishes Search current file into a smoother hybrid find experience with immediate exact results and non-disruptive semantic enrichment.
