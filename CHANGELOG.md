@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.46
+
+- Adds a subtle backdrop blur behind the main vault-search modal while preserving Obsidian's theme-controlled dim overlay.
+- Uses a lighter mobile blur and disables the transition or transparency effect when the corresponding accessibility preference requests it.
+
 ## 0.54.45
 
 - Adds the canonical `revision-group` property for guaranteed flat edition grouping across folders, with optional `revision-current` and `revision-date` ordering overrides.

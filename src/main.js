@@ -8,7 +8,7 @@ const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
 const { registerCommandAlias } = require('./command-compat');
-const BUILD_VERSION = '0.54.45';
+const BUILD_VERSION = '0.54.46';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -857,6 +857,7 @@ class SemanticSearchModal extends SuggestModal {
   onOpen() {
     super.onOpen();
     this.modalEl.addClass('gib-search-modal');
+    if (!this.filePath) this.modalEl.closest('.modal-container')?.addClass('gib-search-vault-modal-container');
     if (!this.plugin.isMobile) this.plugin.desktopEmbedder?.warmup?.().catch(error => this.plugin.logDiagnostic?.(`Interactive semantic warmup failed: ${error?.message || error}`));
     const inputContainer = this.modalEl.querySelector('.prompt-input-container') || this.inputEl.parentElement;
     if (!this.filePath) { if (inputContainer?.parentElement) { const host = document.createElement('div'); host.className = 'gib-search-quick-filter-host'; inputContainer.insertAdjacentElement('afterend', host); renderQuickFilterBar(host, this.plugin, 'search', this.activeQuickFilterIds, () => { this.visibleLimit = activeTweaks(this.plugin).topK; if (this.lastQuery) this.triggerSearch(this.lastQuery, true); }); } }
