@@ -244,6 +244,10 @@ async function handleEmbed(message) {
   try { const result = await embed(message.texts || [], Boolean(message.query)); self.postMessage({ type: 'result', id: message.id, buffers: result.buffers }, result.transfer); }
   catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
 }
+async function handleWarmup(message) {
+  try { await initializeModel(); self.postMessage({ type: 'warmup-result', id: message.id }); }
+  catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
+}
 async function handleMobileBootstrap(message) {
   try { const result = await embedMobileBootstrap(message.texts || []); self.postMessage({ type: 'result', id: message.id, buffers: result.buffers }, result.transfer); }
   catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
@@ -259,7 +263,8 @@ self.onmessage = event => {
     if (message.error) pending.reject(new Error(message.error)); else pending.resolve(message.buffer || null); return;
   }
   if (message.type === 'init') { configuration = message; self.postMessage({ type: 'initialized' }); return; }
-  if (message.type === 'embed') enqueueTask(message.priority ?? (message.query ? 0 : 2), () => handleEmbed(message));
+  if (message.type === 'warmup') enqueueTask(0, () => handleWarmup(message));
+  else if (message.type === 'embed') enqueueTask(message.priority ?? (message.query ? 0 : 2), () => handleEmbed(message));
   else if (message.type === 'mobile-bootstrap') enqueueTask(5, () => handleMobileBootstrap(message));
   else if (message.type === 'release-mobile-bootstrap') enqueueTask(5, async () => { const previous = mobileBootstrapPipe; mobileBootstrapPipe = null; await disposePipeline(previous); self.postMessage({ type: 'mobile-bootstrap-released', id: message.id }); });
   else if (message.type === 'relations') enqueueTask(message.lowPriority ? 4 : 2, () => handleRelations(message));

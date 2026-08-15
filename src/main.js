@@ -1,4 +1,4 @@
-const { Plugin, PluginSettingTab, Setting, ToggleComponent, SuggestModal, Modal, ItemView, Notice, TFile, setIcon, getIcon, Platform } = require('obsidian');
+const { Plugin, PluginSettingTab, Setting, ToggleComponent, SuggestModal, Modal, ItemView, Notice, TFile, setIcon, getIcon, Platform, Scope } = require('obsidian');
 const { MobileSearchRuntime, relatedHighlightPhrases } = require('./mobile-runtime');
 const { AtlasEngine, STANDARD_ATLAS_VIEWS, DEFAULT_ATLAS_VIEW } = require('./atlas-engine');
 const { TEXT_SIGNALS } = require('./text-signals');
@@ -7,7 +7,8 @@ const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bund
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
-const BUILD_VERSION = '0.54.43';
+const { registerCommandAlias } = require('./command-compat');
+const BUILD_VERSION = '0.54.44';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -242,6 +243,15 @@ class DesktopEmbedder {
   embedBatch(texts, query = false, options = {}) {
     if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++;
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'embed', id, texts, query, priority: Number(options.priority ?? (query ? 0 : 2)) }); } catch (error) { this.pending.delete(id); reject(error); } });
+  }
+  warmup() {
+    if (this.ready) return Promise.resolve();
+    if (this.warmupPromise) return this.warmupPromise;
+    if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable'));
+    const id = this.nextId++;
+    const run = new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'warmup', id }); } catch (error) { this.pending.delete(id); reject(error); } });
+    const tracked = run.then(value => { if (this.warmupPromise === tracked) this.warmupPromise = null; return value; }, error => { if (this.warmupPromise === tracked) this.warmupPromise = null; throw error; }); this.warmupPromise = tracked;
+    return this.warmupPromise;
   }
   embedMobileBootstrap(texts) {
     if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++;
@@ -847,6 +857,7 @@ class SemanticSearchModal extends SuggestModal {
   onOpen() {
     super.onOpen();
     this.modalEl.addClass('gib-search-modal');
+    if (!this.plugin.isMobile) this.plugin.desktopEmbedder?.warmup?.().catch(error => this.plugin.logDiagnostic?.(`Interactive semantic warmup failed: ${error?.message || error}`));
     const inputContainer = this.modalEl.querySelector('.prompt-input-container') || this.inputEl.parentElement;
     if (!this.filePath) { if (inputContainer?.parentElement) { const host = document.createElement('div'); host.className = 'gib-search-quick-filter-host'; inputContainer.insertAdjacentElement('afterend', host); renderQuickFilterBar(host, this.plugin, 'search', this.activeQuickFilterIds, () => { this.visibleLimit = activeTweaks(this.plugin).topK; if (this.lastQuery) this.triggerSearch(this.lastQuery, true); }); } }
     else if (inputContainer?.parentElement) { this.modalEl.addClass('is-file-search'); const scope = document.createElement('div'); scope.className = 'gib-search-file-scope'; const icon = document.createElement('span'); icon.className = 'gib-search-file-scope-icon'; setIcon(icon, 'file-search'); const name = document.createElement('span'); name.className = 'gib-search-file-scope-name'; name.textContent = this.filePath; const mode = document.createElement('span'); mode.className = 'gib-search-file-scope-mode'; mode.textContent = 'Words + meaning'; scope.append(icon, name, mode); inputContainer.insertAdjacentElement('afterend', scope); }
@@ -909,6 +920,7 @@ class SemanticInNoteSearch {
     else { this.nativeSearchingWasActive = this.host.hasClass('is-searching'); this.host.addClass('is-searching'); this.host.appendChild(this.el); }
     this.input.addEventListener('input', () => this.updateQuery(this.input.value.trim()));
     this.input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); this.move(event.shiftKey ? -1 : 1); } else if (event.key === 'Escape') { event.preventDefault(); this.close(); } });
+    this.keyScope = new Scope(this.app.scope); this.keyScope.register([], 'Escape', () => { this.close(); return false; }); this.app.keymap.pushScope(this.keyScope);
     this.leafChangeRef = this.app.workspace.on('active-leaf-change', leaf => { if (leaf !== this.leaf) this.close(); });
     this.editorChangeRef = this.editor ? this.app.workspace.on('editor-change', editor => { if (editor !== this.editor || !this.input.value.trim()) return; this.updateQuery(this.input.value.trim()); }) : null;
     this.observer = new MutationObserver(() => { clearTimeout(this.paintTimer); this.paintTimer = window.setTimeout(() => this.paintHighlights(), 40); });
@@ -1015,7 +1027,7 @@ class SemanticInNoteSearch {
   }
   clearHighlights() { for (const name of Object.values(this.highlightNames)) globalThis.CSS?.highlights?.delete(name); }
   close() {
-    clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.setSemanticLoading(false); this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
+    clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.setSemanticLoading(false); if (this.keyScope) { this.app.keymap.popScope(this.keyScope); this.keyScope = null; } this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
   }
 }
 
@@ -1459,7 +1471,9 @@ module.exports = class GibSearch extends Plugin {
     if (this.atlasEnabled) { this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this)); this.registerView(NAVIGATOR_VIEW, leaf => new AtlasNavigatorView(leaf, this)); this.registerView(NEIGHBORHOOD_VIEW, leaf => new NeighborhoodView(leaf, this)); }
     this.addRibbonIcon('search', 'Gib Search', () => new SemanticSearchModal(this.app, this).open());
     this.addCommand({ id: 'semantic-search', name: 'Semantic search', callback: () => new SemanticSearchModal(this.app, this).open() });
-    this.addCommand({ id: 'search-current-file', name: 'Search current file', checkCallback: checking => { const file = this.app.workspace.getActiveFile(), available = file instanceof TFile && file.extension.toLowerCase() === 'md'; if (available && !checking) this.launchFileSearch(file.path); return available; } });
+    const searchCurrentFile = () => this.launchFileSearch(this.app.workspace.getActiveFile()?.path || '');
+    this.addCommand({ id: 'search-current-file', name: 'Search current file', callback: searchCurrentFile });
+    registerCommandAlias(this, 'giblicious-search:semantic-search-current-file', 'Giblicious Search: Semantic search in current file', searchCurrentFile);
     this.addCommand({ id: 'open-similar-notes', name: 'Open Similar Notes', callback: () => this.openSimilarNotes() });
     this.addCommand({ id: 'open-writing-profile', name: 'Open Writing Profile', callback: () => this.openWritingProfile() });
     if (this.atlasEnabled) {

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IncrementalBm25, assembleIndexSegments, boundedTopK, centroidSimilarity, diverseCentroids } from '../src/search-core.js';
-import { MobileSearchRuntime, chunkMarkdown, indexingHardwareProfile, queryTermWindowCandidates, semanticClauseCandidates } from '../src/mobile-runtime.js';
+import { MobileSearchRuntime, chunkMarkdown, indexingHardwareProfile, packedDot, queryTermWindowCandidates, semanticClauseCandidates } from '../src/mobile-runtime.js';
 import { readMobileBootstrap, writeMobileBootstrap } from '../src/mobile-bootstrap.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -40,6 +40,11 @@ const cancellationRuntime = new MobileSearchRuntime(inFilePlugin); cancellationR
 
 const candidates = Array.from({ length: 5000 }, (_, index) => ({ id: index, score: Math.sin(index * 1.7) })), expected = candidates.slice().sort((a, b) => b.score - a.score).slice(0, 17).map(item => item.id), actual = boundedTopK(candidates, 17).map(item => item.id);
 assert.deepEqual(actual, expected, 'Bounded top-K selection changed ranking order');
+
+const packedQuery = vector(.8, .6), packedVectors = new Float32Array(384 * 2); packedVectors.set(vector(1, 0), 0); packedVectors.set(vector(0, 1), 384);
+assert.equal(packedDot(packedQuery, packedVectors, 0, 384), .800000011920929, 'Packed vector scoring changed exact dot-product arithmetic');
+const packedRuntime = new MobileSearchRuntime(inFilePlugin); packedRuntime.meta = [{ file: 'First.md', text: 'first meaning', entities: ['Power'] }, { file: 'Second.md', text: 'second meaning', entities: [] }]; packedRuntime.packedVectors = packedVectors; packedRuntime.vectors = [packedVectors.subarray(0, 384), packedVectors.subarray(384)]; packedRuntime.refreshLexical(); let lexicalOverlapped = false, finishQuery; packedRuntime.queryVector = () => new Promise(resolve => { finishQuery = resolve; }); packedRuntime.bm25.search = () => { lexicalOverlapped = true; queueMicrotask(() => finishQuery(packedQuery)); return []; };
+const packedResults = await packedRuntime.search('meaning', 2, 0); assert.equal(packedResults[0].file, 'First.md'); assert.equal(lexicalOverlapped, true, 'Lexical retrieval did not overlap the background query embedding'); assert.equal(packedRuntime.performanceStats.lastSearchProfile.packed, true, 'Contiguous exact vector scanning was not used'); assert.equal(packedRuntime.lexical[0].entities.has('power'), true, 'Search rebuilt passage entity sets per query instead of caching them with the index');
 
 const multiTheme = diverseCentroids([vector(1, 0), vector(0, 1), vector(.98, .02), vector(.02, .98)], 3), sameThemes = diverseCentroids([vector(1, 0), vector(0, 1)], 3), genericMiddle = diverseCentroids([vector(1, 1), vector(1, 1)], 3);
 assert.ok(centroidSimilarity(multiTheme, sameThemes) > centroidSimilarity(multiTheme, genericMiddle), 'Multi-centroid similarity collapsed a note into its average topic');

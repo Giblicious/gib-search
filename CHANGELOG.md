@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.54.44
+
+- Starts the desktop WebGPU semantic model as soon as the primary search opens, hiding first-query setup behind normal typing time while retaining the existing verified WASM fallback.
+- Overlaps background query embedding with exact BM25 retrieval, scans the contiguous vector matrix directly, shares per-file path features, and caches passage entity sets without changing semantic, lexical, or hybrid ranking scores.
+- Replaces fixed desktop scan pauses with cancellation-safe, hardware-adaptive frame budgeting; a 6,933-passage local benchmark scans in about 9 ms and the exact vector kernel is roughly 47% faster with identical results.
+- Makes Escape close current-file search from either the search card or editor by using a temporary Obsidian key scope that is removed on close.
+- Restores Commander buttons saved under the former `giblicious-search:semantic-search-current-file` command id and makes the current command callable consistently after an Obsidian restart.
+- Adds search timing diagnostics plus regression coverage for exact packed scoring, GPU/CPU work overlap, command alias lifecycle, and current-file keyboard cleanup.
+
 ## 0.54.43
 
 - Batches mobile-package passages across files instead of issuing undersized inference calls for each short note, using the desktop hardware profile up to 16 passages per exact mobile-q8 batch.
