@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.30
+
+- Fixes Search current file in Butter Editor when Butter's `contentEl` is itself the editor surface, including the default attached top-toolbar layout.
+- Prevents the search bar from trying to insert itself before its own parent element, which previously raised a DOM `NotFoundError` before anything became visible.
+- Adds a release regression gate for Butter's real self-hosted editor topology while preserving detached-toolbar placement below Butter's toolbar stack.
+
 ## 0.54.29
 
 - Detects and reports partial BRAT installations whose manifest and executable bundle versions do not agree, rather than allowing commands to fail silently.

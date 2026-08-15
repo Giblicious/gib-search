@@ -7,7 +7,7 @@ const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bund
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
-const BUILD_VERSION = '0.54.29';
+const BUILD_VERSION = '0.54.30';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -901,8 +901,9 @@ class SemanticInNoteSearch {
     this.input.focus();
   }
   placeButterSearch() {
-    if (!this.isButter || !this.host || !this.el) return; const topToolbar = this.host.querySelector(':scope > .butter-toolbar-stack[data-toolbar-pos="top"]'), editorSurface = this.host.querySelector(':scope > .butter-editor-view') || this.butterEditor;
+    if (!this.isButter || !this.host || !this.el) return; const topToolbar = this.host.querySelector(':scope > .butter-toolbar-stack[data-toolbar-pos="top"]'), hostIsEditor = this.host.matches('.butter-editor-view'), editorSurface = hostIsEditor ? this.host.querySelector(':scope > .butter-editor-root') : this.host.querySelector(':scope > .butter-editor-view') || this.butterEditor;
     if (topToolbar) { if (topToolbar.nextElementSibling !== this.el) topToolbar.insertAdjacentElement('afterend', this.el); }
+    else if (hostIsEditor) { if (this.host.firstElementChild !== this.el) this.host.prepend(this.el); }
     else if (editorSurface && (this.el.parentElement !== this.host || this.el.nextElementSibling !== editorSurface)) this.host.insertBefore(this.el, editorSurface);
     else if (!editorSurface && this.el.parentElement !== this.host) this.host.prepend(this.el);
     this.el.style.setProperty('--gib-in-note-find-top', `${Math.ceil(topToolbar?.getBoundingClientRect().height || 0)}px`); if (this.observedButterToolbar !== topToolbar) { this.toolbarResizeObserver?.disconnect(); this.observedButterToolbar = topToolbar; if (topToolbar && typeof ResizeObserver === 'function') { this.toolbarResizeObserver = new ResizeObserver(() => this.placeButterSearch()); this.toolbarResizeObserver.observe(topToolbar); } }
