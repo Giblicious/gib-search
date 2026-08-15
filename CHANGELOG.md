@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.31
+
+- Polishes Search current file into a smoother hybrid find experience with immediate exact results and non-disruptive semantic enrichment.
+- Adds optional power controls for Exact and Meaning search, match case, whole words, and precise, balanced, or broad semantic range.
+- Separates exact and semantic highlight channels so meaning-based findings are visually distinct, while making the current finding clearer.
+- Makes the Butter Editor search bar full-width and balanced across attached and detached toolbar layouts, including responsive mobile controls.
+- Tightens semantic passage selection to avoid broad, noisy highlights and preserves the active finding as semantic results arrive.
+
 ## 0.54.30
 
 - Fixes Search current file in Butter Editor when Butter's `contentEl` is itself the editor surface, including the default attached top-toolbar layout.

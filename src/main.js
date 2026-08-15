@@ -7,7 +7,7 @@ const { buildRevisionCatalog, bundleRevisionResults } = require('./revision-bund
 const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
-const BUILD_VERSION = '0.54.30';
+const BUILD_VERSION = '0.54.31';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -324,8 +324,9 @@ function semanticPhrasePool(results) {
 function semanticPassagePool(results, query, maximum = 8) {
   const phrases = [];
   for (const hit of results || []) {
-    const highlights = semanticPhrasePool([hit]), phrase = cleanSourceText(distillSnippet(hit.text, query, highlights, 150)).replace(/…$/, '').replace(/\s+/g, ' ').trim();
-    if (phrase.length >= 18 && phrase.length <= 160 && phrase.split(/\s+/).length <= 28 && !phrases.some(existing => existing.toLowerCase() === phrase.toLowerCase())) phrases.push(phrase);
+    const highlights = semanticPhrasePool([hit]), distilled = cleanSourceText(distillSnippet(hit.text, query, highlights, 118)).replace(/…$/, '').replace(/\s+/g, ' ').trim();
+    const phrase = (distilled.match(/^[^.!?]+[.!?]?/)?.[0] || distilled).trim();
+    if (phrase.length >= 18 && phrase.length <= 120 && phrase.split(/\s+/).length <= 22 && !phrases.some(existing => existing.toLowerCase() === phrase.toLowerCase())) phrases.push(phrase);
     if (phrases.length >= maximum) break;
   }
   return phrases;
@@ -877,7 +878,9 @@ class SemanticSearchModal extends SuggestModal {
 
 class SemanticInNoteSearch {
   constructor(app, plugin, activeEditor) {
-    this.app = app; this.plugin = plugin; this.view = activeEditor; this.editor = activeEditor.editor || null; this.file = activeEditor.file; this.leaf = activeEditor.leaf || app.workspace.activeLeaf; this.matches = []; this.current = -1; this.timer = null; this.queryVersion = 0; this.highlightName = 'gib-search-semantic-find';
+    this.app = app; this.plugin = plugin; this.view = activeEditor; this.editor = activeEditor.editor || null; this.file = activeEditor.file; this.leaf = activeEditor.leaf || app.workspace.activeLeaf; this.matches = []; this.current = -1; this.timer = null; this.queryVersion = 0;
+    this.options = { lexical: true, semantic: true, caseSensitive: false, wholeWord: false, breadth: 'balanced', ...(plugin.inNoteSearchOptions || {}) };
+    this.highlightNames = { lexical: 'gib-search-lexical-find', semantic: 'gib-search-semantic-find', current: 'gib-search-current-find' };
   }
   open() {
     this.plugin.activeInNoteSearch?.close(); this.plugin.activeInNoteSearch = this;
@@ -888,8 +891,11 @@ class SemanticInNoteSearch {
     const row = this.el.createDiv({ cls: 'document-search' }), inputContainer = row.createDiv({ cls: 'search-input-container gib-in-note-find-input' });
     this.input = inputContainer.createEl('input', { type: 'search', cls: 'document-search-input', placeholder: 'Find', attr: { 'aria-label': 'Find in current file by words or meaning', autocomplete: 'off', spellcheck: 'false' } });
     const clear = inputContainer.createDiv({ cls: 'search-input-clear-button', attr: { role: 'button', tabindex: '0', 'aria-label': 'Clear search' } }); this.count = inputContainer.createSpan({ cls: 'document-search-count gib-in-note-find-count', text: '0/0' });
-    const buttons = row.createDiv({ cls: 'document-search-buttons' }), previous = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Previous match', title: 'Previous match (Shift+Enter)' } }), next = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Next match', title: 'Next match (Enter)' } }), close = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Close', title: 'Close (Esc)' } }); setIcon(previous, 'chevron-up'); setIcon(next, 'chevron-down'); setIcon(close, 'x');
+    const buttons = row.createDiv({ cls: 'document-search-buttons' }), previous = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Previous match', title: 'Previous match (Shift+Enter)' } }), next = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Next match', title: 'Next match (Enter)' } }), tune = buttons.createEl('button', { cls: 'clickable-icon document-search-button gib-in-note-find-tune', attr: { type: 'button', 'aria-label': 'Search options', title: 'Search options', 'aria-expanded': 'false' } }), close = buttons.createEl('button', { cls: 'clickable-icon document-search-button', attr: { type: 'button', 'aria-label': 'Close', title: 'Close (Esc)' } }); setIcon(previous, 'chevron-up'); setIcon(next, 'chevron-down'); setIcon(tune, 'sliders-horizontal'); setIcon(close, 'x'); this.previousButton = previous; this.nextButton = next;
+    this.buildOptions();
     const clearSearch = () => { this.input.value = ''; this.updateQuery(''); this.input.focus(); }; clear.addEventListener('click', clearSearch); clear.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); clearSearch(); } }); previous.addEventListener('click', () => this.move(-1)); next.addEventListener('click', () => this.move(1)); close.addEventListener('click', () => this.close());
+    tune.addEventListener('click', () => { const visible = this.optionsRow.hidden; this.optionsRow.hidden = !visible; tune.toggleClass('is-active', visible); tune.setAttribute('aria-expanded', String(visible)); if (!visible) this.input.focus(); });
+    for (const button of this.el.querySelectorAll('button')) button.addEventListener('mousedown', event => event.preventDefault());
     if (this.isButter) { this.butterEditor = butterEditor; this.el.addClass('is-butter-search'); this.placeButterSearch(); if (container) { this.toolbarObserver = new MutationObserver(() => { clearTimeout(this.toolbarTimer); this.toolbarTimer = window.setTimeout(() => this.placeButterSearch(), 20); }); this.toolbarObserver.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-toolbar-pos', 'data-toolbar-style'] }); } }
     else { this.nativeSearchingWasActive = this.host.hasClass('is-searching'); this.host.addClass('is-searching'); this.host.appendChild(this.el); }
     this.input.addEventListener('input', () => this.updateQuery(this.input.value.trim()));
@@ -900,8 +906,27 @@ class SemanticInNoteSearch {
     const content = this.host.querySelector('.cm-content, .ProseMirror'); if (content) this.observer.observe(content, { childList: true, subtree: true, characterData: true });
     this.input.focus();
   }
+  buildOptions() {
+    this.optionsRow = this.el.createDiv({ cls: 'gib-in-note-find-options' }); this.optionsRow.hidden = true;
+    const modes = this.optionsRow.createDiv({ cls: 'gib-in-note-find-modes', attr: { role: 'group', 'aria-label': 'Search methods' } });
+    this.lexicalButton = modes.createEl('button', { cls: 'gib-in-note-find-mode is-lexical', attr: { type: 'button', title: 'Find exact text matches' } }); this.lexicalButton.createSpan({ cls: 'gib-in-note-find-swatch' }); this.lexicalButton.createSpan({ text: 'Exact' });
+    this.semanticButton = modes.createEl('button', { cls: 'gib-in-note-find-mode is-semantic', attr: { type: 'button', title: 'Find related wording by meaning' } }); this.semanticButton.createSpan({ cls: 'gib-in-note-find-swatch' }); this.semanticButton.createSpan({ text: 'Meaning' });
+    const flags = this.optionsRow.createDiv({ cls: 'gib-in-note-find-flags', attr: { role: 'group', 'aria-label': 'Exact match options' } });
+    this.caseButton = flags.createEl('button', { cls: 'gib-in-note-find-flag', text: 'Aa', attr: { type: 'button', title: 'Match case', 'aria-label': 'Match case' } });
+    this.wordButton = flags.createEl('button', { cls: 'gib-in-note-find-flag', text: 'Word', attr: { type: 'button', title: 'Match whole words', 'aria-label': 'Match whole words' } });
+    const breadth = this.optionsRow.createEl('label', { cls: 'gib-in-note-find-breadth' }); breadth.createSpan({ text: 'Meaning range' }); this.breadthSelect = breadth.createEl('select', { attr: { 'aria-label': 'Semantic search breadth' } });
+    for (const [value, label] of [['precise', 'Precise'], ['balanced', 'Balanced'], ['broad', 'Broad']]) this.breadthSelect.createEl('option', { value, text: label }); this.breadthSelect.value = this.options.breadth;
+    const toggle = key => { if ((key === 'lexical' || key === 'semantic') && this.options[key] && !this.options[key === 'lexical' ? 'semantic' : 'lexical']) return; this.options[key] = !this.options[key]; this.optionsChanged(); };
+    this.lexicalButton.addEventListener('click', () => toggle('lexical')); this.semanticButton.addEventListener('click', () => toggle('semantic')); this.caseButton.addEventListener('click', () => toggle('caseSensitive')); this.wordButton.addEventListener('click', () => toggle('wholeWord')); this.breadthSelect.addEventListener('change', () => { this.options.breadth = this.breadthSelect.value; this.optionsChanged(); }); this.syncOptionsUi();
+  }
+  syncOptionsUi() {
+    for (const [element, active] of [[this.lexicalButton, this.options.lexical], [this.semanticButton, this.options.semantic], [this.caseButton, this.options.caseSensitive], [this.wordButton, this.options.wholeWord]]) { element?.toggleClass('is-active', Boolean(active)); element?.setAttribute('aria-pressed', String(Boolean(active))); }
+    for (const element of [this.caseButton, this.wordButton]) if (element) element.disabled = !this.options.lexical; if (this.breadthSelect) this.breadthSelect.disabled = !this.options.semantic;
+  }
+  optionsChanged() { this.plugin.inNoteSearchOptions = { ...this.options }; this.syncOptionsUi(); this.updateQuery(this.input.value.trim()); this.input.focus(); }
   placeButterSearch() {
     if (!this.isButter || !this.host || !this.el) return; const topToolbar = this.host.querySelector(':scope > .butter-toolbar-stack[data-toolbar-pos="top"]'), hostIsEditor = this.host.matches('.butter-editor-view'), editorSurface = hostIsEditor ? this.host.querySelector(':scope > .butter-editor-root') : this.host.querySelector(':scope > .butter-editor-view') || this.butterEditor;
+    this.el.toggleClass('is-butter-self-hosted', hostIsEditor);
     if (topToolbar) { if (topToolbar.nextElementSibling !== this.el) topToolbar.insertAdjacentElement('afterend', this.el); }
     else if (hostIsEditor) { if (this.host.firstElementChild !== this.el) this.host.prepend(this.el); }
     else if (editorSurface && (this.el.parentElement !== this.host || this.el.nextElementSibling !== editorSurface)) this.host.insertBefore(this.el, editorSurface);
@@ -909,30 +934,32 @@ class SemanticInNoteSearch {
     this.el.style.setProperty('--gib-in-note-find-top', `${Math.ceil(topToolbar?.getBoundingClientRect().height || 0)}px`); if (this.observedButterToolbar !== topToolbar) { this.toolbarResizeObserver?.disconnect(); this.observedButterToolbar = topToolbar; if (topToolbar && typeof ResizeObserver === 'function') { this.toolbarResizeObserver = new ResizeObserver(() => this.placeButterSearch()); this.toolbarResizeObserver.observe(topToolbar); } }
   }
   compactPhrases(results, query, source) {
-    const candidates = [{ phrase: query, priority: 3 }, ...semanticPhrasePool(results).map(phrase => ({ phrase, priority: 2 })), ...semanticPassagePool(results, query).map(phrase => ({ phrase, priority: 1 }))].map(item => ({ ...item, phrase: cleanSourceText(item.phrase) })).filter(item => item.phrase && item.phrase.length >= (item.priority === 3 ? 1 : 3) && item.phrase.length <= 160 && (item.priority !== 2 || item.phrase.split(/\s+/).length <= 3));
-    const byPhrase = new Map(); for (const item of candidates) { const key = item.phrase.toLowerCase(), previous = byPhrase.get(key); if (!previous || item.priority > previous.priority) byPhrase.set(key, item); } const unique = [...byPhrase.values()].sort((a, b) => b.priority - a.priority || b.phrase.length - a.phrase.length).map(item => item.phrase); this.highlightPhrases = unique;
+    const tuning = this.semanticTuning(), candidates = [...(this.options.lexical ? [{ phrase: query, priority: 3, kind: 'lexical' }] : []), ...(this.options.semantic ? semanticPhrasePool(results).map(phrase => ({ phrase, priority: 2, kind: 'semantic' })) : []), ...(this.options.semantic ? semanticPassagePool(results, query, tuning.maxPassages).map(phrase => ({ phrase, priority: 1, kind: 'semantic' })) : [])].map(item => ({ ...item, phrase: cleanSourceText(item.phrase) })).filter(item => item.phrase && item.phrase.length >= (item.priority === 3 ? 1 : 3) && item.phrase.length <= 120 && (item.priority !== 2 || item.phrase.split(/\s+/).length <= 3));
+    const byPhrase = new Map(); for (const item of candidates) { const key = item.phrase.toLowerCase(), previous = byPhrase.get(key); if (!previous || item.priority > previous.priority) byPhrase.set(key, item); } const unique = [...byPhrase.values()].sort((a, b) => b.priority - a.priority || b.phrase.length - a.phrase.length); this.highlightPhrases = unique;
     const occupied = []; const matches = [];
-    for (const phrase of unique) {
-      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); const regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
-      for (const match of source.matchAll(regex)) { const from = match.index, to = from + match[0].length; if (occupied.some(range => from < range.to && to > range.from)) continue; occupied.push({ from, to }); matches.push({ from, to, text: match[0] }); }
+    for (const candidate of unique) {
+      const regex = this.matchRegex(candidate);
+      for (const match of source.matchAll(regex)) { const from = match.index, to = from + match[0].length; if (occupied.some(range => from < range.to && to > range.from)) continue; occupied.push({ from, to }); matches.push({ from, to, text: match[0], kind: candidate.kind }); }
     }
     return matches.sort((a, b) => a.from - b.from);
   }
+  matchRegex(candidate) { const escaped = candidate.phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), bounded = candidate.kind === 'semantic' || this.options.wholeWord, pattern = bounded ? `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])` : escaped, insensitive = candidate.kind === 'semantic' || !this.options.caseSensitive; return new RegExp(pattern, `gu${insensitive ? 'i' : ''}`); }
+  semanticTuning() { const presets = { precise: { threshold: .07, maxPhrases: 3, maxPassages: 3, limit: 120 }, balanced: { threshold: 0, maxPhrases: 5, maxPassages: 5, limit: 220 }, broad: { threshold: -.06, maxPhrases: 8, maxPassages: 8, limit: 320 } }; return presets[this.options.breadth] || presets.balanced; }
   async sourceText() { return this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue(); }
   updateQuery(query) {
     const version = ++this.queryVersion; clearTimeout(this.timer); this.count?.removeClass('is-searching');
     if (!query) { this.matches = []; this.current = -1; this.highlightPhrases = []; this.updateCount(); this.clearHighlights(); return; }
     this.refreshMatches(query, [], version, false);
-    if (query.length >= 2) { this.count?.addClass('is-searching'); this.count?.setAttribute('title', 'Finding related wording by meaning'); this.timer = window.setTimeout(() => this.searchSemantically(query, version), 220); }
+    if (this.options.semantic && query.length >= 2) { this.count?.addClass('is-searching'); this.count?.setAttribute('title', 'Finding related wording by meaning'); this.timer = window.setTimeout(() => this.searchSemantically(query, version), 180); }
   }
   async refreshMatches(query, results, version, preserveCurrent = false) {
     const source = await this.sourceText(); if (version !== this.queryVersion || !this.el?.isConnected) return;
-    const previousPosition = this.current, previous = preserveCurrent ? this.matches[this.current] : null; this.matches = this.compactPhrases(results, query, source); const previousIndex = previous ? this.matches.findIndex(match => match.from === previous.from && match.to === previous.to) : -1; this.current = this.matches.length ? previousIndex >= 0 ? previousIndex : preserveCurrent ? Math.min(Math.max(0, previousPosition), this.matches.length - 1) : 0 : -1; this.paintHighlights(); this.updateCount(); if (!preserveCurrent && this.current >= 0) this.revealCurrent();
+    const previousPosition = this.current, previous = preserveCurrent ? this.matches[this.current] : null; this.matches = this.compactPhrases(results, query, source); const previousIndex = previous ? this.matches.findIndex(match => (Number.isFinite(previous.from) && match.from === previous.from && match.to === previous.to) || (match.kind === previous.kind && match.text.toLocaleLowerCase() === previous.text?.toLocaleLowerCase())) : -1; this.current = this.matches.length ? previousIndex >= 0 ? previousIndex : preserveCurrent ? Math.min(Math.max(0, previousPosition), this.matches.length - 1) : 0 : -1; this.paintHighlights(); this.updateCount(); if (!preserveCurrent && this.current >= 0) this.revealCurrent();
   }
   async searchSemantically(query, version) {
     try {
-      const tweaks = activeTweaks(this.plugin), options = { scoreWindow: 1, semanticHighlights: true, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: 5, file: this.file.path };
-      const results = await this.plugin.search.search(query, 250, 0, options); await this.refreshMatches(query, results, version, true);
+      const tweaks = activeTweaks(this.plugin), tuning = this.semanticTuning(), adjust = value => Math.max(0, Math.min(1, Number(value) + tuning.threshold)), options = { scoreWindow: 1, semanticHighlights: true, resultMinScore: adjust(tweaks.highlightResultMinScore), singleWordMinScore: adjust(tweaks.highlightSingleWordMinScore), phraseMinScore: adjust(tweaks.highlightPhraseMinScore), maxPhrases: tuning.maxPhrases, file: this.file.path };
+      const results = await this.plugin.search.search(query, tuning.limit, 0, options); await this.refreshMatches(query, results, version, true);
     } catch (error) { if (version === this.queryVersion) { this.count?.setAttribute('title', 'Exact matches shown; semantic matching is not currently available'); this.plugin.logDiagnostic(`In-file semantic enrichment unavailable: ${error.message}`); } }
     finally { if (version === this.queryVersion) { this.count?.removeClass('is-searching'); this.updateCount(); } }
   }
@@ -948,7 +975,7 @@ class SemanticInNoteSearch {
     const match = this.matches[this.current]; if (!match) return;
     if (match.range) {
       const element = match.range.startContainer.parentElement; element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      if (globalThis.CSS?.highlights && typeof globalThis.Highlight === 'function') CSS.highlights.set(`${this.highlightName}-current`, new Highlight(match.range));
+      if (globalThis.CSS?.highlights && typeof globalThis.Highlight === 'function') CSS.highlights.set(this.highlightNames.current, new Highlight(match.range));
       return;
     }
     const from = this.offsetToPos(match.from), to = this.offsetToPos(match.to);
@@ -956,26 +983,27 @@ class SemanticInNoteSearch {
     if (typeof this.editor?.scrollIntoView === 'function') this.editor.scrollIntoView({ from, to }, true);
     window.setTimeout(() => this.paintHighlights(), 60);
   }
-  updateCount() { if (this.count) { const current = this.matches.length ? this.current + 1 : 0; this.count.setText(`${current}/${this.matches.length}`); this.count.setAttribute('aria-label', `${current} of ${this.matches.length} search matches`); this.input?.toggleClass('mod-no-match', Boolean(this.input.value && !this.matches.length && !this.count.hasClass('is-searching'))); } }
+  updateCount() { if (this.count) { const current = this.matches.length ? this.current + 1 : 0; this.count.setText(`${current}/${this.matches.length}`); this.count.setAttribute('aria-label', `${current} of ${this.matches.length} search matches`); this.input?.toggleClass('mod-no-match', Boolean(this.input.value && !this.matches.length && !this.count.hasClass('is-searching'))); this.previousButton?.toggleAttribute('disabled', !this.matches.length); this.nextButton?.toggleAttribute('disabled', !this.matches.length); } }
   paintHighlights() {
     if (!globalThis.CSS?.highlights || typeof globalThis.Highlight !== 'function' || !this.el?.isConnected) return;
+    CSS.highlights.delete(this.highlightNames.current);
     const root = this.host?.querySelector('.cm-content, .ProseMirror'); if (!root) return;
-    const phrases = this.highlightPhrases || [], textNodes = []; let value = ''; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let node;
+    const candidates = this.highlightPhrases || [], textNodes = []; let value = ''; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let node;
     while ((node = walker.nextNode())) { const text = node.nodeValue || ''; if (!text) continue; textNodes.push({ node, from: value.length, to: value.length + text.length }); value += text; }
-    const occupied = [], ranges = [], domMatches = [];
-    for (const phrase of phrases) {
-      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
+    const occupied = [], ranges = { lexical: [], semantic: [] }, domMatches = [];
+    for (const candidate of candidates) {
+      const regex = this.matchRegex(candidate);
       for (const match of value.matchAll(regex)) {
         const from = match.index, to = from + match[0].length; if (occupied.some(item => from < item.to && to > item.from)) continue;
         const first = textNodes.find(item => from >= item.from && from < item.to), last = [...textNodes].reverse().find(item => to > item.from && to <= item.to); if (!first || !last) continue;
-        const range = new Range(); range.setStart(first.node, from - first.from); range.setEnd(last.node, to - last.from); occupied.push({ from, to }); ranges.push(range); domMatches.push({ range, text: match[0] });
+        const range = new Range(); range.setStart(first.node, from - first.from); range.setEnd(last.node, to - last.from); occupied.push({ from, to }); ranges[candidate.kind].push(range); domMatches.push({ range, text: match[0], kind: candidate.kind });
       }
     }
     domMatches.sort((a, b) => a.range.compareBoundaryPoints(Range.START_TO_START, b.range));
-    CSS.highlights.set(this.highlightName, new Highlight(...ranges));
-    if (this.isButter) { const previous = this.current; this.matches = domMatches; this.current = domMatches.length ? Math.max(0, Math.min(previous < 0 ? 0 : previous, domMatches.length - 1)) : -1; this.updateCount(); const current = this.matches[this.current]; if (current?.range) CSS.highlights.set(`${this.highlightName}-current`, new Highlight(current.range)); }
+    CSS.highlights.set(this.highlightNames.lexical, new Highlight(...ranges.lexical)); CSS.highlights.set(this.highlightNames.semantic, new Highlight(...ranges.semantic));
+    if (this.isButter) { const previous = this.current; this.matches = domMatches; this.current = domMatches.length ? Math.max(0, Math.min(previous < 0 ? 0 : previous, domMatches.length - 1)) : -1; this.updateCount(); const current = this.matches[this.current]; if (current?.range) CSS.highlights.set(this.highlightNames.current, new Highlight(current.range)); }
   }
-  clearHighlights() { globalThis.CSS?.highlights?.delete(this.highlightName); globalThis.CSS?.highlights?.delete(`${this.highlightName}-current`); }
+  clearHighlights() { for (const name of Object.values(this.highlightNames)) globalThis.CSS?.highlights?.delete(name); }
   close() {
     clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
   }
