@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.54.55
+
+- Adds modifier-aware vault-search opening: Enter uses the current tab, Ctrl/Cmd+Enter creates a new tab, Shift+Enter opens a desktop window, and Alt+Enter opens a right split.
+- Preserves the selected result, best passage navigation, and revision-bundle primary-note behavior for every opening target, with safe new-tab fallbacks where windows or splits are unavailable.
+- Makes the shortcuts discoverable in the search prompt and adds regression coverage for modifier precedence, mobile fallbacks, and workspace targeting.
+
 ## 0.54.54
 
 - Recalibrates Similar Notes around representative indexed passages instead of synthetic whole-document averages, preventing broad or mixed-topic notes from gaining a generic matching centroid.

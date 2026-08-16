@@ -8,7 +8,8 @@ const { fileTypeResultIcon, resolveIconicResult } = require('./result-icons');
 const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilterPaths, updateQuickFilterSelection, visibleQuickFilters } = require('./quick-filters');
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
 const { registerCommandAlias } = require('./command-compat');
-const BUILD_VERSION = '0.54.54';
+const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } = require('./search-result-open');
+const BUILD_VERSION = '0.54.55';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -738,7 +739,9 @@ class SemanticSearchModal extends SuggestModal {
     super(app); this.plugin = plugin; this.filePath = filePath; this.activeQuickFilterIds = filePath ? new Set() : defaultQuickFilterIds(plugin, 'search'); this.debounceTimer = null; this.searchVersion = 0; this.lastResults = []; this.mapResults = []; this.lastQuery = ''; this.visibleLimit = 0; this.canLoadMore = false; this.navigationHandler = null; this.map = null; this.mapVersion = 0; this.viewAnalysisVersion = 0; this.viewId = plugin.settings.atlasHomeViewId; this.mapGenerations = Math.max(1, Math.min(3, Number(plugin.settings.searchMapGenerations) || 1)); this.assetPreviewObserver = null; this.assetPreviewIdleHandles = new Map(); this.assetPreviewGeneration = 0; this.activePdfPreviews = 0;
     const fileName = filePath ? filePath.split('/').pop().replace(/\.md$/i, '') : '';
     this.setPlaceholder(filePath ? `Search ${fileName} by words or meaning…` : 'Search vault by meaning…');
-    this.setInstructions([{ command: 'Type', purpose: 'to search' }, { command: '↑↓', purpose: 'to navigate' }, { command: '↵', purpose: 'to open' }, { command: 'esc', purpose: 'to dismiss' }]);
+    this.setInstructions(this.plugin.isMobile
+      ? [{ command: 'Type', purpose: 'to search' }, { command: 'Enter', purpose: 'to open' }, { command: 'Esc', purpose: 'to dismiss' }]
+      : [{ command: 'Enter', purpose: 'open' }, { command: 'Ctrl/Cmd+Enter', purpose: 'new tab' }, { command: 'Shift+Enter', purpose: 'new window' }, { command: 'Alt+Enter', purpose: 'right split' }, { command: 'Esc', purpose: 'dismiss' }]);
   }
   getSuggestions(query) {
     if (!query || query.trim().length < 2) { clearTimeout(this.debounceTimer); this.searchVersion++; this.viewAnalysisVersion++; const changed = Boolean(this.lastQuery); this.lastQuery = ''; this.lastResults = []; this.mapResults = []; this.resetAssetPreviews(); if (changed) { this.map?.endQuery(); window.setTimeout(() => this.updateMap(), 0); } return []; }
@@ -901,12 +904,27 @@ class SemanticSearchModal extends SuggestModal {
       if (index < result.snippets.length - 1) snippets.createDiv({ cls: 'gib-semantic-snippet-divider' });
     });
   }
-  async onChooseSuggestion(result) {
-    await this.openResultFile(result.primaryFile || result.file, result.matchedFile && result.matchedFile !== result.primaryFile ? null : result.snippets[0]);
+  selectedSearchResult() {
+    const results = this.resultContainerEl || this.modalEl.querySelector('.prompt-results'), selectedPath = results?.querySelector('.suggestion-item.is-selected')?.dataset?.gibFile;
+    return (selectedPath ? this.lastResults.find(result => result.file === selectedPath) : null) || this.lastResults[0] || null;
   }
-  async openResultFile(filePath, best = null) {
+  async onChooseSuggestion(result, event) {
+    await this.openSuggestionResult(result, searchResultOpenMode(event));
+  }
+  async openSuggestionResult(result, mode = SEARCH_RESULT_OPEN_MODE.CURRENT) {
+    if (!result) return;
+    await this.openResultFile(result.primaryFile || result.file, result.matchedFile && result.matchedFile !== result.primaryFile ? null : result.snippets[0], mode);
+  }
+  resultLeaf(mode) {
+    const target = searchResultLeafTarget(mode, this.plugin.isMobile);
+    try { const leaf = target === 'split' ? this.app.workspace.getLeaf('split', 'vertical') : this.app.workspace.getLeaf(target); if (leaf) return leaf; }
+    catch (error) { this.plugin.logDiagnostic?.(`Could not open search result in ${mode}: ${error?.message || error}`, true); }
+    if (target !== false) { try { const leaf = this.app.workspace.getLeaf('tab'); if (leaf) return leaf; } catch {} }
+    return this.app.workspace.getLeaf(false);
+  }
+  async openResultFile(filePath, best = null, mode = SEARCH_RESULT_OPEN_MODE.CURRENT) {
     const file = this.app.vault.getAbstractFileByPath(filePath); if (!(file instanceof TFile)) return;
-    const leaf = this.app.workspace.getLeaf(); await leaf.openFile(file);
+    const leaf = this.resultLeaf(mode); if (!leaf) return; await leaf.openFile(file);
     if (Number(best?.lineStart) > 0) setTimeout(() => { const editor = leaf.view?.editor; if (!editor?.setCursor) return; editor.setCursor({ line: best.lineStart, ch: 0 }); editor.scrollIntoView({ from: { line: best.lineStart, ch: 0 }, to: { line: best.lineEnd || best.lineStart, ch: 0 } }, true); }, 100);
   }
   onOpen() {
@@ -922,6 +940,13 @@ class SemanticSearchModal extends SuggestModal {
       if (event.key === 'Tab') {
         event.preventDefault(); event.stopImmediatePropagation();
         this.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: event.shiftKey ? 'ArrowUp' : 'ArrowDown', code: event.shiftKey ? 'ArrowUp' : 'ArrowDown', bubbles: true }));
+      }
+      else if (event.key === 'Enter' && !event.isComposing) {
+        if (event.target?.closest?.('button, select, a')) return;
+        const mode = searchResultOpenMode(event); if (mode === SEARCH_RESULT_OPEN_MODE.CURRENT) return;
+        const result = this.selectedSearchResult(); if (!result) return;
+        event.preventDefault(); event.stopImmediatePropagation(); this.close();
+        void this.openSuggestionResult(result, mode).catch(error => this.plugin.reportOnce(error?.message || String(error)));
       }
     };
     this.modalEl.addEventListener('keydown', this.navigationHandler, true);
