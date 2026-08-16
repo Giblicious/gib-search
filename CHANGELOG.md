@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.54
+
+- Recalibrates Similar Notes around representative indexed passages instead of synthetic whole-document averages, preventing broad or mixed-topic notes from gaining a generic matching centroid.
+- Requires balanced, distinct passage alignment so one vague passage cannot stand in for several unrelated themes, while retaining strong focused and partial-topic relationships.
+- Discounts vault-common embedding directions and uses a bounded IDF lexical-confidence signal to break ambiguous semantic ties without replacing semantic retrieval or requiring a reindex.
+- Adds regression coverage for synthetic-average inflation, centroid reuse, and metadata/common-language-only neighbors; calibration caches remain bounded and yield cooperatively on mobile.
+
 ## 0.54.53
 
 - Stages changed files into bounded index commits, eliminating repeated whole-index and lexical rebuilds after every note during large and mobile indexing runs.

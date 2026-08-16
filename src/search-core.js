@@ -106,8 +106,8 @@ function normalizedVector(source) { const vector = Float32Array.from(source || [
 function diverseCentroids(vectors, maximum = 4) {
   const values = (vectors || []).filter(vector => vector?.length); if (!values.length) return [];
   if (values.length <= maximum) return values.map(normalizedVector);
-  const mean = new Float32Array(values[0].length); for (const vector of values) for (let dimension = 0; dimension < mean.length; dimension++) mean[dimension] += vector[dimension];
-  const selected = [normalizedVector(mean)], remaining = values.map(normalizedVector);
+  const remaining = values.map(normalizedVector), mean = new Float32Array(remaining[0].length); for (const vector of remaining) for (let dimension = 0; dimension < mean.length; dimension++) mean[dimension] += vector[dimension]; const center = normalizedVector(mean);
+  let representativeIndex = 0, representativeScore = -Infinity; for (let index = 0; index < remaining.length; index++) { const score = dotVector(remaining[index], center); if (score > representativeScore) { representativeScore = score; representativeIndex = index; } } const selected = [remaining.splice(representativeIndex, 1)[0]];
   while (selected.length < maximum && remaining.length) {
     let bestIndex = 0, bestDistance = -1;
     for (let index = 0; index < remaining.length; index++) { const similarity = Math.max(...selected.map(value => dotVector(value, remaining[index]))), distance = 1 - similarity; if (distance > bestDistance) { bestDistance = distance; bestIndex = index; } }
@@ -116,11 +116,16 @@ function diverseCentroids(vectors, maximum = 4) {
   return selected;
 }
 
+function uniqueCentroidAlignment(scores) {
+  const rows = scores.length, columns = scores[0]?.length || 0, transposed = rows > columns, sourceLength = Math.min(rows, columns), targetLength = Math.max(rows, columns), scoreAt = (source, target) => transposed ? scores[target][source] : scores[source][target]; if (!sourceLength) return -1;
+  if (sourceLength <= 6 && targetLength <= 8) { let best = -Infinity; const visit = (index, used, total) => { if (index === sourceLength) { best = Math.max(best, total); return; } for (let target = 0; target < targetLength; target++) if (!used.has(target)) { used.add(target); visit(index + 1, used, total + scoreAt(index, target)); used.delete(target); } }; visit(0, new Set(), 0); return best / sourceLength; }
+  const pairs = []; for (let source = 0; source < sourceLength; source++) for (let target = 0; target < targetLength; target++) pairs.push({ source, target, score: scoreAt(source, target) }); pairs.sort((a, b) => b.score - a.score); const sourceUsed = new Set(), targetUsed = new Set(); let total = 0; for (const pair of pairs) { if (sourceUsed.has(pair.source) || targetUsed.has(pair.target)) continue; sourceUsed.add(pair.source); targetUsed.add(pair.target); total += pair.score; if (sourceUsed.size === sourceLength) break; } return total / sourceLength;
+}
+
 function centroidSimilarity(first, second) {
   if (!first?.length || !second?.length) return -1;
-  const directional = (source, target) => source.reduce((sum, vector) => sum + Math.max(...target.map(other => dotVector(vector, other))), 0) / source.length;
-  const coverage = (directional(first, second) + directional(second, first)) / 2, peak = Math.max(...first.flatMap(vector => second.map(other => dotVector(vector, other))));
-  return Math.max(-1, Math.min(1, coverage * .72 + peak * .28));
+  const scores = first.map(vector => second.map(other => dotVector(vector, other))), forward = scores.reduce((sum, row) => sum + Math.max(...row), 0) / first.length, reverse = second.reduce((sum, _, column) => sum + Math.max(...scores.map(row => row[column])), 0) / second.length, balancedCoverage = forward > 0 && reverse > 0 ? 2 * forward * reverse / (forward + reverse) : (forward + reverse) / 2, alignment = uniqueCentroidAlignment(scores), peak = Math.max(...scores.flat());
+  return Math.max(-1, Math.min(1, balancedCoverage * .55 + alignment * .35 + peak * .1));
 }
 
 function reciprocalRankFusion(rankings, options = {}) {
