@@ -186,9 +186,12 @@ function yieldForIdle(timeout = 500) {
 export function indexingHardwareProfile(mobile = false, hardwareConcurrency = null, deviceMemory = null) {
   const detectedCores = Number(hardwareConcurrency ?? (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 0)), cores = Math.max(1, Math.min(64, Number.isFinite(detectedCores) && detectedCores > 0 ? Math.floor(detectedCores) : mobile ? 2 : 8));
   const detectedMemory = Number(deviceMemory ?? (typeof navigator !== 'undefined' ? navigator.deviceMemory : 0)), memoryGiB = Number.isFinite(detectedMemory) && detectedMemory > 0 ? detectedMemory : mobile ? 4 : 8;
-  if (mobile) return { cores, memoryGiB, wasmThreads: 1, maximumEmbedBatchSize: 1, maximumBatchCharacters: 2400, checkpointFiles: memoryGiB <= 4 ? 12 : 18, checkpointMs: 75000, metadataYieldEvery: 1 };
+  if (mobile) return { cores, memoryGiB, wasmThreads: 1, maximumEmbedBatchSize: 1, maximumBatchCharacters: 2400, checkpointFiles: memoryGiB <= 4 ? 12 : 18, checkpointMs: 75000, metadataYieldEvery: 1, interactiveYieldMs: 1200 };
   const wasmThreads = Math.max(1, Math.min(12, Math.floor(cores * .625))), memoryBatchLimit = memoryGiB <= 4 ? 6 : memoryGiB <= 6 ? 10 : 16, maximumEmbedBatchSize = Math.max(2, Math.min(memoryBatchLimit, Math.round(wasmThreads * 1.5)));
-  return { cores, memoryGiB, wasmThreads, maximumEmbedBatchSize, maximumBatchCharacters: Math.max(9600, Math.min(32000, maximumEmbedBatchSize * 2200)), checkpointFiles: cores >= 12 ? 384 : 256, checkpointMs: 120000, metadataYieldEvery: 96 };
+  return { cores, memoryGiB, wasmThreads, maximumEmbedBatchSize, maximumBatchCharacters: Math.max(9600, Math.min(32000, maximumEmbedBatchSize * 2200)), checkpointFiles: cores >= 12 ? 384 : 256, checkpointMs: 120000, metadataYieldEvery: 96, interactiveYieldMs: 450 };
+}
+export function orderIndexEntriesForCheckpoint(entries) {
+  return [...entries].sort((first, second) => Number(Boolean(second.filenameOnly)) - Number(Boolean(first.filenameOnly)) || indexBucket(first.file?.path || first.file) - indexBucket(second.file?.path || second.file) || String(first.file?.path || first.file || '').localeCompare(String(second.file?.path || second.file || '')));
 }
 function sampleEvenly(items, maximum) { if (items.length <= maximum) return items; return Array.from({ length: maximum }, (_, index) => items[Math.round(index * (items.length - 1) / (maximum - 1))]); }
 export function mobileBootstrapEmbeddingBatches(entries, maximum = 16) {
@@ -601,7 +604,8 @@ export class MobileSearchRuntime {
     if (this.indexingCancelled()) return;
     const quietWindow = this.isMobile ? 1200 : 260;
     while (!document.hidden && Date.now() - this.lastUserActivityAt < quietWindow && !this.indexingCancelled()) await sleep(this.isMobile ? Math.min(quietWindow, 120) : 32);
-    while ((this.liveRunning || this.livePending) && !this.indexingCancelled()) await sleep(this.isMobile ? 80 : 40);
+    const interactiveStartedAt = Date.now(), interactiveBudget = Math.max(0, Number(this.indexingConfig?.interactiveYieldMs) || (this.isMobile ? 1200 : 450));
+    while ((this.liveRunning || this.livePending) && !this.indexingCancelled() && Date.now() - interactiveStartedAt < interactiveBudget) await sleep(this.isMobile ? 80 : 40);
     if (this.indexingCancelled()) return;
     const scheduling = typeof navigator !== 'undefined' ? navigator.scheduling : null;
     if (this.isMobile) {
@@ -615,7 +619,8 @@ export class MobileSearchRuntime {
   async mobileBootstrapTurn() {
     if (typeof document === 'undefined') { await yieldToUi(); return; }
     while (!document.hidden && Date.now() - this.lastUserActivityAt < 160) await sleep(32);
-    while (this.liveRunning || this.livePending) await sleep(40);
+    const interactiveStartedAt = Date.now(), interactiveBudget = Math.max(0, Number(this.indexingConfig?.interactiveYieldMs) || (this.isMobile ? 1200 : 450));
+    while ((this.liveRunning || this.livePending) && Date.now() - interactiveStartedAt < interactiveBudget) await sleep(40);
     if (navigator?.scheduling?.isInputPending?.({ includeContinuous: true })) await sleep(24);
     if (!document.hidden) await yieldToUi(); else await sleep(0);
   }
@@ -1038,16 +1043,16 @@ export class MobileSearchRuntime {
     if (!prepared.length) {
       const needsSuccessCommit = !failedFiles.length && !this.lastSuccessfulIndexAt; this.staleFiles = failedFiles.length; if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now(); if (needsSuccessCommit) { this.indexDirty = true; await this.saveIndex(!this.isMobile && deleted.size > 0); } this.indexStable = !failedFiles.length; this.currentFile = ''; this.performanceStats.lastIndexMs = Date.now() - scanStartedAt; this.recordPerformance('indexUpdateMs', this.performanceStats.lastIndexMs); this.setState('ready', failedFiles.length ? `Search ready; ${failedFiles.length} file pending retry` : `Ready (${this.vaultFiles} files, ${this.meta.length} records)`); if (failedFiles.length) { this.scheduleIndexRetry(failedFiles.map(item => item.file)); this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? 'file' : 'files'} after a temporary failure`); } this.scheduleWritingProfileSync(); return;
     }
-    this.totalFiles = Math.max(1, prepared.length); this.processedFiles = 0; let filesSinceCheckpoint = 0, checkpointAt = Date.now(), cursor = 0; const staged = new Map();
+    const orderedPrepared = orderIndexEntriesForCheckpoint(prepared); this.totalFiles = Math.max(1, orderedPrepared.length); this.processedFiles = 0; let filesSinceCheckpoint = 0, checkpointAt = Date.now(), cursor = 0; const staged = new Map();
     const stage = replacements => { for (const [file, replacement] of replacements || []) staged.set(file, replacement); filesSinceCheckpoint += Number(replacements?.size || 0); this.performanceStats.writtenFiles += Number(replacements?.size || 0); };
     const commitStaged = async persist => { if (staged.size) { const replacements = new Map(staged); staged.clear(); this.replaceIndexedFiles(replacements); this.queueIndexSave(); } if (persist && (this.indexDirty || this.indexSaveRun)) await this.flushIndexSave(); };
     this.activeIndexCheckpoint = () => commitStaged(true);
     this.plugin.logDiagnostic(`${this.isMobile ? 'Mobile' : 'Desktop'} indexing will stage up to ${this.indexingConfig.checkpointFiles} files per resumable checkpoint${this.isMobile ? '' : ` and use adaptive inference batches of up to ${this.indexingConfig.maximumEmbedBatchSize} passages`}`);
-    try { while (cursor < prepared.length) {
+    try { while (cursor < orderedPrepared.length) {
       if (this.cancelRequested || !this.enabled || this.mobileBootstrapPending) { if (this.mobileBootstrapPending) { this.currentFile = ''; this.setState('indexing', 'Switching to the synced mobile bootstrap package…'); } return; }
-      const checkpointCapacity = Math.max(1, this.indexingConfig.checkpointFiles - filesSinceCheckpoint), groupSize = this.isMobile ? 1 : Math.min(prepared.length - cursor, checkpointCapacity, Math.max(6, Math.min(16, this.indexingConfig.maximumEmbedBatchSize))), group = prepared.slice(cursor, cursor + groupSize), materialized = [];
+      const checkpointCapacity = Math.max(1, this.indexingConfig.checkpointFiles - filesSinceCheckpoint), filenameOnlyGroup = Boolean(orderedPrepared[cursor]?.filenameOnly), desktopGroupMaximum = filenameOnlyGroup ? 256 : Math.max(6, Math.min(16, this.indexingConfig.maximumEmbedBatchSize)), groupSize = this.isMobile ? 1 : Math.min(orderedPrepared.length - cursor, checkpointCapacity, desktopGroupMaximum), group = orderedPrepared.slice(cursor, cursor + groupSize), materialized = [];
       for (let groupIndex = 0; groupIndex < group.length; groupIndex++) {
-        const entry = group[groupIndex], position = cursor + groupIndex; this.currentFile = entry.file.path; this.setIndexProgress(`Preparing ${position + 1} of ${prepared.length}: ${entry.file.path}`);
+        const entry = group[groupIndex], position = cursor + groupIndex; this.currentFile = entry.file.path; this.setIndexProgress(`Preparing ${position + 1} of ${orderedPrepared.length}: ${entry.file.path}`);
         try {
           const ready = await this.materializeIndexEntry(entry, force);
           if (ready.unchanged) { entry.previous.forEach(item => { item.mtime = entry.file.stat.mtime; item.semanticMetadata = ready.semanticMetadata; }); metadataTouched.add(entry.file.path); this.markIndexFilesDirty([entry.file.path]); this.queueIndexSave(); }
@@ -1056,21 +1061,21 @@ export class MobileSearchRuntime {
         if (this.isMobile) await this.indexingTurn();
       }
       if (materialized.length) {
-        this.currentFile = materialized.length === 1 ? materialized[0].file.path : `${materialized[0].file.path} (+${materialized.length - 1} files)`; this.setIndexProgress(`Indexing ${cursor + 1}–${Math.min(prepared.length, cursor + group.length)} of ${prepared.length}`);
+        this.currentFile = materialized.length === 1 ? materialized[0].file.path : `${materialized[0].file.path} (+${materialized.length - 1} files)`; this.setIndexProgress(`Indexing ${cursor + 1}–${Math.min(orderedPrepared.length, cursor + group.length)} of ${orderedPrepared.length}`);
         try {
-          const replacements = await this.materializedIndexReplacements(materialized); if (!replacements) { if (this.mobileIndexBlocked) { this.staleFiles = Math.max(1, prepared.length - cursor); this.currentFile = ''; this.indexStable = false; this.setState(this.vectors.length ? 'ready' : 'error', this.vectors.length ? 'Search ready; mobile indexing paused because background inference is unavailable' : 'Mobile indexing requires background-worker support on this device'); } return; }
+          const replacements = await this.materializedIndexReplacements(materialized); if (!replacements) { if (this.mobileIndexBlocked) { this.staleFiles = Math.max(1, orderedPrepared.length - cursor); this.currentFile = ''; this.indexStable = false; this.setState(this.vectors.length ? 'ready' : 'error', this.vectors.length ? 'Search ready; mobile indexing paused because background inference is unavailable' : 'Mobile indexing requires background-worker support on this device'); } return; }
           stage(replacements);
         } catch (error) {
           if (materialized.length === 1) { failedFiles.push({ file: materialized[0].file.path, message: error?.message || String(error) }); this.plugin.logDiagnostic(`Could not index ${materialized[0].file.path}: ${error?.message || error}`, true); }
           else for (const entry of materialized) try { const replacements = await this.materializedIndexReplacements([entry]); if (replacements) stage(replacements); } catch (itemError) { failedFiles.push({ file: entry.file.path, message: itemError?.message || String(itemError) }); this.plugin.logDiagnostic(`Could not index ${entry.file.path}: ${itemError?.message || itemError}`, true); }
         }
       }
-      cursor += group.length; this.processedFiles = cursor; this.staleFiles = Math.max(failedFiles.length, prepared.length - cursor + failedFiles.length);
-      if (filesSinceCheckpoint >= this.indexingConfig.checkpointFiles || Date.now() - checkpointAt >= this.indexingConfig.checkpointMs) { await commitStaged(true); this.plugin.logDiagnostic(`Saved resumable index checkpoint after ${this.processedFiles} of ${prepared.length} files`); filesSinceCheckpoint = 0; checkpointAt = Date.now(); }
+      cursor += group.length; this.processedFiles = cursor; this.staleFiles = Math.max(failedFiles.length, orderedPrepared.length - cursor + failedFiles.length);
+      if (filesSinceCheckpoint >= this.indexingConfig.checkpointFiles || Date.now() - checkpointAt >= this.indexingConfig.checkpointMs) { await commitStaged(true); this.plugin.logDiagnostic(`Saved resumable index checkpoint after ${this.processedFiles} of ${orderedPrepared.length} files`); filesSinceCheckpoint = 0; checkpointAt = Date.now(); }
       await this.indexingTurn();
     } } finally { this.activeIndexCheckpoint = null; if (staged.size) await commitStaged(this.cancelRequested || !this.enabled || Boolean(this.mobileBootstrapPending)); }
     if (this.cancelRequested || !this.enabled) return;
-    if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now(); this.staleFiles = failedFiles.length; this.currentFile = ''; this.processedFiles = prepared.length - failedFiles.length; this.indexStable = !failedFiles.length;
+    if (!failedFiles.length) this.lastSuccessfulIndexAt = Date.now(); this.staleFiles = failedFiles.length; this.currentFile = ''; this.processedFiles = orderedPrepared.length - failedFiles.length; this.indexStable = !failedFiles.length;
     if (force || full || this.performanceStats.writtenFiles >= this.indexingConfig.checkpointFiles) await this.saveIndex(true); else if (this.indexDirty) this.queueIndexSave(undefined, !this.isMobile && this.performanceStats.writtenFiles > 0);
     this.performanceStats.lastIndexMs = Date.now() - scanStartedAt; this.performanceStats.indexedFilesPerSecond = this.performanceStats.writtenFiles / Math.max(.001, this.performanceStats.lastIndexMs / 1000); this.recordPerformance('indexUpdateMs', this.performanceStats.lastIndexMs);
     if (failedFiles.length) { this.setState('ready', `Search ready; ${failedFiles.length} ${failedFiles.length === 1 ? 'file' : 'files'} pending retry`); this.scheduleIndexRetry(failedFiles.map(item => item.file)); this.plugin.reportOnce(`Indexing will retry ${failedFiles.length} ${failedFiles.length === 1 ? 'file' : 'files'} after a temporary failure`); }
@@ -1084,8 +1089,8 @@ export class MobileSearchRuntime {
     return true;
   }
   stop() { this.cancelRequested = true; this.enabled = false; clearTimeout(this.updateTimer); this.updateTimer = null; clearTimeout(this.mobileBootstrapTimer); this.mobileBootstrapTimer = null; (this.activeIndexCheckpoint?.() || this.flushIndexSave())?.catch?.(() => {}); this.stopWritingProfileIndex(); this.flushHighlightPhraseCache(); if (this.livePending) { this.livePending.reject(staleSearchError()); this.livePending = null; } this.setState('offline', 'Semantic search is paused'); return true; }
-  restart() { this.stop(); const resume = () => this.startPromise ? setTimeout(resume, 100) : this.start(); resume(); return true; }
-  rebuild() { this.stop(); const rebuild = () => { if (this.startPromise) return setTimeout(rebuild, 100); this.meta = []; this.vectors = []; this.highlightPhraseVectors.clear(); this.inFileUnitCache.clear(); this.analysisCache.clear(); this.packedVectors = new Float32Array(); this.queryCache.clear(); this.resultCache.clear(); this.conceptFacetCache.clear(); this.graphEvidenceCache = null; this.invalidateGraphEvidence(); this.topicBasisCache = null; this.refreshLexical(); this.enabled = true; this.cancelRequested = false; this.startPromise = (async () => { try { await this.updateIndex(true); if (this.plugin.atlasEnabled) this.warmGraphEvidence(); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); }; rebuild(); return true; }
+  restart() { this.stop(); this.plugin.desktopEmbedder?.stop?.(); const resume = () => this.startPromise ? setTimeout(resume, 100) : this.start(); resume(); return true; }
+  rebuild() { this.stop(); this.plugin.desktopEmbedder?.stop?.(); const rebuild = () => { if (this.startPromise) return setTimeout(rebuild, 100); this.meta = []; this.vectors = []; this.highlightPhraseVectors.clear(); this.inFileUnitCache.clear(); this.analysisCache.clear(); this.packedVectors = new Float32Array(); this.queryCache.clear(); this.resultCache.clear(); this.conceptFacetCache.clear(); this.graphEvidenceCache = null; this.invalidateGraphEvidence(); this.topicBasisCache = null; this.refreshLexical(); this.enabled = true; this.cancelRequested = false; this.startPromise = (async () => { try { await this.updateIndex(true); if (this.plugin.atlasEnabled) this.warmGraphEvidence(); } catch (error) { this.setState('error', error.message); } finally { this.startPromise = null; } })(); }; rebuild(); return true; }
   watch() {
     const noteActivity = () => { this.lastUserActivityAt = Date.now(); };
     if (typeof document !== 'undefined' && this.plugin.registerDomEvent) { this.plugin.registerDomEvent(document, 'keydown', noteActivity, true); this.plugin.registerDomEvent(document, 'pointerdown', noteActivity, true); this.plugin.registerDomEvent(document, 'touchstart', noteActivity, { capture: true, passive: true }); this.plugin.registerDomEvent(document, 'wheel', noteActivity, { capture: true, passive: true }); this.plugin.registerDomEvent(document, 'visibilitychange', () => { if (document.hidden) (this.activeIndexCheckpoint?.() || this.flushIndexSave()).catch(error => this.plugin.logDiagnostic?.(`Could not checkpoint before suspension: ${error?.message || error}`, true)); else noteActivity(); }); }

@@ -10,7 +10,7 @@ const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, wr
 const { registerCommandAlias } = require('./command-compat');
 const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } = require('./search-result-open');
 const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-index-store');
-const BUILD_VERSION = '0.54.56';
+const BUILD_VERSION = '0.54.57';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -164,7 +164,7 @@ class FileModelCache {
   }
 }
 class DesktopEmbedder {
-  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.disabled = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; }
+  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.disabled = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; this.forceWasmUntil = 0; this.lastWorkerTimeoutAt = 0; this.workerTimeoutCount = 0; }
   start() {
     if (this.worker) return true; if (this.disabled || typeof window === 'undefined' || typeof window.Worker !== 'function' || typeof DecompressionStream !== 'function') return false;
     try {
@@ -173,14 +173,15 @@ class DesktopEmbedder {
       worker.onmessage = event => this.receive(event.data);
       worker.onerror = event => this.fail(new Error(event.message || 'Background embedding worker failed'));
       worker.onmessageerror = () => this.fail(new Error('Background embedding worker sent an unreadable message'));
-      const indexing = this.plugin.search?.indexingConfig || {}; worker.postMessage({ type: 'init', mobile: this.plugin.isMobile, preferWebGpu: !this.plugin.isMobile, hardwareConcurrency: indexing.cores || Number(navigator?.hardwareConcurrency) || 1, wasmThreads: indexing.wasmThreads || 1, maximumEmbedBatchSize: indexing.maximumEmbedBatchSize || 2, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP }); return true;
+      const indexing = this.plugin.search?.indexingConfig || {}; worker.postMessage({ type: 'init', mobile: this.plugin.isMobile, preferWebGpu: !this.plugin.isMobile && Date.now() >= this.forceWasmUntil, hardwareConcurrency: indexing.cores || Number(navigator?.hardwareConcurrency) || 1, wasmThreads: indexing.wasmThreads || 1, maximumEmbedBatchSize: indexing.maximumEmbedBatchSize || 2, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP }); return true;
     } catch (error) { this.disabled = true; if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; this.plugin.logDiagnostic(`Background embedding worker unavailable: ${error?.message || error}`, true); return false; }
   }
   async receive(message) {
+    this.touchPendingRequests();
     if (message.type === 'cache') { await this.cache(message); return; }
     if (message.type === 'runtime-profile') { this.backend = message.backend || 'wasm'; this.dtype = message.dtype || ''; this.plugin.search?.workerRuntimeProfile?.(message); return; }
     if (message.type === 'backend-fallback') { const scope = message.scope === 'profile' ? 'Writing Profile' : 'Desktop'; this.plugin.logDiagnostic(`${scope} ${message.from || 'accelerated'} inference fell back to ${message.to || 'WASM'}: ${message.message || 'backend unavailable'}`, true); return; }
-    if (message.type === 'ready') { this.ready = true; this.plugin.search?.modelReady?.(); return; }
+    if (message.type === 'ready') { this.ready = true; this.workerTimeoutCount = 0; this.plugin.search?.modelReady?.(); return; }
     if (message.type === 'relation-ready') { this.relationReady = true; this.relationBackend = message.backend || 'wasm'; this.relationDtype = message.dtype || ''; this.plugin.logDiagnostic(`Writing Profile inference profile: ${this.relationBackend === 'webgpu' ? `WebGPU ${this.relationDtype || 'GPU'}` : `WASM ${this.relationDtype || 'q8'}`} in the prioritized background worker`); this.plugin.search?.relationActivity?.('Relationship intelligence ready'); return; }
     if (message.type === 'reranker-ready') { this.rerankerReady = true; this.plugin.logDiagnostic('In-file passage reranker ready in the prioritized background worker'); return; }
     if (message.type === 'topic-label-ready') { this.topicLabelReady = true; this.plugin.search?.topicLabelActivity?.('Topic labeler ready'); return; }
@@ -188,7 +189,7 @@ class DesktopEmbedder {
     if (message.type === 'relation-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.relationActivity?.(`Downloading relationship model: ${percent}%`); return; }
     if (message.type === 'reranker-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.modelActivity?.(`Downloading passage reranker: ${percent}%`); return; }
     if (message.type === 'progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.modelActivity?.(`Downloading ${message.file}: ${percent}%`); return; }
-    const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id);
+    const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); clearTimeout(pending.timer);
     if (message.type === 'error') pending.reject(new Error(message.message));
     else if (message.type === 'relation-result') pending.resolve(message.results || []);
     else if (message.type === 'rerank-result') pending.resolve(message.scores || []);
@@ -205,32 +206,40 @@ class DesktopEmbedder {
       }
     } catch (error) { this.worker?.postMessage({ type: 'cache-result', id: message.id, error: error?.message || String(error) }); }
   }
-  fail(error) { const worker = this.worker; this.worker = null; this.disabled = true; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); this.ready = false; this.rerankerReady = false; this.backend = 'failed'; this.dtype = ''; this.relationBackend = 'failed'; this.relationDtype = ''; this.plugin.logDiagnostic(`Background embedding worker failed: ${error.message}`, true); if (!this.plugin.isMobile) this.plugin.reportOnce(`Desktop embedding worker failed: ${error.message}`); }
+  touchPendingRequests() { const now = Date.now(); for (const pending of this.pending.values()) pending.lastActivityAt = now; }
+  request(message, timeoutMs = 120000) {
+    if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++, worker = this.worker;
+    return new Promise((resolve, reject) => {
+      const pending = { resolve, reject, type: message.type, timeoutMs: Math.max(1000, Number(timeoutMs) || 120000), lastActivityAt: Date.now(), timer: null };
+      const check = () => { if (this.pending.get(id) !== pending) return; const remaining = pending.timeoutMs - (Date.now() - pending.lastActivityAt); if (remaining > 0) { pending.timer = setTimeout(check, remaining); return; } this.handleRequestTimeout(worker, id, pending); };
+      pending.timer = setTimeout(check, pending.timeoutMs); this.pending.set(id, pending);
+      try { worker.postMessage({ ...message, id }); } catch (error) { clearTimeout(pending.timer); this.pending.delete(id); reject(error); }
+    });
+  }
+  handleRequestTimeout(worker, id, pending) {
+    if (worker !== this.worker || this.pending.get(id) !== pending) return; const now = Date.now(); this.workerTimeoutCount = now - this.lastWorkerTimeoutAt < 10 * 60 * 1000 ? this.workerTimeoutCount + 1 : 1; this.lastWorkerTimeoutAt = now; this.forceWasmUntil = Math.max(this.forceWasmUntil, now + 10 * 60 * 1000); const recoverable = this.workerTimeoutCount <= 1, error = new Error(`Background ${pending.type} request stopped responding for ${Math.round(pending.timeoutMs / 1000)} seconds`); error.name = 'TimeoutError'; this.fail(error, recoverable);
+  }
+  fail(error, recoverable = false) { const worker = this.worker; this.worker = null; this.disabled = !recoverable; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); } this.pending.clear(); this.ready = false; this.rerankerReady = false; this.backend = recoverable ? 'restarting' : 'failed'; this.dtype = ''; this.relationBackend = recoverable ? 'restarting' : 'failed'; this.relationDtype = ''; this.plugin.logDiagnostic(`Background embedding worker ${recoverable ? 'stalled and will restart with WASM' : 'failed'}: ${error.message}`, true); if (!this.plugin.isMobile) this.plugin.reportOnce(`Desktop embedding worker ${recoverable ? 'restarting' : 'failed'}: ${error.message}`); }
   embedBatch(texts, query = false, options = {}) {
-    if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++;
-    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'embed', id, texts, query, priority: Number(options.priority ?? (query ? 0 : 2)) }); } catch (error) { this.pending.delete(id); reject(error); } });
+    return this.request({ type: 'embed', texts, query, priority: Number(options.priority ?? (query ? 0 : 2)) }, this.plugin.isMobile ? 180000 : 120000);
   }
   warmup() {
     if (this.ready) return Promise.resolve();
     if (this.warmupPromise) return this.warmupPromise;
-    if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable'));
-    const id = this.nextId++;
-    const run = new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'warmup', id }); } catch (error) { this.pending.delete(id); reject(error); } });
+    const run = this.request({ type: 'warmup' }, 180000);
     const tracked = run.then(value => { if (this.warmupPromise === tracked) this.warmupPromise = null; return value; }, error => { if (this.warmupPromise === tracked) this.warmupPromise = null; throw error; }); this.warmupPromise = tracked;
     return this.warmupPromise;
   }
   embedMobileBootstrap(texts) {
-    if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++;
-    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'mobile-bootstrap', id, texts }); } catch (error) { this.pending.delete(id); reject(error); } });
+    return this.request({ type: 'mobile-bootstrap', texts }, 180000);
   }
   releaseMobileBootstrap() {
-    if (!this.worker) return Promise.resolve(); const id = this.nextId++;
-    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'release-mobile-bootstrap', id }); } catch (error) { this.pending.delete(id); reject(error); } });
+    if (!this.worker) return Promise.resolve(); return this.request({ type: 'release-mobile-bootstrap' }, 60000);
   }
-  classifyRelations(pairs, options = {}) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'relations', id, pairs, lowPriority: Boolean(options.lowPriority) }); } catch (error) { this.pending.delete(id); reject(error); } }); }
-  rerankPassages(pairs) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'rerank', id, pairs }); } catch (error) { this.pending.delete(id); reject(error); } }); }
-  generateTopicLabels(prompts) { if (!this.start()) return Promise.reject(new Error('Background embedding worker is unavailable')); const id = this.nextId++; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); try { this.worker.postMessage({ type: 'topic-labels', id, prompts }); } catch (error) { this.pending.delete(id); reject(error); } }); }
-  stop() { const worker = this.worker; this.worker = null; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) pending.reject(new Error('Desktop embedding worker stopped')); this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
+  classifyRelations(pairs, options = {}) { return this.request({ type: 'relations', pairs, lowPriority: Boolean(options.lowPriority) }, 300000); }
+  rerankPassages(pairs) { return this.request({ type: 'rerank', pairs }, 180000); }
+  generateTopicLabels(prompts) { return this.request({ type: 'topic-labels', prompts }, 600000); }
+  stop() { const worker = this.worker; this.worker = null; this.disabled = false; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('Desktop embedding worker stopped')); } this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
 }
 function activeTweaks(plugin) {
   return plugin.settings.modelTweaks.bge;

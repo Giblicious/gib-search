@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.57
+
+- Prevents a stale or hung live-search request from indefinitely freezing the vault scan; interactive search still receives priority, but indexing resumes after a short bounded yield.
+- Adds a desktop inference watchdog that recovers one stalled worker automatically with a temporary WASM fallback and makes Restart/Rebuild reset a failed worker cleanly.
+- Orders large-vault work by segmented-index bucket and processes filename-only attachments in groups of up to 256, sharply reducing checkpoint write amplification and per-file scheduler overhead.
+- Adds release-blocking coverage for stale-search liveness, attachment-first checkpoint ordering, and inference-stall recovery wiring.
+
 ## 0.54.56
 
 - Moves the desktop semantic index and diagnostic log out of the vault and into a vault-keyed device-local cache, with a fast verified migration for existing indexes so OneDrive and vault sync tools no longer process every checkpoint.
