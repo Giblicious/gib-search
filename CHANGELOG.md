@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.56
+
+- Moves the desktop semantic index and diagnostic log out of the vault and into a vault-keyed device-local cache, with a fast verified migration for existing indexes so OneDrive and vault sync tools no longer process every checkpoint.
+- Replaces whole-index desktop snapshots with 1,024 integrity-checked segments: checkpoints rewrite only buckets containing changed files, retain a complete rollback snapshot, and migrate the legacy generation atomically.
+- Omits persisted zero vectors and verbose highlight metadata for filename-only attachments, while reconstructing compatible in-memory records so PDF, image, audio, video, and other filename search remains unchanged.
+- Raises high-end desktop checkpoint intervals from 48 files or 30 seconds to 384 files or two minutes, avoids repacking every vector during intermediate checkpoints, and persists a completed-run marker after recovery.
+- Adds release-blocking coverage for incremental writes, attachment compaction, legacy migration, checksum recovery, and unchanged-bucket reuse.
+
 ## 0.54.55
 
 - Adds modifier-aware vault-search opening: Enter uses the current tab, Ctrl/Cmd+Enter creates a new tab, Shift+Enter opens a desktop window, and Alt+Enter opens a right split.

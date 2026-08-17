@@ -9,7 +9,8 @@ const { filterId, normalizePropertyRule, normalizeQuickFilters, resolveQuickFilt
 const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, writingProfileSignalState, writingProfileSummary } = require('./writing-profiles');
 const { registerCommandAlias } = require('./command-compat');
 const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } = require('./search-result-open');
-const BUILD_VERSION = '0.54.55';
+const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-index-store');
+const BUILD_VERSION = '0.54.56';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -85,8 +86,10 @@ class QuickFilterEditorModal extends Modal {
   onClose() { this.contentEl.empty(); }
 }
 function activeIndexDir(plugin) {
-  return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder);
+  return path.join(plugin.cacheRoot, 'indexes', plugin.vaultCacheKey, MODEL_PROFILES.bge.indexFolder);
 }
+function legacyVaultIndexDir(plugin) { return path.join(plugin.pluginDir, 'embeddings', MODEL_PROFILES.bge.indexFolder); }
+function activeLogDir(plugin) { return path.join(plugin.cacheRoot, 'logs', plugin.vaultCacheKey); }
 function desktopCacheRoot() {
   if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Gib Search');
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Caches', 'Gib Search');
@@ -106,36 +109,40 @@ function directoryFiles(directory, root = directory) {
   }
   return files;
 }
-function migrateDirectory(source, destination, plugin) {
+async function migrateDirectory(source, destination, plugin) {
   if (!fs.existsSync(source) || path.resolve(source) === path.resolve(destination)) return true;
   try {
-    for (const file of directoryFiles(source)) {
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    if (!fs.existsSync(destination)) try { await fs.promises.rename(source, destination); return true; } catch (error) { if (error?.code !== 'EXDEV') plugin.logDiagnostic(`Fast migration unavailable for ${source}: ${error.message}`); }
+    const files = directoryFiles(source); let copied = 0;
+    for (const file of files) {
       const from = path.join(source, file.relative), to = path.join(destination, file.relative);
       fs.mkdirSync(path.dirname(to), { recursive: true });
-      if (!fs.existsSync(to) || fs.statSync(to).size !== file.size) fs.copyFileSync(from, to);
+      await fs.promises.copyFile(from, to);
+      if (++copied % 16 === 0) await new Promise(resolve => setTimeout(resolve, 0));
     }
-    const complete = directoryFiles(source).every(file => {
+    const complete = files.every(file => {
       const target = path.join(destination, file.relative);
       return fs.existsSync(target) && fs.statSync(target).size === file.size;
     });
     if (!complete) throw new Error('destination verification failed');
-    fs.rmSync(source, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 });
+    await fs.promises.rm(source, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 });
     return true;
   } catch (error) { plugin.logDiagnostic(`Could not migrate ${source}: ${error.message}`, true); return false; }
 }
 function removeIfEmpty(directory) { try { if (fs.existsSync(directory) && fs.readdirSync(directory).length === 0) fs.rmdirSync(directory); } catch {} }
-function restoreDesktopData(plugin) {
-  const externalIndex = path.join(plugin.cacheRoot, 'indexes', plugin.vaultCacheKey, MODEL_PROFILES.bge.indexFolder);
+async function restoreDesktopData(plugin) {
+  const externalIndex = activeIndexDir(plugin);
   try { const status = JSON.parse(fs.readFileSync(path.join(externalIndex, 'status.json'), 'utf8')); if (Number(status.pid) > 0) process.kill(Number(status.pid)); } catch {}
-  migrateDirectory(path.join(plugin.cacheRoot, 'models'), path.join(plugin.pluginDir, 'models'), plugin);
-  if (plugin.legacyModelsPath && path.isAbsolute(plugin.legacyModelsPath)) migrateDirectory(plugin.legacyModelsPath, path.join(plugin.pluginDir, 'models'), plugin);
-  migrateDirectory(externalIndex, activeIndexDir(plugin), plugin);
-  migrateDirectory(path.join(plugin.cacheRoot, 'logs', plugin.vaultCacheKey), path.join(plugin.pluginDir, 'logs'), plugin);
-  migrateDirectory(path.join(plugin.pluginDir, 'worker', 'models'), path.join(plugin.pluginDir, 'models'), plugin);
+  await migrateDirectory(path.join(plugin.cacheRoot, 'models'), path.join(plugin.pluginDir, 'models'), plugin);
+  if (plugin.legacyModelsPath && path.isAbsolute(plugin.legacyModelsPath)) await migrateDirectory(plugin.legacyModelsPath, path.join(plugin.pluginDir, 'models'), plugin);
+  await migrateDirectory(legacyVaultIndexDir(plugin), externalIndex, plugin);
+  await migrateDirectory(path.join(plugin.pluginDir, 'logs'), activeLogDir(plugin), plugin);
+  await migrateDirectory(path.join(plugin.pluginDir, 'worker', 'models'), path.join(plugin.pluginDir, 'models'), plugin);
   for (const obsolete of [path.join(plugin.cacheRoot, 'runtime', plugin.vaultCacheKey), path.join(plugin.pluginDir, 'runtime'), path.join(plugin.pluginDir, 'worker')]) {
     try { if (fs.existsSync(obsolete)) fs.rmSync(obsolete, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 }); } catch (error) { plugin.logDiagnostic(`Could not remove obsolete runtime ${obsolete}: ${error.message}`, true); }
   }
-  for (const directory of [path.join(plugin.cacheRoot, 'indexes', plugin.vaultCacheKey), path.join(plugin.cacheRoot, 'indexes'), path.join(plugin.cacheRoot, 'logs'), path.join(plugin.cacheRoot, 'runtime'), plugin.cacheRoot]) removeIfEmpty(directory);
+  for (const directory of [path.join(plugin.pluginDir, 'embeddings'), path.join(plugin.cacheRoot, 'runtime'), plugin.cacheRoot]) removeIfEmpty(directory);
 }
 function modelCachePath(root, request) {
   let key = typeof request === 'string' ? request : request?.url || String(request || '');
@@ -155,56 +162,6 @@ class FileModelCache {
     const data = Buffer.from(await response.arrayBuffer()); fs.mkdirSync(path.dirname(target), { recursive: true });
     const temporary = `${target}.download`; await fs.promises.writeFile(temporary, data); await fs.promises.rename(temporary, target);
   }
-}
-class DesktopIndexStore {
-  constructor(directory) { this.directory = directory; }
-  generationDirectory() { return path.join(this.directory, 'generations'); }
-  checksum(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
-  async readGeneration(generation) {
-    if (!generation) return null; const directory = this.generationDirectory(), metadataSource = await fs.promises.readFile(path.join(directory, `${generation}.meta.json`), 'utf8'), meta = JSON.parse(metadataSource), data = await fs.promises.readFile(path.join(directory, `${generation}.vectors.bin`));
-    if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index generation ${generation} is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`);
-    let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(directory, `${generation}.state.json`), 'utf8')); } catch {}
-    if (state.integrity?.metadataSha256 && state.integrity.metadataSha256 !== this.checksum(metadataSource)) throw new Error(`Index generation ${generation} metadata checksum failed`);
-    if (state.integrity?.vectorsSha256 && state.integrity.vectorsSha256 !== this.checksum(data)) throw new Error(`Index generation ${generation} vector checksum failed`);
-    return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), generation, ...state };
-  }
-  async get() {
-    let existingDirectory = fs.existsSync(this.directory);
-    for (let attempt = 0; !existingDirectory && attempt < 4; attempt++) { await new Promise(resolve => setTimeout(resolve, 250)); existingDirectory = fs.existsSync(this.directory); }
-    if (!existingDirectory) return undefined;
-    const candidates = () => fs.existsSync(path.join(this.directory, 'index.current.json')) || fs.existsSync(path.join(this.directory, 'index.meta.json')) || fs.existsSync(path.join(this.directory, 'index.vectors.bin')); let hasCandidate = candidates();
-    for (let attempt = 0; !hasCandidate && attempt < 4; attempt++) { await new Promise(resolve => setTimeout(resolve, 250)); hasCandidate = candidates(); }
-    if (!hasCandidate) return undefined;
-    let lastError = null;
-    for (let attempt = 0; attempt < 40; attempt++) {
-      try {
-        let manifest = null; try { manifest = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.current.json'), 'utf8')); } catch {}
-        if (manifest?.current) { for (const generation of [manifest.current, manifest.previous].filter(Boolean)) try { const value = await this.readGeneration(generation); if (value) return value; } catch (error) { lastError = error; } }
-        const meta = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.meta.json'), 'utf8')), data = await fs.promises.readFile(path.join(this.directory, 'index.vectors.bin')); if (data.byteLength !== meta.length * 384 * 4) throw new Error(`Index pair is incomplete (${meta.length} passages, ${data.byteLength} vector bytes)`); let state = {}; try { state = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.state.json'), 'utf8')); } catch {} let legacyHighlights = false; try { legacyHighlights = (await fs.promises.stat(path.join(this.directory, 'index.highlights.bin'))).size > 0; } catch {} return { meta, vectors: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), legacyHighlights, ...state };
-      } catch (error) { lastError = error; if (attempt < 39) await new Promise(resolve => setTimeout(resolve, 250)); }
-    }
-    const hasIndexFiles = fs.existsSync(path.join(this.directory, 'index.meta.json')) || fs.existsSync(path.join(this.directory, 'index.vectors.bin'));
-    if (!hasIndexFiles && !existingDirectory) return undefined;
-    if (!hasIndexFiles) throw new Error('Existing semantic index files are temporarily unavailable'); throw lastError || new Error('Could not load the semantic index');
-  }
-  async put(value) {
-    fs.mkdirSync(this.directory, { recursive: true }); const generations = this.generationDirectory(); fs.mkdirSync(generations, { recursive: true }); let previous = null; try { previous = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.current.json'), 'utf8')); } catch {}
-    const generation = `${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`, metadataTarget = path.join(generations, `${generation}.meta.json`), vectorsTarget = path.join(generations, `${generation}.vectors.bin`), stateTarget = path.join(generations, `${generation}.state.json`), metadataSource = JSON.stringify(value.meta), vectorData = Buffer.from(value.vectors); await fs.promises.writeFile(metadataTarget, metadataSource); await fs.promises.writeFile(vectorsTarget, vectorData); await fs.promises.writeFile(stateTarget, JSON.stringify({ lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null, integrity: { version: 1, metadataSha256: this.checksum(metadataSource), vectorsSha256: this.checksum(vectorData) } }));
-    const manifest = { version: 2, current: generation, previous: previous?.current || previous?.previous || null, committedAt: Date.now() }, manifestTarget = path.join(this.directory, 'index.current.json'), manifestTemporary = `${manifestTarget}.download`; await fs.promises.writeFile(manifestTemporary, JSON.stringify(manifest)); await fs.promises.rename(manifestTemporary, manifestTarget);
-    const keep = new Set([manifest.current, manifest.previous].filter(Boolean)); try { for (const entry of await fs.promises.readdir(generations)) { const id = entry.replace(/\.(?:meta\.json|vectors\.bin|state\.json)$/, ''); if (!keep.has(id)) await fs.promises.unlink(path.join(generations, entry)); } } catch {}
-  }
-  async getRelations() { try { return JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.relationships.json'), 'utf8')); } catch { return []; } }
-  async putRelations(entries) { fs.mkdirSync(this.directory, { recursive: true }); const target = path.join(this.directory, 'index.relationships.json'), temporary = `${target}.download`; await fs.promises.writeFile(temporary, JSON.stringify(entries)); await fs.promises.rename(temporary, target); }
-  async getTopicLabels() { try { return JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.topic-labels.json'), 'utf8')); } catch { return []; } }
-  async putTopicLabels(entries) { fs.mkdirSync(this.directory, { recursive: true }); const target = path.join(this.directory, 'index.topic-labels.json'), temporary = `${target}.download`; await fs.promises.writeFile(temporary, JSON.stringify(entries)); await fs.promises.rename(temporary, target); }
-  async getTextAnalysis() { try { return JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.text-analysis.json'), 'utf8')); } catch { return []; } }
-  async putTextAnalysis(entries) { fs.mkdirSync(this.directory, { recursive: true }); const target = path.join(this.directory, 'index.text-analysis.json'), temporary = `${target}.download`; await fs.promises.writeFile(temporary, JSON.stringify(entries)); await fs.promises.rename(temporary, target); }
-  async getWritingProfiles() { try { return JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.writing-profiles.json'), 'utf8')); } catch { return []; } }
-  async putWritingProfiles(entries) { fs.mkdirSync(this.directory, { recursive: true }); const target = path.join(this.directory, 'index.writing-profiles.json'), temporary = `${target}.download`; await fs.promises.writeFile(temporary, JSON.stringify(entries)); await fs.promises.rename(temporary, target); }
-  async getHighlightCache() { try { const metadata = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.highlight-cache.json'), 'utf8')), data = await fs.promises.readFile(path.join(this.directory, 'index.highlight-cache.bin')), phrases = Array.isArray(metadata.phrases) ? metadata.phrases : [], bytes = 384 * 2; if (metadata.version !== 1 || data.byteLength !== phrases.length * bytes) return []; return phrases.map((phrase, index) => [phrase, new Int16Array(data.buffer.slice(data.byteOffset + index * bytes, data.byteOffset + (index + 1) * bytes))]); } catch { return []; } }
-  async putHighlightCache(entries) { fs.mkdirSync(this.directory, { recursive: true }); const metadataTarget = path.join(this.directory, 'index.highlight-cache.json'), binaryTarget = path.join(this.directory, 'index.highlight-cache.bin'), metadataTemporary = `${metadataTarget}.download`, binaryTemporary = `${binaryTarget}.download`, valid = entries.filter(([, vector]) => vector?.length === 384); await fs.promises.writeFile(metadataTemporary, JSON.stringify({ version: 1, phrases: valid.map(([phrase]) => phrase) })); await fs.promises.writeFile(binaryTemporary, Buffer.concat(valid.map(([, vector]) => Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength)))); await fs.promises.rename(binaryTemporary, binaryTarget); await fs.promises.rename(metadataTemporary, metadataTarget); }
-  async getGraphEvidence() { try { const metadata = JSON.parse(await fs.promises.readFile(path.join(this.directory, 'index.graph.json'), 'utf8')), data = await fs.promises.readFile(path.join(this.directory, 'index.graph.bin')), count = Number(metadata.files?.length || 0), matrixBytes = count * count * 4; if (!count || data.byteLength !== matrixBytes * 2) return null; return { ...metadata, scores: data.buffer.slice(data.byteOffset, data.byteOffset + matrixBytes), entities: data.buffer.slice(data.byteOffset + matrixBytes, data.byteOffset + data.byteLength) }; } catch { return null; } }
-  async putGraphEvidence(value) { fs.mkdirSync(this.directory, { recursive: true }); const metadataTarget = path.join(this.directory, 'index.graph.json'), binaryTarget = path.join(this.directory, 'index.graph.bin'), metadataTemporary = `${metadataTarget}.download`, binaryTemporary = `${binaryTarget}.download`, scores = Buffer.from(value.scores), entities = Buffer.from(value.entities); await fs.promises.writeFile(metadataTemporary, JSON.stringify({ version: value.version, signature: value.signature, files: value.files, fingerprints: value.fingerprints, tuning: value.tuning, builtAt: value.builtAt, rootTopology: value.rootTopology || null, rootGraph: value.rootGraph || null })); await fs.promises.writeFile(binaryTemporary, Buffer.concat([scores, entities])); await fs.promises.rename(binaryTemporary, binaryTarget); await fs.promises.rename(metadataTemporary, metadataTarget); }
 }
 class DesktopEmbedder {
   constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.disabled = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; }
@@ -1548,8 +1505,8 @@ module.exports = class GibSearch extends Plugin {
     this.embeddedWasmGzip = EMBEDDED_WASM_GZIP;
     this.embeddedWasmModuleGzip = EMBEDDED_WASM_MODULE_GZIP;
     if (!this.isMobile) {
-      loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id); this.cacheRoot = desktopCacheRoot(); this.vaultCacheKey = vaultCacheKey(this.vaultPath); restoreDesktopData(this);
-      this.modelDir = path.join(this.pluginDir, 'models'); this.modelCache = new FileModelCache(this.modelDir); this.desktopIndexStore = new DesktopIndexStore(activeIndexDir(this));
+      loadDesktopModules(); this.vaultPath = this.app.vault.adapter.basePath; this.pluginDir = path.join(this.vaultPath, this.app.vault.configDir, 'plugins', this.manifest.id); this.cacheRoot = desktopCacheRoot(); this.vaultCacheKey = vaultCacheKey(this.vaultPath); await restoreDesktopData(this);
+      this.modelDir = path.join(this.pluginDir, 'models'); this.modelCache = new FileModelCache(this.modelDir); this.desktopIndexStore = new SegmentedDesktopIndexStore(activeIndexDir(this), { fs, path, crypto });
     }
     this.desktopEmbedder = new DesktopEmbedder(this);
     this.search = this.indexer = new MobileSearchRuntime(this); this.atlas = new AtlasEngine(this); this.runtime = { ready: () => true, install: async () => true, stop: () => this.desktopEmbedder?.stop(), storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) }; this.indexer.watch();
@@ -1596,7 +1553,7 @@ module.exports = class GibSearch extends Plugin {
   onActivity(listener) { this.activityListeners ||= new Set(); this.activityListeners.add(listener); return () => this.activityListeners.delete(listener); }
   clearActivity() { this.activityLog = []; for (const listener of this.activityListeners || []) listener(null); }
   activityText() { return (this.activityLog || []).map(entry => `[${new Date(entry.at).toISOString()}] [${entry.channel}] ${entry.message}`).join('\n'); }
-  diagnosticLogPath() { return this.isMobile ? `gib-search-diagnostics:${this.app.vault.getName()}` : path.join(this.pluginDir, 'logs', 'gib-search.log'); }
+  diagnosticLogPath() { return this.isMobile ? `gib-search-diagnostics:${this.app.vault.getName()}` : path.join(activeLogDir(this), 'gib-search.log'); }
   async logDiagnostic(message, force = false) {
     this.recordActivity('System', message, /error|failed|could not|unavailable/i.test(String(message)) ? 'error' : 'info');
     if (!force && !this.settings.verboseLogging) return;
