@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.54.59
+
+- Doubles the spacing between Similar Notes cards from 4px to 8px so individual results read as distinct items without loosening their internal layout.
+
 ## 0.54.58
 
 - Gives each Similar Notes result a quiet, theme-aware card background so adjacent matches are easier to distinguish without adding visual weight.

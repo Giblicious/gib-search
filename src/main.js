@@ -10,7 +10,7 @@ const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, wr
 const { registerCommandAlias } = require('./command-compat');
 const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } = require('./search-result-open');
 const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-index-store');
-const BUILD_VERSION = '0.54.58';
+const BUILD_VERSION = '0.54.59';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
