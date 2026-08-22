@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.58
+
+- Gives each Similar Notes result a quiet, theme-aware card background so adjacent matches are easier to distinguish without adding visual weight.
+- Preserves the existing clearer hover and keyboard-focus states, with release-blocking coverage for the card treatment.
+
 ## 0.54.57
 
 - Prevents a stale or hung live-search request from indefinitely freezing the vault scan; interactive search still receives priority, but indexing resumes after a short bounded yield.
