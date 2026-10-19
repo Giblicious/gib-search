@@ -1,6 +1,6 @@
 // In-note matching deliberately has no dependency on the vault's passage index.
 // Every finding retains its occurrence in the exact editor snapshot that was scored.
-export const IN_NOTE_MATCH_VERSION = 1;
+export const IN_NOTE_MATCH_VERSION = 2;
 export const IN_NOTE_PRESETS = Object.freeze({
   precise: { similarity: .48, entailment: .60, contradiction: .25, neutralSimilarity: .70 },
   balanced: { similarity: .40, entailment: .40, contradiction: .35, neutralSimilarity: .60 },
@@ -87,13 +87,21 @@ export class InNoteMatcher {
     this.embed = embed; this.classify = classify; this.batchSize = batchSize; this.yieldControl = yieldControl;
     this.sources = new Map(); this.vectors = new Map(); this.classifications = new Map(); this.results = new Map();
   }
-  async embeddings(texts, check) {
-    const missing = [...new Set(texts.filter(text => !this.vectors.has(text)))];
-    const resolved = new Map(texts.filter(text => this.vectors.has(text)).map(text => [text, this.vectors.get(text)]));
+  async embeddings(texts, check, prepared = null) {
+    const resolved = prepared || new Map();
+    for (const text of texts) {
+      if (resolved.has(text)) continue;
+      const vector = this.vectors.get(text) || (prepared && [...this.sources.values()].map(source => source.vectors.get(text)).find(Boolean));
+      if (vector) resolved.set(text, vector);
+    }
+    const missing = [...new Set(texts.filter(text => !resolved.has(text)))];
     for (let offset = 0; offset < missing.length; offset += this.batchSize) {
-      current(check); const batch = missing.slice(offset, offset + this.batchSize), values = await this.embed(batch); current(check);
+      current(check); const batch = missing.slice(offset, offset + this.batchSize), values = await this.embed(batch);
       if (values.length !== batch.length || values.some(value => !value?.length || value.length !== values[0].length || !Array.from(value).every(Number.isFinite))) throw new Error('In-note embedding model returned invalid vectors');
+      // A completed embedding belongs to this immutable source, even if typing
+      // superseded the query. Keep it so the next query can resume preparation.
       batch.forEach((text, index) => { resolved.set(text, values[index]); remember(this.vectors, text, values[index], 2048); });
+      current(check);
       await this.yieldControl();
     }
     return texts.map(text => resolved.get(text));
@@ -110,21 +118,33 @@ export class InNoteMatcher {
     }
     return keys.map(key => resolved.get(key));
   }
-  async search(query, source, { breadth = 'balanced', isCurrent, diagnostics = false } = {}) {
+  search(query, source, options = {}) {
+    // Only one query prepares/scores a snapshot at a time. Superseded requests
+    // check their generation before starting, rather than queueing model work.
+    const run = (this.pending || Promise.resolve()).then(() => this.searchCurrent(query, source, options));
+    this.pending = run.catch(() => {}); return run;
+  }
+  async searchCurrent(query, source, { breadth = 'balanced', isCurrent, diagnostics = false } = {}) {
     current(isCurrent); const text = String(source || ''), literalQuery = String(query || '').trim();
     if (literalQuery.length < 2 || !text.trim()) return [];
     const preset = IN_NOTE_PRESETS[breadth] || IN_NOTE_PRESETS.balanced, key = JSON.stringify([literalQuery, text, breadth]), cached = this.results.get(key);
     if (cached && !diagnostics) return cached;
-    const units = this.sources.get(text) || remember(this.sources, text, inNoteUnits(text), 2);
-    const context = unit => [unit.heading.slice(-160), unit.phrase].filter(Boolean).join('. '), representations = units.map(context), anchors = [...new Set(meaningWords(literalQuery))].slice(0, 8);
-    const vectors = await this.embeddings([literalQuery, ...representations, ...anchors], isCurrent), queryVector = vectors[0], anchorVectors = vectors.slice(1 + units.length);
-    const candidates = units.map((unit, index) => ({ ...unit, unitIndex: index, similarity: similarity(queryVector, vectors[index + 1]) })).filter(unit => unit.similarity >= preset.similarity);
+    const context = unit => [unit.heading.slice(-160), unit.phrase].filter(Boolean).join('. ');
+    let prepared = this.sources.get(text);
+    if (!prepared) { const units = inNoteUnits(text); prepared = remember(this.sources, text, { units, representations: units.map(context), vectors: new Map() }, 2); }
+    const { units, representations } = prepared, anchors = [...new Set(meaningWords(literalQuery))].slice(0, 8), queryWords = new Set(anchors);
+    // Pin this note's vectors independently of the small shared phrase cache.
+    // Otherwise notes over 2,048 units evict themselves on every new query.
+    const vectors = await this.embeddings(representations, isCurrent, prepared.vectors), [queryVector] = await this.embeddings([literalQuery], isCurrent);
+    const candidates = units.map((unit, index) => ({ ...unit, unitIndex: index, similarity: similarity(queryVector, vectors[index]), coverage: new Set(meaningWords(unit.phrase).filter(word => queryWords.has(word))).size })).filter(unit => unit.similarity >= preset.similarity);
     // Classify each occurrence with its own heading; never score a neighboring
     // sentence and then paint every occurrence of a winning string.
-    const scores = await this.meaning(candidates.map(unit => ({ premise: context(unit), hypothesis: literalQuery })), isCurrent), queryWords = new Set(anchors);
+    const scores = await this.meaning(candidates.map(unit => ({ premise: context(unit), hypothesis: literalQuery })), isCurrent);
+    const needsAnchors = anchors.length > 1 && candidates.some((unit, index) => unit.coverage > 0 && unit.coverage < anchors.length && scores[index].entailment >= preset.entailment && scores[index].entailment < .9 && scores[index].contradiction <= preset.contradiction);
+    const anchorVectors = needsAnchors ? await this.embeddings(anchors, isCurrent) : [];
     const findings = candidates.map((unit, index) => {
-      const coverage = new Set(meaningWords(unit.phrase).filter(word => queryWords.has(word))).size, vector = vectors[unit.unitIndex + 1];
-      return { ...unit, ...scores[index], coverage, specificity: unit.similarity - Math.max(...anchorVectors.map(anchor => similarity(anchor, vector))) };
+      const vector = vectors[unit.unitIndex];
+      return { ...unit, ...scores[index], specificity: anchorVectors.length ? unit.similarity - Math.max(...anchorVectors.map(anchor => similarity(anchor, vector))) : -Infinity };
     }).filter(unit => unit.contradiction <= preset.contradiction && (unit.entailment >= preset.entailment && (anchors.length < 2 || !unit.coverage || unit.coverage === anchors.length || unit.specificity >= -.015 || unit.entailment >= .9) || unit.neutral >= .90 && unit.entailment >= .015 && unit.contradiction <= .10 && unit.similarity >= preset.neutralSimilarity && !unit.coverage));
     current(isCurrent);
     const selected = [];

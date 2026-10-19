@@ -8,6 +8,13 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const benchmark = process.argv.includes('--benchmark'), wasmOnly = process.argv.includes('--wasm'), reportPath = process.argv.find(value => value.startsWith('--report='))?.slice(9);
+const modelRoot = process.argv.find(value => value.startsWith('--model-root='))?.slice(13);
+const batchSize = Number(process.argv.find(value => value.startsWith('--batch-size='))?.slice(13)) || 24;
+const parallel = process.argv.includes('--parallel');
+const unitCount = Number(process.argv.find(value => value.startsWith('--units='))?.slice(8)) || 400;
+const queryCount = Number(process.argv.find(value => value.startsWith('--query-count='))?.slice(14)) || 5;
+const matcherSource = process.argv.find(value => value.startsWith('--matcher-source='))?.slice(17);
 const chrome = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 if (!fs.existsSync(chrome)) throw new Error(`Chrome was not found at ${chrome}; set CHROME_PATH to run this optional smoke check`);
 
@@ -16,18 +23,25 @@ const wasmModule = fs.readFileSync(path.join(root, 'node_modules', '@huggingface
   .replace('n="object"==typeof process&&"object"==typeof process.versions&&"string"==typeof process.versions.node&&"renderer"!=process.type', 'n=false')
   .replace("var isNode = typeof globalThis.process?.versions?.node == 'string';\nif (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';", 'var isNode = false;')
   .replace('Xa??=e.locateFile?e.locateFile?e.locateFile("ort-wasm-simd-threaded.jsep.wasm",v):v+"ort-wasm-simd-threaded.jsep.wasm":(new URL("ort-wasm-simd-threaded.jsep.wasm",import.meta.url)).href', 'Xa??="embedded.wasm"');
-const config = { type: 'init', mobile: false, preferWebGpu: true, hardwareConcurrency: 4, wasmThreads: 2, maximumEmbedBatchSize: 4, wasmGzip: zlib.gzipSync(wasm, { level: 9 }).toString('base64'), wasmModuleGzip: zlib.gzipSync(wasmModule, { level: 9 }).toString('base64') };
+const config = { type: 'init', mobile: false, preferWebGpu: !wasmOnly, hardwareConcurrency: 4, wasmThreads: 2, maximumEmbedBatchSize: 4, benchmark, batchSize, parallel, unitCount, queryCount, wasmGzip: zlib.gzipSync(wasm, { level: 9 }).toString('base64'), wasmModuleGzip: zlib.gzipSync(wasmModule, { level: 9 }).toString('base64') };
 const workerBuild = await build({ entryPoints: [path.join(root, 'src', 'desktop-embed-worker.js')], bundle: true, write: false, platform: 'browser', format: 'iife', target: 'es2020', conditions: ['browser', 'module', 'import'], define: { global: 'globalThis', 'process.env.NODE_ENV': '"production"', 'process.release.name': '"browser"' }, logLevel: 'silent', legalComments: 'none' });
 const workerSource = workerBuild.outputFiles[0].text;
 
 let finish;
 const completed = new Promise(resolve => { finish = resolve; });
-const page = `<!doctype html><meta charset="utf-8"><script type="module">
+const page = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><script>window.onerror = message => fetch('/result', { method: 'POST', body: JSON.stringify({ ok: false, error: String(message) }) });</script><script type="module">
 import { InNoteMatcher } from '/in-note-search.js';
 const [source, configuration] = await Promise.all([fetch('/worker.js').then(value => value.text()), fetch('/config').then(value => value.json())]);
 const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })), { name: 'gib-search-webgpu-smoke' });
 const inferencePending = new Map(); let inferenceId = 100;
 function inference(message) { const id = inferenceId++; return new Promise((resolve, reject) => { inferencePending.set(id, { resolve, reject }); worker.postMessage({ ...message, id }); }); }
+function highlightSmoke() {
+  const elements = ['--text-highlight-bg:transparent', '--text-highlight-bg:initial', '--color-yellow:#E0DE71;--text-highlight-bg:transparent'].map(properties => { const element = document.createElement('p'); element.style = properties; element.textContent = 'Exact text stays visibly highlighted.'; document.body.append(element); return element; });
+  const ranges = elements.map(element => { const range = new Range(); range.selectNodeContents(element); return range; }); CSS.highlights.set('gib-search-lexical-find', new Highlight(...ranges)); CSS.highlights.set('gib-search-lexical-current', new Highlight(ranges[0]));
+  const canvas = document.createElement('canvas'), context = canvas.getContext('2d'), fills = [];
+  for (const element of elements) for (const name of ['lexical-find', 'lexical-current']) { const color = getComputedStyle(element, '::highlight(gib-search-' + name + ')').backgroundColor; context.clearRect(0, 0, 1, 1); context.fillStyle = color; context.fillRect(0, 0, 1, 1); fills.push({ color, alpha: context.getImageData(0, 0, 1, 1).data[3] }); }
+  return { ok: fills.every(fill => fill.alpha >= 80), fills };
+}
 async function inNoteSmoke() {
   const matcher = new InNoteMatcher({ embed: async texts => (await inference({ type: 'embed', texts, query: false, priority: 1 })).buffers.map(buffer => new Float32Array(buffer)), classify: async pairs => (await inference({ type: 'relations', pairs, interactive: true })).results, batchSize: 6 });
   const checks = [
@@ -40,10 +54,32 @@ async function inNoteSmoke() {
   for (const check of checks) { const matches = await matcher.search(check.query, check.text); findings.push({ query: check.query, count: matches.length, expected: check.count, validOffsets: matches.every(match => check.text.slice(match.from, match.to) === match.sourcePhrase) }); }
   return { ok: findings.every(check => check.count === check.expected && check.validOffsets), findings };
 }
+async function inNoteBenchmark() {
+  const { DesktopEmbedder } = await import('/desktop-embedder.js');
+  const helperModels = [], plugin = { isMobile: false, search: { indexingConfig: { cores: 4, memoryGiB: 8 }, activeWasmThreads: 1 }, logDiagnostic() {}, reportOnce() {}, modelCache: { async match(key) { helperModels.push(key); const response = await fetch('/model-cache?key=' + encodeURIComponent(key)); return response.ok ? response : undefined; }, async put() {} } };
+  const pool = new DesktopEmbedder(plugin); pool.backend = profile.backend; pool.relationBackend = relationProfile.backend;
+  pool.request = async message => (await inference(message)).results;
+  const classify = pairs => configuration.parallel ? pool.classifyRelations(pairs, { interactive: true }) : inference({ type: 'relations', pairs, interactive: true }).then(result => result.results);
+  if (configuration.parallel) { const results = await classify(Array.from({ length: 12 }, () => ({ premise: 'The mechanic repaired the automobile.', hypothesis: 'fix the car' }))); if (results.length !== 12 || results.some(result => result.entailment < .4)) throw new Error('Parallel meaning verification lost results'); }
+  const cpuHelper = { active: Boolean(pool.inNoteWorker?.worker), embeddingModelLoaded: helperModels.some(key => key.includes('bge-small')), models: [...new Set(helperModels.map(key => key.split('/resolve/')[0]))] };
+  if (cpuHelper.embeddingModelLoaded || configuration.parallel && profile.backend === 'wasm' && !cpuHelper.active) throw new Error('CPU helper model isolation failed');
+  const metrics = { embedTexts: 0, embedMs: 0, classifiedPairs: 0, classifyMs: 0, classifyBatches: 0 }, matcher = new InNoteMatcher({ batchSize: configuration.batchSize,
+    embed: async texts => { const start = performance.now(); const result = await inference({ type: 'embed', texts, query: false, priority: 1 }); metrics.embedTexts += texts.length; metrics.embedMs += performance.now() - start; return result.buffers.map(buffer => new Float32Array(buffer)); },
+    classify: async pairs => { const start = performance.now(); const result = await classify(pairs); metrics.classifiedPairs += pairs.length; metrics.classifyBatches++; metrics.classifyMs += performance.now() - start; return result; },
+  });
+  const patterns = ['Encrypt confidential records before creating a backup.', 'Private data remains in plaintext in the archive.', 'The security report describes access to confidential files.', 'Private meetings occur on Friday and records are reviewed.', 'The mechanic repaired the automobile after diagnosing the engine.', 'The subscription renews automatically each month.', 'Slow breathing helped her feel calm again.', 'The garden receives six hours of sunlight.'];
+  const text = Array.from({ length: configuration.unitCount }, (_, index) => 'Entry ' + (index + 1) + ': ' + patterns[index % patterns.length]).join('\\n\\n'), rows = [];
+  for (const query of ['protect private data', 'encrypt records', 'cancel subscription', 'fix the car', 'reduce anxiety'].slice(0, configuration.queryCount)) {
+    const before = { ...metrics }, start = performance.now(), matches = await matcher.search(query, text), elapsedMs = performance.now() - start;
+    const row = { query, elapsedMs, matches: matches.length, ...Object.fromEntries(Object.keys(metrics).map(key => [key, metrics[key] - before[key]])) }; rows.push(row); await fetch('/progress', { method: 'POST', body: JSON.stringify(row) });
+  }
+  pool.stop(); return { characters: text.length, cpuHelper, rows };
+}
 let profile = null, relationProfile = null, semanticResult = null, mobileResult = null, priorityCompleted = false;
 worker.onmessage = async event => {
   const message = event.data;
-  if (message.type === 'cache') { worker.postMessage({ type: 'cache-result', id: message.id }); return; }
+  if (message.type === 'cache') { const response = message.action === 'match' ? await fetch('/model-cache?key=' + encodeURIComponent(message.key)) : null, buffer = response?.ok ? await response.arrayBuffer() : null; worker.postMessage({ type: 'cache-result', id: message.id, buffer }, buffer ? [buffer] : []); return; }
+  if (['ready', 'relation-ready', 'backend-fallback'].includes(message.type)) fetch('/progress', { method: 'POST', body: JSON.stringify({ stage: message.type, backend: message.backend, error: message.message }) });
   if (inferencePending.has(message.id)) { const pending = inferencePending.get(message.id); inferencePending.delete(message.id); if (message.type === 'error') pending.reject(new Error(message.message)); else pending.resolve(message); return; }
   if (message.type === 'runtime-profile') { profile = message; return; }
   if (message.type === 'relation-ready') { relationProfile = message; return; }
@@ -52,15 +88,18 @@ worker.onmessage = async event => {
   if (message.type === 'result' && message.id === 4) { const vector = new Float32Array(message.buffers[0]); const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)); mobileResult = { ok: vector.length === 384 && vector.every(Number.isFinite) && Math.abs(magnitude - 1) < .01, dimension: vector.length, magnitude }; worker.postMessage({ type: 'release-mobile-bootstrap', id: 5 }); return; }
   if (message.type === 'mobile-bootstrap-released' && message.id === 5) { const pair = { premise: 'A written schedule organizes actions and times.', hypothesis: 'This text is a plan.' }; worker.postMessage({ type: 'relations', id: 2, lowPriority: true, pairs: Array.from({ length: 24 }, () => pair) }); worker.postMessage({ type: 'embed', id: 3, texts: ['Priority search must run between profile batches.'], query: true, priority: 0 }); return; }
   if (message.type === 'result' && message.id === 3) { priorityCompleted = true; return; }
-  if (message.type === 'relation-result' && message.id === 2) { const row = message.results?.[0] || {}, probabilities = [row.entailment, row.neutral, row.contradiction].map(Number), total = probabilities.reduce((sum, value) => sum + value, 0), relation = { ok: message.results?.length === 24 && probabilities.every(Number.isFinite) && Math.abs(total - 1) < .01 && priorityCompleted, backend: relationProfile?.backend, dtype: relationProfile?.dtype, probabilities, interactivePreemption: priorityCompleted }; let inNote; try { inNote = await inNoteSmoke(); } catch (error) { inNote = { ok: false, error: error.message }; } await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: semanticResult?.ok && mobileResult?.ok && relation.ok && inNote.ok, semantic: semanticResult, mobile: mobileResult, relation, inNote }) }); return; }
+  if (message.type === 'relation-result' && message.id === 2) { const row = message.results?.[0] || {}, probabilities = [row.entailment, row.neutral, row.contradiction].map(Number), total = probabilities.reduce((sum, value) => sum + value, 0), relation = { ok: message.results?.length === 24 && probabilities.every(Number.isFinite) && Math.abs(total - 1) < .01 && priorityCompleted, backend: relationProfile?.backend, dtype: relationProfile?.dtype, probabilities, interactivePreemption: priorityCompleted }; const highlights = highlightSmoke(); let inNote, benchmark; try { inNote = await inNoteSmoke(); if (configuration.benchmark) benchmark = await inNoteBenchmark(); } catch (error) { inNote = { ok: false, error: error.message }; } await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: semanticResult?.ok && mobileResult?.ok && relation.ok && inNote.ok && highlights.ok, highlights, semantic: semanticResult, mobile: mobileResult, relation, inNote, benchmark }) }); return; }
   if (message.type === 'error') await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: false, error: message.message, backend: profile?.backend }) });
 };
 worker.onerror = event => fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: false, error: event.message }) });
 worker.postMessage(configuration);
 </script>`;
 const server = http.createServer((request, response) => {
+  if (request.url === '/desktop-embedder.js') { const main = fs.readFileSync(path.join(root, 'src/main.js'), 'utf8'), source = main.slice(main.indexOf('class DesktopEmbedder {'), main.indexOf('\nfunction activeTweaks(')); response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); response.end(`const configuration = await fetch('/config').then(response => response.json()); const EMBEDDED_DESKTOP_WORKER = await fetch('/worker.js').then(response => response.text()), EMBEDDED_WASM_GZIP = configuration.wasmGzip, EMBEDDED_WASM_MODULE_GZIP = configuration.wasmModuleGzip; ${source}; export { DesktopEmbedder };`); return; }
+  if (request.url.startsWith('/model-cache?')) { const key = new URL(request.url, 'http://localhost').searchParams.get('key'), match = key?.match(/^https:\/\/huggingface.co\/([^/]+\/[^/]+)\/resolve\/[^/]+\/(.+)$/u), file = modelRoot && match && path.resolve(modelRoot, match[1], match[2]); if (file && file.startsWith(path.resolve(modelRoot) + path.sep) && fs.existsSync(file)) { response.writeHead(200); fs.createReadStream(file).pipe(response); } else { response.writeHead(404); response.end(); } return; }
+  if (request.method === 'POST' && request.url === '/progress') { let body = ''; request.on('data', chunk => { body += chunk; }); request.on('end', () => { console.log(body); response.end('ok'); }); return; }
   if (request.method === 'POST' && request.url === '/result') { let body = ''; request.on('data', chunk => { body += chunk; }); request.on('end', () => { try { finish(JSON.parse(body)); } catch (error) { finish({ ok: false, error: error.message }); } response.end('ok'); }); return; }
-  const [content, type] = request.url === '/worker.js' ? [workerSource, 'text/javascript'] : request.url === '/in-note-search.js' ? [fs.readFileSync(path.join(root, 'src', 'in-note-search.js'), 'utf8'), 'text/javascript'] : request.url === '/config' ? [JSON.stringify(config), 'application/json'] : [page, 'text/html'];
+  const [content, type] = request.url === '/worker.js' ? [workerSource, 'text/javascript'] : request.url === '/styles.css' ? [fs.readFileSync(path.join(root, 'styles.css'), 'utf8'), 'text/css'] : request.url === '/in-note-search.js' ? [fs.readFileSync(matcherSource || path.join(root, 'src', 'in-note-search.js'), 'utf8'), 'text/javascript'] : request.url === '/config' ? [JSON.stringify(config), 'application/json'] : [page, 'text/html'];
   response.writeHead(200, { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'no-store' }); response.end(content);
 });
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -70,8 +109,11 @@ let browserError = ''; browser.stderr.on('data', chunk => { browserError += chun
 const timeout = setTimeout(() => finish({ ok: false, error: 'Timed out waiting for WebGPU semantic and profile inference' }), 180000);
 try {
   const result = await completed; clearTimeout(timeout);
-  if (!result.ok || result.semantic?.backend !== 'webgpu' || result.relation?.backend !== 'webgpu') throw new Error(`WebGPU smoke check failed: ${JSON.stringify(result)}${browserError ? `\n${browserError.slice(-1200)}` : ''}`);
-  console.log(`WebGPU worker smoke check passed (semantic ${result.semantic.dtype}, ${result.semantic.dimension} dimensions; mobile bootstrap q8 ${result.mobile.dimension} dimensions; profile ${result.relation.dtype}, probabilities ${result.relation.probabilities.map(value => value.toFixed(3)).join('/')}; interactive preemption verified; ${result.inNote.findings.length} live-source meaning/polarity checks passed).`);
+  if (reportPath) fs.writeFileSync(path.resolve(reportPath), JSON.stringify(result, null, 2));
+  const expectedBackend = wasmOnly ? 'wasm' : 'webgpu';
+  if (!result.ok || result.semantic?.backend !== expectedBackend || result.relation?.backend !== expectedBackend) throw new Error(`Browser inference smoke check failed: ${JSON.stringify(result)}${browserError ? `\n${browserError.slice(-1200)}` : ''}`);
+  console.log(`${expectedBackend} worker smoke check passed (semantic ${result.semantic.dtype}, ${result.semantic.dimension} dimensions; mobile bootstrap q8 ${result.mobile.dimension} dimensions; profile ${result.relation.dtype}, probabilities ${result.relation.probabilities.map(value => value.toFixed(3)).join('/')}; interactive preemption verified; ${result.inNote.findings.length} live-source meaning/polarity checks passed).`);
+  if (result.benchmark) console.log(JSON.stringify(result.benchmark, null, 2));
 } finally {
   clearTimeout(timeout); browser.kill();
   if (browser.exitCode === null) await Promise.race([new Promise(resolve => browser.once('exit', resolve)), new Promise(resolve => setTimeout(resolve, 2000))]);

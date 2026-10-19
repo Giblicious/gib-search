@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.62
+
+- Keeps the active note's prepared embeddings beyond the shared 2,048-phrase cache, including unchanged passages across edits, so long notes do not rebuild themselves on each query.
+- Coalesces superseded queries before inference and retains completed preparation batches for the latest query; computes individual query-word embeddings only when a meaning decision needs them.
+- Shares CPU meaning verification with one optional helper when the desktop hardware profile reports at least four cores and 8 GiB memory and WASM threading is unavailable. The helper loads only MobileBERT, falls back to the primary worker on failure, and is released when in-note Find closes.
+- Preserves meaning verification without capping candidates or returned occurrences; adds large-note cache and typing-burst regressions, helper ordering/fallback checks, browser benchmarks, and highlight-fill checks.
+- Gives exact matches and the selected exact match visible yellow fills independent of a theme's missing or transparent text-highlight background, with matching toolbar color and browser checks.
+
 ## 0.54.61
 
 - Replaces current-file Meaning search with a dedicated live-source matcher, independent of vault indexing progress and saved passage snapshots.

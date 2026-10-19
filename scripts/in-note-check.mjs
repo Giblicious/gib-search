@@ -44,6 +44,27 @@ const badScores = new InNoteMatcher({ embed: embedding, classify: async pairs =>
 await assert.rejects(badScores.search('new query', 'A source sentence with invalid model results.'), /invalid scores/);
 assert.ok(matcher.vectors.size <= 2048 && matcher.classifications.size <= 512 && matcher.sources.size <= 2 && matcher.results.size <= 4);
 
+let embeddedTexts = [];
+const longMatcher = new InNoteMatcher({ embed: async texts => { embeddedTexts.push(...texts); return embedding(texts); }, classify: async pairs => pairs.map(() => affirmative), batchSize: 128, yieldControl: async () => {} });
+const largeNote = Array.from({ length: 2200 }, (_, index) => `Unique passage ${index} describes this repair.`).join('\n\n');
+await longMatcher.search('repair', largeNote); embeddedTexts = [];
+await longMatcher.search('automobile', largeNote);
+assert.deepEqual(embeddedTexts, ['automobile'], 'A note larger than the shared cache re-embedded itself for another query');
+embeddedTexts = [];
+await longMatcher.search('vehicle', largeNote + '\n\nAn additional repair paragraph.');
+assert.deepEqual(embeddedTexts, ['An additional repair paragraph.', 'vehicle'], 'A small edit discarded the previous note snapshot embeddings');
+
+let releaseFirst, enteredFirst, generation = 1, activeCalls = 0, maximumActiveCalls = 0, queuedCalls = 0;
+const entered = new Promise(resolve => { enteredFirst = resolve; }), blocked = new Promise(resolve => { releaseFirst = resolve; });
+const latest = new InNoteMatcher({ embed: async texts => { activeCalls++; maximumActiveCalls = Math.max(maximumActiveCalls, activeCalls); queuedCalls++; if (queuedCalls === 1) { enteredFirst(); await blocked; } activeCalls--; return embedding(texts); }, classify: async pairs => pairs.map(() => affirmative), yieldControl: async () => {} });
+const queries = [latest.search('first query', 'Repair the automobile.', { isCurrent: () => generation === 1 }).catch(error => error.name)];
+await entered;
+for (let index = 2; index <= 20; index++) { generation = index; queries.push(latest.search(`query ${index}`, 'Repair the automobile.', { isCurrent: () => generation === index }).catch(error => error.name)); }
+releaseFirst(); const completed = await Promise.all(queries);
+assert.ok(completed.slice(0, -1).every(value => value === 'AbortError'));
+assert.ok(Array.isArray(completed.at(-1))); assert.equal(maximumActiveCalls, 1);
+assert.equal(queuedCalls, 2, 'Superseded typing queued redundant source/model work instead of reusing the completed batch');
+
 const plugin = { isMobile: false, settings: {}, manifest: { id: 'gib-search' }, app: { vault: { adapter: {}, getName: () => 'in-note-test' } } }, runtime = new MobileSearchRuntime(plugin);
 runtime.embedBatch = embedding; runtime.classifyRelationPairs = async pairs => pairs.map(() => affirmative);
 assert.equal(runtime.meta.length, 0);
@@ -53,6 +74,25 @@ unavailableRuntime.initializeRelationModel = async () => { throw new Error('Atte
 await assert.rejects(unavailableRuntime.classifyRelationPairs([{ premise: 'Test', hypothesis: 'Test' }], { backgroundOnly: true }), { name: 'BackgroundWorkerUnavailableError' });
 
 const main = fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8'), helper = name => { const start = main.indexOf(`function ${name}(`); return main.slice(start, main.indexOf('\nfunction ', start + 1)); };
+const embedderEnvironment = { clearTimeout, crossOriginIsolated: false }, Embedder = vm.runInNewContext(`${main.slice(main.indexOf('class DesktopEmbedder {'), main.indexOf('\nfunction activeTweaks('))}\nDesktopEmbedder`, embedderEnvironment);
+const cpuPlugin = { isMobile: false, search: { indexingConfig: { cores: 4, memoryGiB: 8 }, activeWasmThreads: 1 } }, cpu = new Embedder(cpuPlugin), primaryCalls = [], auxiliaryCalls = [];
+cpu.backend = 'wasm'; cpu.relationBackend = 'wasm'; cpu.request = async message => { primaryCalls.push(message.pairs); return message.pairs.map(pair => pair.index); };
+let stopped = false;
+cpu.inNoteWorker = { disabled: false, classifyRelations: async pairs => { auxiliaryCalls.push(pairs); return pairs.map(pair => pair.index); }, stop() { stopped = true; } };
+const pairs = Array.from({ length: 15 }, (_, index) => ({ premise: `Premise ${index}`, hypothesis: 'Meaning', index }));
+assert.deepEqual(Array.from(await cpu.classifyRelations(pairs, { interactive: true })), pairs.map(pair => pair.index));
+assert.equal(primaryCalls[0].length, 8); assert.equal(auxiliaryCalls[0].length, 7);
+cpu.inNoteWorker.classifyRelations = async () => { throw new Error('Helper unavailable'); };
+assert.deepEqual(Array.from(await cpu.classifyRelations(pairs, { interactive: true })), pairs.map(pair => pair.index), 'A failed optional CPU helper lost or reordered findings');
+cpu.releaseInNoteWorker(); assert.ok(stopped); assert.equal(cpu.inNoteWorker, null);
+cpu.backend = 'webgpu'; cpu.relationBackend = 'webgpu';
+await cpu.classifyRelations(pairs, { interactive: true }); assert.equal(cpu.inNoteWorker, null, 'GPU inference created an unnecessary CPU helper');
+cpu.backend = 'wasm'; cpu.relationBackend = 'wasm'; cpuPlugin.isMobile = true;
+await cpu.classifyRelations(pairs, { interactive: true }); assert.equal(cpu.inNoteWorker, null, 'Mobile inference created a desktop CPU helper');
+cpuPlugin.isMobile = false; cpuPlugin.search.indexingConfig.memoryGiB = 4;
+await cpu.classifyRelations(pairs, { interactive: true }); assert.equal(cpu.inNoteWorker, null, 'Low-memory devices created another model session');
+cpuPlugin.search.indexingConfig.memoryGiB = 8; embedderEnvironment.crossOriginIsolated = true;
+await cpu.classifyRelations(pairs, { interactive: true }); assert.equal(cpu.inNoteWorker, null, 'A renderer with shared WASM threading also created another model session');
 const highlights = new Map();
 class TestHighlight { constructor(...ranges) { this.ranges = ranges; } }
 class TestRange { setStart(node, offset) { this.node = node; this.from = offset; } setEnd(node, offset) { this.to = offset; } compareBoundaryPoints(_, other) { return this.from - other.from; } }

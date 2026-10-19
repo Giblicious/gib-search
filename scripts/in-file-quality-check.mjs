@@ -13,15 +13,21 @@ const inspectionFile = argument('file'), inspectionQueries = argumentsFor('query
 if (modelRoot) { env.localModelPath = modelRoot.replaceAll('\\', '/'); env.allowLocalModels = true; env.allowRemoteModels = false; }
 const extractor = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', { dtype, device: 'cpu' });
 const classifier = await pipeline('text-classification', argument('nli-model') || 'Xenova/mobilebert-uncased-mnli', { dtype: 'q8', device: 'cpu' });
+const parallelClassifier = process.argv.includes('--parallel-meaning') ? await pipeline('text-classification', argument('nli-model') || 'Xenova/mobilebert-uncased-mnli', { dtype: 'q8', device: 'cpu' }) : null;
 const embed = async texts => {
   if (!texts.length) return [];
   const output = await extractor(texts, { pooling: 'mean', normalize: true }), dimension = output.dims.at(-1);
   return texts.map((_, index) => new Float32Array(output.data.slice(index * dimension, (index + 1) * dimension)));
 };
-const classify = async pairs => {
+const classifyWith = async (classifier, pairs) => {
   if (!pairs.length) return [];
   const features = classifier.tokenizer(pairs.map(pair => pair.premise), { text_pair: pairs.map(pair => pair.hypothesis), padding: true, truncation: true, max_length: 256 }), output = await classifier.model(features), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label;
   return pairs.map((_, index) => { const logits = Array.from(output.logits.data.slice(index * width, (index + 1) * width)), exponents = logits.map(value => Math.exp(value - Math.max(...logits))), sum = exponents.reduce((a, b) => a + b, 0); return Object.fromEntries(exponents.map((value, label) => [labels[label].toLowerCase(), value / sum])); });
+};
+const classify = async pairs => {
+  if (!parallelClassifier || pairs.length <= 6) return classifyWith(classifier, pairs);
+  const middle = Math.ceil(pairs.length / 2), parts = await Promise.all([classifyWith(classifier, pairs.slice(0, middle)), classifyWith(parallelClassifier, pairs.slice(middle))]);
+  return parts.flat();
 };
 const plugin = { isMobile: requestedMobileProfile, settings: {}, manifest: { id: 'gib-search' }, recordActivity() {}, logDiagnostic() {}, reportOnce() {}, app: { vault: { adapter: { getBasePath: () => 'quality-audit' }, configDir: '.obsidian', getName: () => 'quality-audit' }, metadataCache: { getFileCache: () => ({ frontmatter: {} }) }, workspace: { getActiveFile: () => null } } };
 const cases = [
@@ -77,4 +83,4 @@ for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile
 }
 if (argument('report')) await writeFile(argument('report'), JSON.stringify({ report, failures }, null, 2));
 assert.equal(failures.length, 0, `In-note quality failures:\n${failures.join('\n')}`);
-await extractor.dispose(); await classifier.dispose();
+await extractor.dispose(); await classifier.dispose(); await parallelClassifier?.dispose();

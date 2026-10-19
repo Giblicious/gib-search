@@ -12,7 +12,7 @@ const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } 
 const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-index-store');
 const { normalizeIndexScope } = require('./index-scope');
 const { inNoteProjection } = require('./in-note-search');
-const BUILD_VERSION = '0.54.61';
+const BUILD_VERSION = '0.54.62';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -166,21 +166,22 @@ class FileModelCache {
   }
 }
 class DesktopEmbedder {
-  constructor(plugin) { this.plugin = plugin; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.disabled = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; this.forceWasmUntil = 0; this.lastWorkerTimeoutAt = 0; this.workerTimeoutCount = 0; }
+  constructor(plugin, { relationOnly = false } = {}) { this.plugin = plugin; this.relationOnly = relationOnly; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.disabled = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; this.forceWasmUntil = 0; this.lastWorkerTimeoutAt = 0; this.workerTimeoutCount = 0; }
   start() {
     if (this.worker) return true; if (this.disabled || typeof window === 'undefined' || typeof window.Worker !== 'function' || typeof DecompressionStream !== 'function') return false;
     try {
       this.workerUrl = URL.createObjectURL(new Blob([EMBEDDED_DESKTOP_WORKER], { type: 'text/javascript' }));
-      const worker = new window.Worker(this.workerUrl, { name: 'gib-search-bge' }); this.worker = worker;
+      const worker = new window.Worker(this.workerUrl, { name: this.relationOnly ? 'gib-search-in-note-meaning' : 'gib-search-bge' }); this.worker = worker;
       worker.onmessage = event => this.receive(event.data);
       worker.onerror = event => this.fail(new Error(event.message || 'Background embedding worker failed'));
       worker.onmessageerror = () => this.fail(new Error('Background embedding worker sent an unreadable message'));
-      const indexing = this.plugin.search?.indexingConfig || {}; worker.postMessage({ type: 'init', mobile: this.plugin.isMobile, preferWebGpu: !this.plugin.isMobile && Date.now() >= this.forceWasmUntil, hardwareConcurrency: indexing.cores || Number(navigator?.hardwareConcurrency) || 1, wasmThreads: indexing.wasmThreads || 1, maximumEmbedBatchSize: indexing.maximumEmbedBatchSize || 2, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP }); return true;
+      const indexing = this.plugin.search?.indexingConfig || {}; worker.postMessage({ type: 'init', relationOnly: this.relationOnly, mobile: this.plugin.isMobile, preferWebGpu: !this.relationOnly && !this.plugin.isMobile && Date.now() >= this.forceWasmUntil, hardwareConcurrency: indexing.cores || Number(navigator?.hardwareConcurrency) || 1, wasmThreads: this.relationOnly ? 1 : indexing.wasmThreads || 1, maximumEmbedBatchSize: indexing.maximumEmbedBatchSize || 2, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP }); return true;
     } catch (error) { this.disabled = true; if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; this.plugin.logDiagnostic(`Background embedding worker unavailable: ${error?.message || error}`, true); return false; }
   }
   async receive(message) {
     this.touchPendingRequests();
     if (message.type === 'cache') { await this.cache(message); return; }
+    if (this.relationOnly && ['runtime-profile', 'relation-ready', 'relation-progress', 'ready'].includes(message.type)) return;
     if (message.type === 'runtime-profile') { this.backend = message.backend || 'wasm'; this.dtype = message.dtype || ''; this.plugin.search?.workerRuntimeProfile?.(message); return; }
     if (message.type === 'backend-fallback') { const scope = message.scope === 'profile' ? 'Writing Profile' : 'Desktop'; this.plugin.logDiagnostic(`${scope} ${message.from || 'accelerated'} inference fell back to ${message.to || 'WASM'}: ${message.message || 'backend unavailable'}`, true); return; }
     if (message.type === 'ready') { this.ready = true; this.workerTimeoutCount = 0; this.plugin.search?.modelReady?.(); return; }
@@ -221,7 +222,7 @@ class DesktopEmbedder {
   handleRequestTimeout(worker, id, pending) {
     if (worker !== this.worker || this.pending.get(id) !== pending) return; const now = Date.now(); this.workerTimeoutCount = now - this.lastWorkerTimeoutAt < 10 * 60 * 1000 ? this.workerTimeoutCount + 1 : 1; this.lastWorkerTimeoutAt = now; this.forceWasmUntil = Math.max(this.forceWasmUntil, now + 10 * 60 * 1000); const recoverable = this.workerTimeoutCount <= 1, error = new Error(`Background ${pending.type} request stopped responding for ${Math.round(pending.timeoutMs / 1000)} seconds`); error.name = 'TimeoutError'; this.fail(error, recoverable);
   }
-  fail(error, recoverable = false) { const worker = this.worker; this.worker = null; this.disabled = !recoverable; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); } this.pending.clear(); this.ready = false; this.rerankerReady = false; this.backend = recoverable ? 'restarting' : 'failed'; this.dtype = ''; this.relationBackend = recoverable ? 'restarting' : 'failed'; this.relationDtype = ''; this.plugin.logDiagnostic(`Background embedding worker ${recoverable ? 'stalled and will restart with WASM' : 'failed'}: ${error.message}`, true); if (!this.plugin.isMobile) this.plugin.reportOnce(`Desktop embedding worker ${recoverable ? 'restarting' : 'failed'}: ${error.message}`); }
+  fail(error, recoverable = false) { this.releaseInNoteWorker(); const worker = this.worker; this.worker = null; this.disabled = !recoverable; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); } this.pending.clear(); this.ready = false; this.rerankerReady = false; this.backend = recoverable ? 'restarting' : 'failed'; this.dtype = ''; this.relationBackend = recoverable ? 'restarting' : 'failed'; this.relationDtype = ''; this.plugin.logDiagnostic(`Background embedding worker ${recoverable ? 'stalled and will restart with WASM' : 'failed'}: ${error.message}`, true); if (!this.plugin.isMobile) this.plugin.reportOnce(`Desktop embedding worker ${recoverable ? 'restarting' : 'failed'}: ${error.message}`); }
   embedBatch(texts, query = false, options = {}) {
     return this.request({ type: 'embed', texts, query, priority: Number(options.priority ?? (query ? 0 : 2)) }, this.plugin.isMobile ? 180000 : 120000);
   }
@@ -238,10 +239,25 @@ class DesktopEmbedder {
   releaseMobileBootstrap() {
     if (!this.worker) return Promise.resolve(); return this.request({ type: 'release-mobile-bootstrap' }, 60000);
   }
-  classifyRelations(pairs, options = {}) { return this.request({ type: 'relations', pairs, lowPriority: Boolean(options.lowPriority), interactive: Boolean(options.interactive) }, 300000); }
+  classifyRelations(pairs, options = {}) {
+    const request = values => this.request({ type: 'relations', pairs: values, lowPriority: Boolean(options.lowPriority), interactive: Boolean(options.interactive) }, 300000);
+    const hardware = this.plugin.search?.indexingConfig || {}, cpuOnly = this.relationBackend === 'wasm';
+    if (!this.relationOnly && !this.plugin.isMobile && options.interactive && cpuOnly && globalThis.crossOriginIsolated !== true && pairs.length > 6 && hardware.cores >= 4 && hardware.memoryGiB >= 8 && this.plugin.search?.activeWasmThreads <= 1) {
+      // Unisolated renderers cannot share WASM threads. One bounded helper
+      // verifies the other half without loading another embedding model.
+      this.inNoteWorker ||= new DesktopEmbedder(this.plugin, { relationOnly: true });
+      if (!this.inNoteWorker.disabled) {
+        const helper = this.inNoteWorker, middle = Math.ceil(pairs.length / 2), first = request(pairs.slice(0, middle));
+        const second = helper.classifyRelations(pairs.slice(middle), options).catch(error => { if (this.inNoteWorker !== helper) throw error; helper.stop(); helper.disabled = true; return request(pairs.slice(middle)); });
+        return Promise.all([first, second]).then(parts => parts.flat());
+      }
+    }
+    return request(pairs);
+  }
+  releaseInNoteWorker() { this.inNoteWorker?.stop(); this.inNoteWorker = null; }
   rerankPassages(pairs) { return this.request({ type: 'rerank', pairs }, 180000); }
   generateTopicLabels(prompts) { return this.request({ type: 'topic-labels', prompts }, 600000); }
-  stop() { const worker = this.worker; this.worker = null; this.disabled = false; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('Desktop embedding worker stopped')); } this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
+  stop() { this.inNoteWorker?.stop(); this.inNoteWorker = null; const worker = this.worker; this.worker = null; this.disabled = false; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('Desktop embedding worker stopped')); } this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
 }
 function activeTweaks(plugin) {
   return plugin.settings.modelTweaks.bge;
@@ -1093,6 +1109,7 @@ class SemanticInNoteSearch {
   }
   clearHighlights() { for (const name of Object.values(this.highlightNames)) globalThis.CSS?.highlights?.delete(name); }
   close() {
+    this.plugin.desktopEmbedder?.releaseInNoteWorker?.();
     clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.setSemanticLoading(false); if (this.keyScope) { this.app.keymap.popScope(this.keyScope); this.keyScope = null; } if (this.noteChangeRef) this.app.vault.offref(this.noteChangeRef); this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
   }
 }

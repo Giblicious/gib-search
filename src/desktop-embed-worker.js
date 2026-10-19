@@ -171,7 +171,8 @@ async function tryActivateRelationWebGpu() {
   catch (error) { await activateRelationWasm(error); return false; }
 }
 async function initializeRelationModel() {
-  if (relationPipe) return relationPipe; if (relationPromise) return relationPromise; await initializeModel();
+  if (relationPipe) return relationPipe; if (relationPromise) return relationPromise;
+  if (configuration?.relationOnly) await configureRuntime(); else await initializeModel();
   relationPromise = (async () => { if (await tryActivateRelationWebGpu()) return relationPipe; if (relationPipe) return relationPipe; return activateRelationWasm(); })();
   try { return await relationPromise; } finally { relationPromise = null; }
 }
