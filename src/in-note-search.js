@@ -98,7 +98,7 @@ export function inNoteUnits(source) {
         const from = block.from + projection.positions[fromPlain], to = block.from + projection.positions[toPlain - 1] + 1;
         const phrase = projection.text.slice(fromPlain, toPlain).trim().replace(/\s+/gu, ' ');
         if (phrase.length >= 3) {
-          const unit = { from, to, phrase, sourcePhrase: text.slice(from, to), heading: [block.heading, label].filter(Boolean).join(' > '), contextHeading: block.heading, topics: [...block.topics, ...(label ? [label] : [])].map(topic => topic.slice(-160)), line: block.line, isHeading: Boolean(block.isHeading) }, positions = []; let space = false;
+          const unit = { from, to, phrase, sourcePhrase: text.slice(from, to), paragraphFrom: block.from, paragraphTo: block.to, heading: [block.heading, label].filter(Boolean).join(' > '), contextHeading: block.heading, topics: [...block.topics, ...(label ? [label] : [])].map(topic => topic.slice(-160)), line: block.line, isHeading: Boolean(block.isHeading) }, positions = []; let space = false;
           for (let index = fromPlain; index < toPlain; index++) { const nextSpace = /\s/u.test(projection.text[index]); if (!nextSpace || !space) positions.push(block.from + projection.positions[index] - from); space = nextSpace; }
           Object.defineProperty(unit, 'displayPositions', { value: new Uint32Array(positions) }); units.push(unit);
         }
@@ -154,7 +154,7 @@ export class InNoteMatcher {
     const run = (this.pending || Promise.resolve()).then(() => this.searchCurrent(query, source, options));
     this.pending = run.catch(() => {}); return run;
   }
-  async searchCurrent(query, source, { breadth = 'balanced', isCurrent, diagnostics = false, retrievalOnly = false } = {}) {
+  async searchCurrent(query, source, { breadth = 'balanced', isCurrent, diagnostics = false, retrievalOnly = false, unitIndices, onCandidates, scoreCandidates } = {}) {
     current(isCurrent); const text = String(source || ''), literalQuery = String(query || '').trim();
     if (literalQuery.length < 2 || !text.trim()) return [];
     const preset = IN_NOTE_PRESETS[breadth] || IN_NOTE_PRESETS.balanced, key = JSON.stringify([literalQuery, text, breadth]), cached = this.results.get(key);
@@ -164,9 +164,11 @@ export class InNoteMatcher {
     const { units, representations } = prepared, anchors = [...new Set(meaningWords(literalQuery))].slice(0, 8), queryWords = new Set(anchors);
     // Pin this note's vectors independently of the small shared phrase cache.
     // Otherwise notes over 2,048 units evict themselves on every new query.
-    await this.embeddings(representations, isCurrent, prepared.vectors);
+    const activeUnits = unitIndices ? units.filter((unit, index) => unitIndices.has(index)) : units;
+    await this.embeddings(unitIndices ? [...new Set(activeUnits.flatMap(unit => [unit.phrase, ...unit.topics]))] : representations, isCurrent, prepared.vectors);
     const [queryVector] = await this.embeddings([literalQuery], isCurrent), vectors = units.map(unit => prepared.vectors.get(unit.phrase)), topicAlignments = new Map(), queryFocus = queryVector.focus;
     const alignments = new Map(), retrieved = units.map((unit, index) => {
+      if (unitIndices && !unitIndices.has(index)) return null;
       // Headings may improve candidate recall. They can fill missing concepts
       // only when the sentence refers back to a topic; verification stays local.
       const contextual = unit.topics.length > 0 && /\b(?:it|its|this|these|those|that|such|topic|subject)\b/iu.test(unit.phrase), vector = vectors[index];
@@ -177,7 +179,8 @@ export class InNoteMatcher {
         score = Math.max(score, dot / (Math.sqrt(squared) || 1));
       }
       return { ...unit, unitIndex: index, contextual, bodySimilarity, similarity: score, coverage: new Set(meaningWords(unit.phrase).filter(word => queryWords.has(word))).size };
-    }).filter(unit => unit.similarity >= preset.similarity);
+    }).filter(unit => unit && unit.similarity >= preset.similarity);
+    await onCandidates?.(retrieved); current(isCurrent);
     // Answer retrieval uses its full-sentence ranker and consistency checks;
     // defer token attribution until an answer is actually selected.
     if (retrievalOnly) return { matches: [], candidates: retrieved };
@@ -191,13 +194,15 @@ export class InNoteMatcher {
     const candidates = retrieved.filter(unit => !unit.evidence || unit.evidence.supported);
     // Headings can resolve a topic for retrieval, but cannot assert that every
     // sentence beneath them entails the query. Verify the actual occurrence.
-    const scores = await this.meaning(candidates.map(unit => ({ premise: unit.phrase, hypothesis: literalQuery })), isCurrent);
+    const scoredUnits = scoreCandidates ? retrieved : candidates, scored = scoreCandidates ? await scoreCandidates(scoredUnits, literalQuery, isCurrent) : await this.meaning(candidates.map(unit => ({ premise: unit.phrase, hypothesis: literalQuery })), isCurrent);
+    const verified = new Map(scoredUnits.map((unit, index) => [unit.unitIndex, scored[index]])), scores = candidates.map(unit => verified.get(unit.unitIndex));
     const needsAnchors = anchors.length > 1 && candidates.some((unit, index) => !unit.evidence && unit.coverage > 0 && unit.coverage < anchors.length && scores[index].entailment >= preset.entailment && scores[index].entailment < .9 && scores[index].contradiction <= preset.contradiction);
     const anchorVectors = needsAnchors ? await this.embeddings(anchors, isCurrent) : [];
     const findings = candidates.map((unit, index) => {
       const vector = vectors[unit.unitIndex];
       return { ...unit, ...scores[index], specificity: anchorVectors.length ? unit.similarity - Math.max(...anchorVectors.map(anchor => similarity(anchor, vector))) : -Infinity };
     }).filter(unit => {
+      if (unit.unscored) return false;
       if (unit.contradiction > preset.contradiction) return false;
       // A mixed verdict needs balanced support for every query concept in the
       // sentence itself. A heading or one strong shared word cannot supply it.
@@ -221,7 +226,6 @@ export class InNoteMatcher {
     });
     remember(this.results, key, matches, 4);
     if (!diagnostics) return matches;
-    const verified = new Map(candidates.map((unit, index) => [unit.unitIndex, scores[index]]));
     return { matches, candidates: retrieved.map(unit => ({ ...unit, ...(verified.get(unit.unitIndex) || { rejected: 'unsupported-query-evidence' }) })) };
   }
 }

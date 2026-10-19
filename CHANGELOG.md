@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.54.66
+
+- Refines in-note Meaning search live from related paragraphs to candidate sentences to verified phrases. Provisional shading stays outside the match count and navigation; refinement preserves the current selection and does not scroll the editor.
+- Caches bounded paragraph windows alongside sentence representations, reuses prepared sentence vectors to protect isolated evidence, and narrows phrases from cached token representations without additional phrase embedding calls. Obsolete queries and edited snapshots cannot publish highlights.
+- Applies local relevance and consistency checks to short fragments and noun phrases as well as questions. A question-trained ranker's preference for literal wording cannot displace supported paraphrases such as “liked people”; neutral sentence scores alone cannot establish a finding.
+- Requires a sentence to add evidence beyond its heading before using that heading to resolve a reference. Completes supported, subjectless past-tense fragments for a bounded consistency check while preserving the original query for retrieval and highlights.
+- Verifies sentences in adaptive batches of distinct statements, continuing through relevant tails and dense ties. Sparse queries avoid checking an entire long note; repeated occurrences share verification without a fixed findings cap.
+- Adds whole-note interview, operations and reading fixtures, short queries, absent answers, provisional-stage ordering, source offsets, phrase spans, cancellation and browser rendering checks. Conservative misses and ambiguous results remain visible in evaluation reports.
+- Leaves vault search, its index, models, ordering and highlights unchanged.
+
 ## 0.54.65
 
 - Adds dedicated in-note relevance ranking and consistency checks, with grammatical checks for negation, active/passive roles, reversed relationships, conditional claims, and implicit opposites. A related topic or the same names in the opposite relationship cannot establish a match.

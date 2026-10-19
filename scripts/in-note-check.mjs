@@ -124,6 +124,10 @@ const Search = vm.runInNewContext(`${helper('cleanSourceText')}\n${main.slice(ma
 const note = 'We closed the account.\n\nWe closed the account.', from = note.lastIndexOf('We closed'), semantic = [{ from, to: note.length, sourcePhrase: note.slice(from), phrase: note.slice(from), score: 1 }], ui = new Search({ workspace: {} }, {}, { file: { path: 'Example.md' } });
 ui.options = { lexical: false, semantic: true };
 const matches = ui.compactPhrases(semantic, 'bank closure', note);
+const staleUi = new Search({ workspace: {} }, { search: { async searchInNote(query, source, options) { staleUi.queryVersion++; await options.onProgress({ stage: 'paragraph', ranges: semantic }); return []; } } }, { file: { path: 'Example.md' } });
+staleUi.el = { isConnected: true }; staleUi.queryVersion = 1; staleUi.sourceText = async () => note;
+staleUi.showRefinement = () => assert.fail('An obsolete query painted a provisional region');
+await staleUi.searchSemantically('bank closure', 1);
 const literalRegex = ui.matchRegex({ kind: 'lexical', phrase: 'a+b [x]', displayPhrase: 'a+b [x]' });
 assert.ok(literalRegex.test('a+b [x]')); assert.ok(!literalRegex.test('aaab x'), 'Find treated query punctuation as regular expressions');
 assert.equal(matches.length, 1); assert.equal(matches[0].from, from, 'Semantic strings were rematched at an unscored occurrence');

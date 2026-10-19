@@ -24,7 +24,7 @@ Plugin settings are divided into Status, Search, and Console pages. Status repor
 
 Vault search waits for its semantic ranking before displaying results. It does not display an exact-first list and then replace its order with semantic results. Long notes retain up to three strong passages per result while distinct files receive their own result slots.
 
-**Search current file → Meaning** searches the current editor snapshot independently of the vault index, including unsaved Markdown edits. It checks sentences, headings, lists, and overlapping windows through long sentences, then verifies meaning with the local MobileBERT model. A literal hit cannot suppress paraphrases elsewhere, and findings retain their own source positions rather than highlighting every copy of a winning string. Matches can abstain when evidence is weak; Precise, Balanced, and Broad trade recall for selectivity. These compact English models can still miss paraphrases or misinterpret context, so Meaning is not an exhaustive linguistic guarantee. Exact matching remains available independently.
+**Search current file → Meaning** searches the current editor snapshot independently of the vault index, including unsaved Markdown edits. Soft provisional shading narrows from related paragraphs to candidate sentences, then confirmed matches highlight the relevant phrase. Provisional regions do not count as matches, participate in navigation, or move the cursor. Cached paragraph and sentence vectors are reused; the phrase pass uses the existing contextual token representations rather than embedding every possible phrase. Long paragraphs use bounded windows, and short queries receive sentence relevance and consistency checks too. A literal hit cannot suppress paraphrases elsewhere, and findings retain their own source positions rather than highlighting every copy of a winning string. Matches can abstain when evidence is weak; Precise, Balanced, and Broad trade recall for selectivity. These compact English models can still miss paraphrases or misinterpret context, so Meaning is not an exhaustive linguistic guarantee. Exact matching remains available independently.
 
 ## Install with BRAT
 
@@ -46,6 +46,7 @@ The release-blocking synthetic performance budgets and local-only runtime measur
 - Notes, queries, embeddings, and indexes remain on the local device.
 - Inference runs directly inside Obsidian using desktop WebGPU or the bundled WebAssembly fallback.
 - BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached. GPU-capable desktops cache its fp16 model; the fallback engine and mobile cache its q8 model. Current-file Meaning search and optional Writing Profile indexing share the lazily downloaded MobileBERT MNLI model in desktop fp16 or fallback/mobile q8 form. Both models run in the background worker; queries and passages stay on the device.
+- Current-file Meaning also downloads pinned MiniLM L6 relevance and DeBERTa v3 xsmall consistency models, about 110 MB of additional quantized weights, and runs them locally in a separate CPU worker. Opening Find warms the models; cold startup and initial note preparation take longer than warm queries. A separate note-vector cache is capped at 16 MiB and contains note representations, not query history. There is no vault-wide sentence index.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 
@@ -53,7 +54,7 @@ On desktop, downloaded models remain in the Gib Search plugin directory, while t
 
 ## Model
 
-Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. Current-file matching combines symmetric BGE similarity with **MobileBERT MNLI** meaning checks and contradiction rejection. The optional Writing Profile index shares MobileBERT for local emotion, purpose, and form classification, combined with conservative applicability gates and Markdown-aware structural evidence. Weak evidence can abstain rather than becoming a finding.
+Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. Current-file matching combines symmetric BGE similarity and token evidence with **MobileBERT MNLI**, **MS MARCO MiniLM L6**, and **NLI DeBERTa v3 xsmall** checks. Question-trained relevance scores cannot independently reject a supported short paraphrase or establish a match from a shared topic. The optional Writing Profile index shares MobileBERT for local emotion, purpose, and form classification, combined with conservative applicability gates and Markdown-aware structural evidence. Weak evidence can abstain rather than becoming a finding.
 
 ## Commands
 

@@ -10,6 +10,7 @@ import { additionalInNoteCases } from './in-note-cases.mjs';
 import { inNoteRelevanceCases } from './in-note-relevance-cases.mjs';
 import { inNoteLogicCases } from './in-note-logic-cases.mjs';
 import { inNoteQuestionCases } from './in-note-question-cases.mjs';
+import { inNoteLiveCases } from './in-note-live-cases.mjs';
 
 const argumentsFor = name => process.argv.filter(value => value.startsWith(`--${name}=`)).map(value => value.slice(name.length + 3)), argument = name => argumentsFor(name)[0] || '';
 const modelRoot = argument('model-root') || process.env.GIB_SEARCH_MODEL_ROOT || '';
@@ -71,6 +72,7 @@ cases.push(...additionalInNoteCases);
 cases.push(...additionalPhraseCases);
 cases.push(...inNoteRelevanceCases);
 cases.push(...inNoteLogicCases, ...inNoteQuestionCases);
+cases.push(...inNoteLiveCases);
 const caseFilter = argument('case'); if (caseFilter) cases.splice(0, cases.length, ...cases.filter(test => test.name.toLowerCase().includes(caseFilter.toLowerCase())));
 if (inspectionFile && inspectionQueries.length) {
   const literalPattern = value => new RegExp(String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), splitPatterns = value => String(value || '').split(';;').map(item => item.trim()).filter(Boolean).map(literalPattern), expected = argumentsFor('expect'), forbidden = argumentsFor('forbid'), source = await readFile(inspectionFile, 'utf8');
@@ -83,10 +85,12 @@ for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile
     const runtime = new MobileSearchRuntime(plugin); runtime.embedBatch = embed; runtime.classifyRelationPairs = classify; runtime.inNotePairs = inNotePairs;
     // The real UI's live-source method, with no index preloaded or patched scores.
     for (const mode of Object.keys(IN_NOTE_PRESETS)) {
-      const started = performance.now(), result = await runtime.searchInNote(test.query, test.source, { breadth: mode, diagnostics: true }), elapsed = performance.now() - started, matches = result.matches, highlights = matches.map(match => match.sourcePhrase);
+      const started = performance.now(), stages = [], result = await runtime.searchInNote(test.query, test.source, { breadth: mode, diagnostics: true, onProgress: progress => { stages.push({ stage: progress.stage, elapsed: performance.now() - started, ranges: progress.ranges.length }); assert.ok(progress.ranges.every(range => test.source.slice(range.from, range.to) === range.sourcePhrase), `${test.name} provisional offsets changed`); } }), elapsed = performance.now() - started, matches = result.matches, highlights = matches.map(match => match.sourcePhrase);
+      assert.deepEqual(stages.map(row => row.stage), ['paragraph', 'sentence'], `${test.name} refinement order changed`);
       durations.push(elapsed);
       const missed = (test.expected || []).filter(pattern => !highlights.some(phrase => pattern.test(phrase))), forbidden = (test.forbidden || []).filter(pattern => highlights.some(phrase => pattern.test(phrase)));
-      if (mode !== 'precise') { assertions += (test.expected || []).length; positives += (test.expected || []).length; found += (test.expected || []).length - missed.length; if (test.required) for (const pattern of missed) failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} missed ${pattern}: ${JSON.stringify(highlights)}`); }
+      if (test.exhaustive) for (const phrase of highlights.filter(phrase => ![...(test.expected || []), ...(test.ambiguous || [])].some(pattern => pattern.test(phrase)))) { forbiddenHits++; failures.push(`${test.name} ${mode} returned an unsupported occurrence: ${phrase}`); }
+      if (mode !== 'precise') { assertions += (test.expected || []).length; positives += (test.expected || []).length; found += (test.expected || []).length - missed.length; if (test.required) for (const pattern of missed.filter(pattern => !(test.optional || []).some(optional => String(optional) === String(pattern)))) failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} missed ${pattern}: ${JSON.stringify(highlights)}`); }
       assertions += (test.forbidden || []).length + (test.empty ? 1 : 0); forbiddenHits += forbidden.length;
       for (const pattern of forbidden) failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} admitted ${pattern}: ${JSON.stringify(highlights)}`);
       if (test.empty && highlights.length) { forbiddenHits += highlights.length; failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} invented matches: ${JSON.stringify(highlights)}`); }
@@ -95,7 +99,7 @@ for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile
       assert.ok(matches.every(match => !match.highlight || match.highlight.from >= match.from && match.highlight.to <= match.to && test.source.slice(match.highlight.from, match.highlight.to) === match.highlight.sourcePhrase), `${test.name} lost phrase offsets`);
       const phraseCheck = inNotePhraseCases[test.name];
       if (phraseCheck) for (const match of matches) { if (!match.highlight || !phraseCheck.expected.test(match.highlight.phrase) || phraseCheck.excluded?.test(match.highlight.phrase)) failures.push(`${test.name} ${mode} lost the relevant phrase: ${match.highlight?.phrase}`); phraseAssertions += 2; }
-      const row = { name: test.name, query: test.query, mobile: mobileProfile, mode, elapsed, highlights, phrases: matches.map(match => match.highlight?.phrase || match.phrase), missed: missed.map(String), forbidden: forbidden.map(String), ...(diagnostics ? { candidates: result.candidates } : {}) }; report.push(row);
+      const row = { name: test.name, query: test.query, mobile: mobileProfile, mode, elapsed, stages, highlights, phrases: matches.map(match => match.highlight?.phrase || match.phrase), missed: missed.map(String), forbidden: forbidden.map(String), ambiguous: (test.ambiguous || []).filter(pattern => highlights.some(phrase => pattern.test(phrase))).map(String), ...(diagnostics ? { candidates: result.candidates } : {}) }; report.push(row);
       if (verbose) console.log(JSON.stringify(row));
     }
   }

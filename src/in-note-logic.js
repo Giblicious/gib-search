@@ -38,6 +38,14 @@ export function inNoteQuery(query) {
   return { text, core, grammar, question, request, lookup, claim };
 }
 
+// MNLI hypotheses are sentences. Complete only a subjectless, finite past
+// predicate; preserve tense, polarity and participants without adding ability.
+export function inNoteFragmentClaim(query) {
+  const grammar = query.grammar, verb = grammar.verbs[0];
+  if (query.request || grammar.sentence.subject || grammar.actor.length || grammar.passive || grammar.verbs.length !== 1 || !verb.terms.some(term => term.tags.includes('PastTense')) || verb.terms.some(term => term.tags.includes('Participle'))) return '';
+  return `Someone ${query.text.replace(/[.!?]+$/u, '')}.`;
+}
+
 // These checks inspect the complete occurrence, before any phrase is selected.
 // They apply only to a shared predicate, so passive paraphrases and different
 // verbs expressing the same event remain the relevance model's responsibility.

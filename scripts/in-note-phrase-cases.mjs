@@ -1,5 +1,8 @@
 // Expected visible spans on already-verified sentences; these never affect ranking.
 export const inNotePhraseCases = {
+  'live social fragment': { expected: /enjoyed.*people|loved.*strangers|delighted.*company|liked.*people/i, excluded: /2014|2016/i },
+  'live divine source': { expected: /(?:gift.*|bestowed by the )Creator|granted by God/i, excluded: /naked|ankles|wrists/i },
+  'live short security fragment': { expected: /Encrypt the confidential records/i, excluded: /backup|creating/i },
   'relational synonym': { expected: /offspring of God/i, excluded: /The doctrine|humanity is/i },
   'reordered possessive relation': { expected: /power of God/i, excluded: /Creation unfolds/i },
   'modifier paraphrase': { expected: /further study/i, excluded: /pattern becomes/i },

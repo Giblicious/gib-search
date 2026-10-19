@@ -2,8 +2,20 @@ import assert from 'node:assert/strict';
 import { indexedDB } from 'fake-indexeddb';
 import { InNoteVectorStore } from '../src/in-note-cache.js';
 import { RankedInNoteMatcher } from '../src/ranked-in-note-search.js';
-import { inNoteGrammar, inNoteQuery, inNoteConflict, inNoteRoleMatch } from '../src/in-note-logic.js';
+import { inNoteGrammar, inNoteQuery, inNoteFragmentClaim, inNoteConflict, inNoteRoleMatch } from '../src/in-note-logic.js';
 import { inNoteUnits } from '../src/in-note-search.js';
+import { inNoteParagraphs } from '../src/in-note-hierarchy.js';
+
+const longParagraph = Array.from({ length: 20 }, (_, index) => `Sentence ${index} records a separate observation.`).join(' ');
+const hierarchy = inNoteParagraphs(inNoteUnits(longParagraph), longParagraph);
+assert.equal(inNoteFragmentClaim(inNoteQuery('liked people')), 'Someone liked people.');
+assert.equal(inNoteFragmentClaim(inNoteQuery('Alice liked people')), '');
+assert.equal(inNoteFragmentClaim(inNoteQuery('He liked people')), '');
+assert.equal(inNoteFragmentClaim(inNoteQuery('given by god')), '');
+assert.equal(inNoteFragmentClaim(inNoteQuery('protect private data')), '');
+assert.ok(hierarchy.length > 1 && hierarchy.every(paragraph => paragraph.indices.length <= 6 && paragraph.phrase.length <= 900));
+assert.equal(hierarchy.flatMap(paragraph => paragraph.indices).length, 20);
+assert.ok(hierarchy.every(paragraph => longParagraph.slice(paragraph.from, paragraph.to) === paragraph.sourcePhrase));
 
 for (const [query, correct, wrong] of [
   ['Ada hired Ben', 'Ben was hired by Ada.', 'Ada was hired by Ben.'],
@@ -39,6 +51,14 @@ const matcher = new RankedInNoteMatcher(options), source = Array.from({ length: 
 const hits = await matcher.search('Ada hired Ben', source); assert.equal(hits.length, 30, 'Find-all was capped at a shortlist size');
 assert.ok(hits.every(hit => source.slice(hit.from, hit.to) === hit.sourcePhrase));
 assert.equal((await matcher.search('Ben hired Ada', source)).length, 0, 'A reversed query reused an accepted relation');
+const stages = [], streamed = new RankedInNoteMatcher(options);
+const streamedHits = await streamed.search('Ada hired Ben', source, { onProgress: progress => { stages.push(progress.stage); assert.ok(progress.ranges.every(range => source.slice(range.from, range.to) === range.sourcePhrase)); } });
+assert.deepEqual(stages, ['paragraph', 'sentence']); assert.equal(streamedHits.length, 30);
+let live = true, modelCalls = 0;
+const cancelledStream = new RankedInNoteMatcher({ ...options, classify: async pairs => { modelCalls++; return options.classify(pairs); } });
+await assert.rejects(cancelledStream.search('Ada hired Ben', source, { isCurrent: () => live, onProgress: () => { live = false; } }), { name: 'AbortError' });
+assert.equal(modelCalls, 0, 'An obsolete paragraph preview queued sentence inference');
+streamed.dispose(); cancelledStream.dispose();
 const badGuard = new RankedInNoteMatcher({ ...options, guard: async pairs => pairs.map(() => ({ entailment: .8, neutral: .8, contradiction: .8 })) });
 await assert.rejects(badGuard.search('Ada hired Ben', 'Ada hired Ben.'), /invalid scores/);
 let preparing = true, calls = 0;
@@ -52,5 +72,12 @@ assert.equal((await shortlisting.questionRanking(shortlistPool, allPairs)).filte
 rankedPairs = 0;
 const mixedPairs = shortlistPool.map((_, index) => ({ query: 'question', passage: `${index === 0 ? 'answer' : 'unrelated'} ${index}`, cacheKey: `mixed ${index}` }));
 await shortlisting.questionRanking(shortlistPool, mixedPairs); assert.ok(rankedPairs < 40, 'A sparse answer query scored the entire note'); shortlisting.dispose();
+let meaningPairs = 0;
+const adaptive = new RankedInNoteMatcher({ ...options, classify: async pairs => { meaningPairs += pairs.length; return pairs.map(pair => pair.premise.startsWith('answer') ? { entailment: .99, neutral: .005, contradiction: .005 } : { entailment: .001, neutral: .998, contradiction: .001 }); } });
+const allUnits = shortlistPool.map((unit, index) => ({ ...unit, phrase: `answer ${index}` }));
+assert.equal((await adaptive.sentenceMeaning(allUnits, 'question')).filter(score => !score.unscored).length, 80, 'Sentence verification capped an answer-rich note');
+meaningPairs = 0;
+const sparseUnits = shortlistPool.map((unit, index) => ({ ...unit, phrase: `${index === 0 ? 'answer' : 'irrelevant'} ${index}` }));
+await adaptive.sentenceMeaning(sparseUnits, 'sparse question'); assert.ok(meaningPairs < 40, 'A sparse fragment verified every sentence'); adaptive.dispose();
 matcher.dispose(); badGuard.dispose(); cancelling.dispose(); database.close();
 console.log('Ranked in-note checks passed: role and polarity guards, inverse relations, logical proof scope, persistent cache isolation, 30 occurrences, invalid scores, and preparation cancellation.');
