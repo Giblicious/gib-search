@@ -10,7 +10,8 @@ const { profileScoreRows, strongestProfileFindings, writingProfileConfidence, wr
 const { registerCommandAlias } = require('./command-compat');
 const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } = require('./search-result-open');
 const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-index-store');
-const BUILD_VERSION = '0.54.59';
+const { normalizeIndexScope } = require('./index-scope');
+const BUILD_VERSION = '0.54.60';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -722,14 +723,14 @@ class SemanticSearchModal extends SuggestModal {
         const tweaks = activeTweaks(this.plugin);
         const requested = Math.max(this.visibleLimit || tweaks.topK, tweaks.topK);
         const rawMultiplier = this.plugin.settings.revisionBundlingEnabled ? 5 : 4; let rawLimit = this.filePath ? Math.min(1000, requested + 10) : Math.min(1000, Math.max(requested * rawMultiplier, 40));
-        const options = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: false, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 15, file: this.filePath };
+        const options = { scoreWindow: tweaks.scoreWindow, folderPathBoost: !this.filePath && this.plugin.settings.folderPathBoostEnabled ? tweaks.folderPathBoost : 0, semanticHighlights: false, distinctFiles: !this.filePath, resultMinScore: tweaks.highlightResultMinScore, singleWordMinScore: tweaks.highlightSingleWordMinScore, phraseMinScore: tweaks.highlightPhraseMinScore, maxPhrases: tweaks.highlightMaxPhrases, highlightLimit: 15, file: this.filePath };
         if (!this.filePath && this.activeQuickFilterIds.size) options.files = await this.plugin.quickFilterPaths(this.activeQuickFilterIds, 'search');
         const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search);
-        let results = await runSearch(query, rawLimit, tweaks.minScore, options), revisionCatalog = null; if (!this.filePath && this.plugin.settings.revisionBundlingEnabled) { revisionCatalog = await this.plugin.revisionCatalog(); for (let pass = 0; pass < 2 && results.length === rawLimit && rawLimit < 1000; pass++) { const preview = bundleRevisionResults(groupSearchResults(results, query, Number.MAX_SAFE_INTEGER), revisionCatalog); if (preview.length >= requested) break; rawLimit = Math.min(1000, rawLimit * 2); results = await runSearch(query, rawLimit, tweaks.minScore, options); } }
+        let results = await runSearch(query, rawLimit, tweaks.minScore, options), revisionCatalog = null; if (!this.filePath && this.plugin.settings.revisionBundlingEnabled) { revisionCatalog = await this.plugin.revisionCatalog(); while (new Set(results.map(result => result.file)).size >= rawLimit && rawLimit < 1000) { const preview = bundleRevisionResults(groupSearchResults(results, query, Number.MAX_SAFE_INTEGER), revisionCatalog); if (preview.length > requested) break; rawLimit = Math.min(1000, rawLimit * 2); results = await runSearch(query, rawLimit, tweaks.minScore, options); } }
         if (version === this.searchVersion && query === this.lastQuery) {
           const grouped = this.filePath ? passageSearchResults(results, query, results.length) : groupSearchResults(results, query, Number.MAX_SAFE_INTEGER), all = revisionCatalog ? bundleRevisionResults(grouped, revisionCatalog) : grouped;
           this.lastResults = all.slice(0, requested); this.mapResults = all;
-          this.canLoadMore = all.length > requested || (results.length === rawLimit && rawLimit < 1000);
+          this.canLoadMore = all.length > requested || ((this.filePath ? results.length : new Set(results.map(result => result.file)).size) >= rawLimit && rawLimit < 1000);
           this.refreshSuggestions();
           window.setTimeout(() => { this.renderShowMore(); if (this.plugin.atlasEnabled) this.updateMap(); }, 0);
           if (this.plugin.atlasEnabled) this.applyView();
@@ -1288,7 +1289,8 @@ class SimilarNotesView extends ItemView {
     if (version !== this.refreshVersion || this.selectionQuery !== selection || !this.contentEl?.isConnected) return;
     const loading = retainCurrent ? null : this.contentEl.createDiv({ cls: 'gib-similar-empty', text: 'Finding notes related to the selection…' });
     try {
-      const tweaks = activeTweaks(this.plugin), options = { scoreWindow: Math.max(.18, Number(tweaks.scoreWindow) || 0), folderPathBoost: 0, semanticHighlights: false }, revisionCatalog = this.plugin.settings.revisionBundlingEnabled && selection.sourcePath ? await this.plugin.revisionCatalog() : null, revisionSeries = revisionCatalog?.byFile?.get(selection.sourcePath), versionPaths = new Set((revisionSeries?.revisions || []).map(revision => revision.file)); if (allowedPaths !== null) options.files = allowedPaths;
+      const tweaks = activeTweaks(this.plugin), options = { scoreWindow: Math.max(.18, Number(tweaks.scoreWindow) || 0), folderPathBoost: 0, semanticHighlights: false, distinctFiles: true }, revisionCatalog = this.plugin.settings.revisionBundlingEnabled && selection.sourcePath ? await this.plugin.revisionCatalog() : null, revisionSeries = revisionCatalog?.byFile?.get(selection.sourcePath), versionPaths = new Set((revisionSeries?.revisions || []).map(revision => revision.file));
+      options.files = new Set(this.plugin.search.files().filter(file => file.extension.toLowerCase() === 'md' && file.path !== selection.sourcePath && !versionPaths.has(file.path) && (allowedPaths === null || allowedPaths.has(file.path))).map(file => file.path));
       const raw = await this.plugin.search.search(selection.text, Math.min(180, Math.max(48, limit * 6)), minimum, options); if (version !== this.refreshVersion || this.selectionQuery !== selection || !this.contentEl?.isConnected) return; const highlightSource = { text: selection.text }, highlighted = tweaks.semanticHighlights ? raw.map(hit => { const phrases = relatedHighlightPhrases(highlightSource, hit, tweaks.highlightMaxPhrases); return { ...hit, semanticHighlights: phrases.body.map(phrase => ({ phrase, score: 1 })), headingHighlights: phrases.heading.map(phrase => ({ phrase, score: 1 })) }; }) : raw;
       const results = groupSearchResults(highlighted, selection.text, Number.MAX_SAFE_INTEGER).filter(result => { const file = this.app.vault.getAbstractFileByPath(result.file); return file instanceof TFile && file.extension.toLowerCase() === 'md' && result.file !== selection.sourcePath && result.score >= minimum && !versionPaths.has(result.file); }).slice(0, limit);
       if (retainCurrent) { this.contentEl.empty(); this.renderHeader(null); } else loading?.remove();
@@ -1392,8 +1394,24 @@ class SearchSettings extends PluginSettingTab {
   }
   async saveQuickFilters() { this.plugin.settings.quickFilters = normalizeQuickFilters(this.plugin.settings.quickFilters); this.plugin.clearQuickFilterCache(); await this.plugin.save(); for (const leaf of this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)) { leaf.view.activeQuickFilterIds = defaultQuickFilterIds(this.plugin, 'similar'); leaf.view?.refresh?.(); } }
   openQuickFilterEditor(filter = null) { new QuickFilterEditorModal(this.app, this.plugin, filter, async updated => { const existing = this.plugin.settings.quickFilters.findIndex(item => item.id === updated.id); if (existing >= 0) this.plugin.settings.quickFilters.splice(existing, 1, updated); else this.plugin.settings.quickFilters.push(updated); await this.saveQuickFilters(); this.display(); }).open(); }
+  renderIndexScope() {
+    new Setting(this.pageEl).setName('Index scope').setHeading();
+    const draft = normalizeIndexScope(this.plugin.settings);
+    let preview, apply;
+    const refresh = () => { const counts = this.plugin.search.scopePreview(draft); preview?.setText(`${counts.included} vault files included; ${counts.excluded} excluded. Applying removes ${counts.removed} currently indexed files and queues ${counts.added} files. Notes are untouched.`); };
+    for (const [key, label, description, placeholder] of [
+      ['indexIncludedFolders', 'Include folders', 'Comma-separated vault folders and their subfolders. Blank includes the whole vault.', 'Writings, Reference'],
+      ['indexExcludedFolders', 'Exclude folders', 'Skip reading and embedding these subtrees.', 'Archive, Imports'],
+      ['indexExcludedExtensions', 'Exclude file extensions', 'Skip these file types, including filename-only results. Blank keeps all types.', 'tmp, log'],
+    ]) new Setting(this.pageEl).setName(label).setDesc(description).addText(text => text.setPlaceholder(placeholder).setValue(draft[key].join(', ')).onChange(value => { draft[key] = normalizeIndexScope({ [key]: value })[key]; refresh(); }));
+    const control = new Setting(this.pageEl).setName('Apply index scope').addButton(button => { apply = button; button.setButtonText('Apply scope').onClick(async () => {
+      apply.setDisabled(true); try { Object.assign(this.plugin.settings, normalizeIndexScope(draft)); await this.plugin.save(); await this.plugin.search.applyIndexScope(); refresh(); new Notice(this.plugin.search.enabled ? 'Index scope applied' : 'Index scope saved; it will apply when indexing resumes'); } catch (error) { this.plugin.reportOnce(error.message); } finally { apply.setDisabled(false); }
+    }); });
+    preview = control.descEl; refresh();
+  }
   renderSearchPage() {
     const tweaks = activeTweaks(this.plugin);
+    this.renderIndexScope();
     new Setting(this.pageEl).setName('Ranking').setHeading();
     new Setting(this.pageEl).setName('Minimum score').setDesc('Hide weak semantic matches (0–1).').addSlider(s => s.setLimits(0, 1, .01).setValue(tweaks.minScore).setDynamicTooltip().onChange(async value => { tweaks.minScore = value; await this.plugin.save(); }));
     new Setting(this.pageEl).setName('Score window').setDesc('Keep results this close to the strongest match.').addSlider(s => s.setLimits(.05, 1, .01).setValue(tweaks.scoreWindow).setDynamicTooltip().onChange(async value => { tweaks.scoreWindow = value; await this.plugin.save(); }));
@@ -1492,7 +1510,7 @@ module.exports = class GibSearch extends Plugin {
       bge: Object.assign({}, MODEL_TWEAK_DEFAULTS.bge, legacyTweaks, loaded.modelTweaks?.mobile || {}, loaded.modelTweaks?.bge || {}),
     };
     this.settings.revisionBundleFolders = Array.isArray(loaded.revisionBundleFolders) ? loaded.revisionBundleFolders.map(value => String(value).trim().replace(/^\/+|\/+$/g, '')).filter(Boolean) : [];
-    this.settings.quickFilters = normalizeQuickFilters(loaded.quickFilters); this.quickFilterScopeCache = new Map(); this.quickFilterScopeGeneration = 0;
+    this.settings.quickFilters = normalizeQuickFilters(loaded.quickFilters); Object.assign(this.settings, normalizeIndexScope(loaded)); this.quickFilterScopeCache = new Map(); this.quickFilterScopeGeneration = 0;
     this.legacyModelsPath = loaded.modelsPath || ''; delete this.settings.embeddingModel; delete this.settings.modelsPath;
     delete this.settings.nodePath;
     if (!loaded.folderPathBoostSettingsMigrated) {
@@ -1519,7 +1537,7 @@ module.exports = class GibSearch extends Plugin {
     }
     this.desktopEmbedder = new DesktopEmbedder(this);
     this.search = this.indexer = new MobileSearchRuntime(this); this.atlas = new AtlasEngine(this); this.runtime = { ready: () => true, install: async () => true, stop: () => this.desktopEmbedder?.stop(), storageBytes: () => this.isMobile ? 0 : directorySize(this.modelDir) }; this.indexer.watch();
-    const invalidateVaultDerivedData = () => { this.quickFilterScopeGeneration++; this.quickFilterScopeCache.clear(); this.invalidateRevisionCatalog(this.settings.revisionBundlingEnabled); }; this.registerEvent(this.app.metadataCache.on('changed', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('create', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('delete', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('rename', invalidateVaultDerivedData));
+    const invalidateVaultDerivedData = () => { this.quickFilterScopeGeneration++; this.quickFilterScopeCache.clear(); this.invalidateRevisionCatalog(this.settings.revisionBundlingEnabled); }; this.registerEvent(this.app.metadataCache.on('changed', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('create', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('modify', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('delete', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('rename', invalidateVaultDerivedData));
     this.registerView(SIMILAR_NOTES_VIEW, leaf => new SimilarNotesView(leaf, this));
     this.registerView(WRITING_PROFILE_VIEW, leaf => new WritingProfileView(leaf, this));
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => { if (!this.settings.writingProfileIndexEnabled) return; const file = this.app.workspace.getActiveFile(); if (file instanceof TFile && file.extension.toLowerCase() === 'md') this.search.prioritizeWritingProfile(file.path); }));
@@ -1545,14 +1563,19 @@ module.exports = class GibSearch extends Plugin {
   async save() { await this.saveData(this.settings); }
   clearQuickFilterCache() { this.quickFilterScopeGeneration++; this.quickFilterScopeCache?.clear(); }
   async quickFilterPaths(activeIds, surface) {
-    const ids = [...activeIds].sort(), key = JSON.stringify([this.quickFilterScopeGeneration, surface, ids, this.settings.quickFilters]); if (!ids.length) return null; const cached = this.quickFilterScopeCache.get(key); if (cached) return cached;
-    const files = this.app.vault.getFiles(), paths = new Set(); for (let start = 0; start < files.length; start += 160) { for (const resolved of resolveQuickFilterPaths(files.slice(start, start + 160), file => this.app.metadataCache.getFileCache(file), this.settings.quickFilters, ids)) paths.add(resolved); if (start + 160 < files.length) await new Promise(resolve => window.setTimeout(resolve, 0)); } paths.scopeKey = key;
-    this.quickFilterScopeCache.set(key, paths); if (this.quickFilterScopeCache.size > 12) this.quickFilterScopeCache.delete(this.quickFilterScopeCache.keys().next().value); return paths;
+    const now = Date.now(), ids = [...activeIds].sort(), key = JSON.stringify([this.quickFilterScopeGeneration, surface, ids, this.settings.quickFilters]); if (!ids.length) return null; const cached = this.quickFilterScopeCache.get(key); if (cached && now < cached.expiresAt) return cached.paths;
+    const files = this.app.vault.getFiles(), paths = new Set(), dated = this.settings.quickFilters.filter(filter => filter.enabled && ids.includes(filter.id) && (filter.modifiedWithinDays || filter.createdWithinDays)); let expiresAt = dated.length ? now + 60000 : Infinity;
+    for (let start = 0; start < files.length; start += 160) {
+      const batch = files.slice(start, start + 160); for (const resolved of resolveQuickFilterPaths(batch, file => this.app.metadataCache.getFileCache(file), this.settings.quickFilters, ids, now)) paths.add(resolved);
+      for (const file of batch) for (const filter of dated) for (const [days, timestamp] of [[filter.modifiedWithinDays, file.stat?.mtime], [filter.createdWithinDays, file.stat?.ctime]]) { const expiry = Number(timestamp || 0) + Number(days || 0) * 86400000 + 1; if (days && expiry > now) expiresAt = Math.min(expiresAt, expiry); }
+      if (start + 160 < files.length) await new Promise(resolve => window.setTimeout(resolve, 0));
+    }
+    paths.scopeKey = JSON.stringify([key, now]); this.quickFilterScopeCache.set(key, { paths, expiresAt }); if (this.quickFilterScopeCache.size > 12) this.quickFilterScopeCache.delete(this.quickFilterScopeCache.keys().next().value); return paths;
   }
   async revisionCatalog() {
     if (!this.settings.revisionBundlingEnabled) return { byFile: new Map(), series: new Map() };
     const folders = this.settings.revisionBundleFolders, generation = this.revisionCatalogGeneration || 0, metaReference = this.search.meta, folderSignature = JSON.stringify(folders); if (this.revisionCatalogCache?.generation === generation && this.revisionCatalogCache.metaReference === metaReference && this.revisionCatalogCache.folderSignature === folderSignature) return this.revisionCatalogCache.catalog; if (this.revisionCatalogPending?.generation === generation && this.revisionCatalogPending.metaReference === metaReference && this.revisionCatalogPending.folderSignature === folderSignature) return this.revisionCatalogPending.promise;
-    const files = this.app.vault.getFiles().filter(file => file.extension.toLowerCase() === 'md'), metadata = new Map(files.map(file => [file.path, this.app.metadataCache.getFileCache(file)])), eligible = files.filter(file => revisionGroupValue(metadata.get(file.path)?.frontmatter || {}) || revisionFolderInScope(file.path, folders)), indexFingerprints = new Map(); for (const item of metaReference) if (!item.filenameOnly) indexFingerprints.set(item.file, item.contentHash || item.mtime || 0);
+    const files = this.search.files().filter(file => file.extension.toLowerCase() === 'md'), metadata = new Map(files.map(file => [file.path, this.app.metadataCache.getFileCache(file)])), eligible = files.filter(file => revisionGroupValue(metadata.get(file.path)?.frontmatter || {}) || revisionFolderInScope(file.path, folders)), indexFingerprints = new Map(); for (const item of metaReference) if (!item.filenameOnly) indexFingerprints.set(item.file, item.contentHash || item.mtime || 0);
     const controls = eligible.map(file => { const frontmatter = metadata.get(file.path)?.frontmatter || {}, properties = revisionProperties(frontmatter); return [file.path, indexFingerprints.get(file.path) || `${file.stat?.mtime || 0}:${file.stat?.size || 0}`, properties.group, properties.date, properties.current, properties.excluded, properties.revises]; }).sort((a, b) => a[0].localeCompare(b[0])), signature = JSON.stringify([folders, controls]); if (this.revisionCatalogCache?.signature === signature) return this.revisionCatalogCache.catalog; if (this.revisionCatalogPending?.signature === signature) return this.revisionCatalogPending.promise;
     const eligiblePaths = new Set(eligible.map(file => file.path)), fingerprints = new Map(controls.map(row => [row[0], row[1]])), text = new Map(); for (const item of metaReference) { if (item.filenameOnly || !eligiblePaths.has(item.file)) continue; const existing = text.get(item.file) || ''; if (existing.length < 120000) text.set(item.file, `${existing}\n${item.heading || ''}\n${item.text || ''}`.slice(0, 120000)); } this.revisionSignatureCache ||= new Map(); for (const cachedPath of this.revisionSignatureCache.keys()) if (!eligiblePaths.has(cachedPath)) this.revisionSignatureCache.delete(cachedPath); const signatureFor = (file, create) => { const fingerprint = fingerprints.get(file), cached = this.revisionSignatureCache.get(file); if (cached?.fingerprint === fingerprint) return cached.signature; const value = create(); this.revisionSignatureCache.set(file, { fingerprint, signature: value }); return value; };
     const promise = buildRevisionCatalog(eligible, file => metadata.get(file.path), file => text.get(file) || '', folders, () => new Promise(resolve => window.setTimeout(resolve, 0)), signatureFor).then(catalog => { if (generation === (this.revisionCatalogGeneration || 0) && metaReference === this.search.meta) this.revisionCatalogCache = { signature, generation, metaReference, folderSignature, catalog }; return catalog; }).finally(() => { if (this.revisionCatalogPending?.promise === promise) this.revisionCatalogPending = null; }); this.revisionCatalogPending = { signature, generation, metaReference, folderSignature, promise }; return promise;

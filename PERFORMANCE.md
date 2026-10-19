@@ -9,6 +9,9 @@ Gib Search treats responsiveness and index integrity as release requirements.
 - twenty warm hybrid lexical candidate searches across 20,000 documents;
 - segmented desktop persistence that rewrites only dirty buckets, omits filename-only zero vectors, and recovers the previous complete snapshot after corruption;
 - bounded runtime timing histories that cannot grow without limit.
+- complete one-file commits in a 25,000-passage index with realistic passage text, including lexical maintenance, without rereading unchanged passage text.
+
+Lexical maintenance caches unchanged passage keys, path features and entity sets and adjusts per-file spelling counts and BM25 entries only for changed or deleted notes. Queries hold a consistent metadata/vector/lexical snapshot across cooperative yields. Vault-wide retrieval reserves result slots for distinct files before selecting their strongest passages; semantic ranking completes before the result list is displayed.
 
 Runtime diagnostics retain only local, aggregate timing samples. They include rolling median, 95th-percentile, and maximum search, index-update, commit, and persistence times. No note content or telemetry leaves the device.
 

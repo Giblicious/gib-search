@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -21,7 +23,9 @@ jobs:
         run: |
           VERSION=$(node -p "require('./manifest.json').version")
           test "$GITHUB_REF_NAME" = "$VERSION"
+          git merge-base --is-ancestor HEAD origin/main
       - run: npm ci --no-audit --no-fund
+      - run: npm audit --audit-level=moderate
       - run: npm run check
       - run: npm run audit:in-file
       - name: Publish complete release

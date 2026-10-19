@@ -12,7 +12,7 @@ function indexBucket(file, count = BUCKETS) {
 function sliceBuffer(bytes) { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); }
 
 class DesktopIndexStore {
-  constructor(directory, dependencies) { this.directory = directory; this.fs = dependencies.fs; this.path = dependencies.path; this.crypto = dependencies.crypto; }
+  constructor(directory, dependencies) { this.directory = directory; this.fs = dependencies.fs; this.path = dependencies.path; this.crypto = dependencies.crypto; this.verifiedSnapshot = null; this.verifiedSequence = null; }
   segmentDirectory() { return this.path.join(this.directory, 'segments'); }
   generationDirectory() { return this.path.join(this.directory, 'generations'); }
   checksum(value) { return this.crypto.createHash('sha256').update(value).digest('hex'); }
@@ -58,7 +58,7 @@ class DesktopIndexStore {
       try {
         const manifest = await this.manifest();
         if (manifest?.format === FORMAT && manifest.version === FORMAT_VERSION) {
-          for (const snapshot of [manifest.current, manifest.previous].filter(Boolean)) try { return await this.readSnapshot(snapshot); } catch (error) { lastError = error; }
+          for (const snapshot of [manifest.current, manifest.previous].filter(Boolean)) try { const value = await this.readSnapshot(snapshot); this.verifiedSnapshot = snapshot; this.verifiedSequence = manifest.sequence; return value; } catch (error) { lastError = error; }
           throw lastError || new Error('No complete desktop index snapshot is available');
         }
         if (manifest?.current) for (const generation of [manifest.current, manifest.previous].filter(Boolean)) try { const value = await this.readLegacyGeneration(generation); if (value) return value; } catch (error) { lastError = error; }
@@ -79,13 +79,16 @@ class DesktopIndexStore {
     return { id, records: group.meta.length, semanticRecords: semantic.length, metadataBytes: Buffer.byteLength(metadataSource), vectorBytes: vectorData.byteLength, metadataSha256: this.checksum(metadataSource), vectorsSha256: this.checksum(vectorData) };
   }
   async put(value, options = {}) {
-    this.fs.mkdirSync(this.directory, { recursive: true }); const segments = this.segmentDirectory(); this.fs.mkdirSync(segments, { recursive: true }); const previousManifest = await this.manifest(), incremental = previousManifest?.format === FORMAT && previousManifest.version === FORMAT_VERSION, sequence = Math.max(1, Number(previousManifest?.sequence || 0) + 1), dirtyFiles = new Set(options.dirtyFiles || []), force = Boolean(options.force) || !incremental, dirtyBuckets = force ? null : new Set([...dirtyFiles].map(file => indexBucket(file))), sourceVectors = value.vectorList || null, packed = sourceVectors ? null : new Float32Array(value.vectors || new ArrayBuffer(0)), groups = new Map();
+    this.fs.mkdirSync(this.directory, { recursive: true }); const segments = this.segmentDirectory(); this.fs.mkdirSync(segments, { recursive: true }); const previousManifest = await this.manifest(), incremental = previousManifest?.format === FORMAT && previousManifest.version === FORMAT_VERSION;
+    let base = incremental && this.verifiedSequence === previousManifest.sequence ? this.verifiedSnapshot : null;
+    if (incremental && !base) for (const snapshot of [previousManifest.current, previousManifest.previous].filter(Boolean)) { try { await this.readSnapshot(snapshot); base = snapshot; break; } catch {} }
+    const sequence = Math.max(1, Number(previousManifest?.sequence || 0) + 1), dirtyFiles = new Set(options.dirtyFiles || []), force = Boolean(options.force) || !base, dirtyBuckets = force ? null : new Set([...dirtyFiles].map(file => indexBucket(file))), sourceVectors = value.vectorList || null, packed = sourceVectors ? null : new Float32Array(value.vectors || new ArrayBuffer(0)), groups = new Map();
     value.meta.forEach((item, index) => { const bucket = indexBucket(item.file); if (dirtyBuckets && !dirtyBuckets.has(bucket)) return; const group = groups.get(bucket) || { meta: [], vectors: [] }; group.meta.push(options.packMeta ? options.packMeta(item) : item); group.vectors.push(sourceVectors ? sourceVectors[index] : packed.subarray(index * DIMENSION, (index + 1) * DIMENSION)); groups.set(bucket, group); });
-    const currentBuckets = incremental ? { ...(previousManifest.current?.buckets || {}) } : {}, bucketsToWrite = force ? new Set([...Array(BUCKETS).keys()]) : dirtyBuckets;
+    const currentBuckets = base ? { ...(base.buckets || {}) } : {}, bucketsToWrite = force ? new Set([...Array(BUCKETS).keys()]) : dirtyBuckets;
     const writes = [...bucketsToWrite].filter(bucket => groups.get(bucket)?.meta.length); for (const bucket of bucketsToWrite) if (!groups.get(bucket)?.meta.length) delete currentBuckets[bucket];
     for (let offset = 0; offset < writes.length; offset += 16) { const batch = writes.slice(offset, offset + 16), descriptors = await Promise.all(batch.map(bucket => this.writeSegment(bucket, groups.get(bucket), sequence))); batch.forEach((bucket, index) => { currentBuckets[bucket] = descriptors[index]; }); }
-    const descriptors = Object.values(currentBuckets), current = { sequence, buckets: currentBuckets, records: descriptors.reduce((sum, descriptor) => sum + Number(descriptor.records || 0), 0), metadataBytes: descriptors.reduce((sum, descriptor) => sum + Number(descriptor.metadataBytes || 0), 0), vectorBytes: descriptors.reduce((sum, descriptor) => sum + Number(descriptor.vectorBytes || 0), 0), lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null, committedAt: Date.now() }, previous = incremental ? previousManifest.current : null, manifest = { format: FORMAT, version: FORMAT_VERSION, sequence, bucketCount: BUCKETS, dimension: DIMENSION, current, previous }, target = this.path.join(this.directory, 'index.current.json'), temporary = `${target}.${sequence}.download`;
-    await this.fs.promises.writeFile(temporary, JSON.stringify(manifest)); await this.fs.promises.rename(temporary, target); await this.cleanup(manifest, !incremental); return manifest;
+    const descriptors = Object.values(currentBuckets), current = { sequence, buckets: currentBuckets, records: descriptors.reduce((sum, descriptor) => sum + Number(descriptor.records || 0), 0), metadataBytes: descriptors.reduce((sum, descriptor) => sum + Number(descriptor.metadataBytes || 0), 0), vectorBytes: descriptors.reduce((sum, descriptor) => sum + Number(descriptor.vectorBytes || 0), 0), lastSuccessfulIndexAt: value.lastSuccessfulIndexAt || null, committedAt: Date.now() }, previous = base, manifest = { format: FORMAT, version: FORMAT_VERSION, sequence, bucketCount: BUCKETS, dimension: DIMENSION, current, previous }, target = this.path.join(this.directory, 'index.current.json'), temporary = `${target}.${sequence}.download`;
+    await this.fs.promises.writeFile(temporary, JSON.stringify(manifest)); await this.fs.promises.rename(temporary, target); this.verifiedSnapshot = current; this.verifiedSequence = sequence; await this.cleanup(manifest, !incremental); return manifest;
   }
   async cleanup(manifest, removeLegacy) {
     const keep = new Set([...Object.values(manifest.current?.buckets || {}), ...Object.values(manifest.previous?.buckets || {})].map(descriptor => descriptor.id));

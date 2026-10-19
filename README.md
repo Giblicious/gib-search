@@ -20,6 +20,10 @@ The experimental Atlas and graph surfaces are temporarily disabled while they ar
 
 Plugin settings are divided into Status, Search, and Console pages. Status reports the search index and local model independently; Console provides a bounded live account of local work without logging note contents.
 
+**Search → Index scope** can restrict indexing to selected folders, exclude subtrees, or exclude file extensions. Blank rules retain the whole vault and filename-only attachment search. The preview shows how many files will be included, excluded, removed from the generated index, or newly queued; nothing changes until **Apply scope** is selected. Scope changes affect desktop indexing and mobile bootstrap packages without changing note files. Paused indexes apply saved scope changes when indexing resumes.
+
+Vault search waits for its semantic ranking before displaying results. It does not display an exact-first list and then replace its order with semantic results. Long notes retain up to three strong passages per result while distinct files receive their own result slots.
+
 ## Install with BRAT
 
 1. Install and enable **BRAT** in Obsidian.
@@ -40,6 +44,7 @@ The release-blocking synthetic performance budgets and local-only runtime measur
 - Notes, queries, embeddings, and indexes remain on the local device.
 - Inference runs directly inside Obsidian using desktop WebGPU or the bundled WebAssembly fallback.
 - BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached. GPU-capable desktops cache its fp16 model; the fallback engine and mobile cache its q8 model. Enabling Writing Profile indexing also downloads the local MobileBERT MNLI analysis model in desktop fp16 or fallback/mobile q8 form.
+- Search in the current file lazily downloads the local MS MARCO TinyBERT L2 passage reranker in q8 form. It runs in the background worker; queries and passages stay on the device.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 
@@ -52,6 +57,7 @@ Gib Search uses **BGE Small English v1.5**, a compact local embedding model chos
 ## Commands
 
 - **Semantic search**
+- **Search current file**
 - **Open Similar Notes**
 - **Open Writing Profile**
 
@@ -63,6 +69,8 @@ npm run check
 ```
 
 `npm run build` bundles the shared inference runtime and its compressed WebAssembly binary into `main.js`, allowing BRAT to install the plugin using Obsidian's standard three release assets.
+
+Release tags must be reachable from `main`; the release workflow verifies ancestry, the manifest version, the complete check suite, labeled semantic relevance, and the full locked dependency audit before publishing. Native Node-only dependencies used by the development harness are pinned with security overrides; the production browser bundle uses the separate WebAssembly/WebGPU runtime.
 
 ## License
 

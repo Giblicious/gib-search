@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.54.60
+
+- Keeps semantic search as one completed ranking, with no exact-first result list or later semantic reorder.
+- Prevents edits, renames, and deletions during inference or staged checkpoints from marking obsolete passages current; retries retain all pending paths and cover same-timestamp file events.
+- Preserves the last verified desktop and mobile snapshot as the base for writes after corruption recovery, so a later incremental save cannot discard a healthy rollback.
+- Holds consistent search snapshots across index updates and prevents old in-flight queries from repopulating the new index's result cache.
+- Reuses unchanged lexical records and adjusts spelling/BM25 data per changed file, removing whole-index passage rehashing from ordinary edits.
+- Gives distinct notes their own retrieval slots before selecting up to three strong passages, including selection search and revision-bundle overfetch.
+- Expires relative-date quick-filter caches at their next time boundary and invalidates file-derived scopes on attachment modifications.
+- Adds previewed folder inclusion, folder exclusion, and extension exclusion rules in Search settings, applied explicitly to indexing and mobile packages without editing notes.
+- Refreshes security-sensitive development dependencies, documents every active model download and cache location, and gates releases on the full dependency audit and ancestry from the canonical main branch.
+- Adds behavioral regression coverage for concurrent changes, desktop and IndexedDB recovery, ranking stability, file diversity, scope expiration, and complete incremental-commit performance.
+
 ## 0.54.59
 
 - Doubles the spacing between Similar Notes cards from 4px to 8px so individual results read as distinct items without loosening their internal layout.
