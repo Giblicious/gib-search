@@ -12,7 +12,7 @@ const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } 
 const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-index-store');
 const { normalizeIndexScope } = require('./index-scope');
 const { inNoteProjection } = require('./in-note-search');
-const BUILD_VERSION = '0.54.64';
+const BUILD_VERSION = '0.54.65';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -191,6 +191,8 @@ class DesktopEmbedder {
     if (message.type === 'topic-label-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.topicLabelActivity?.(`Downloading topic labeler: ${percent}%`); return; }
     if (message.type === 'relation-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.relationActivity?.(`Downloading relationship model: ${percent}%`); return; }
     if (message.type === 'reranker-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.modelActivity?.(`Downloading passage reranker: ${percent}%`); return; }
+    if (message.type === 'in-note-progress') { this.plugin.recordActivity?.('In-note search', `Downloading ${message.kind === 'rank' ? 'relevance' : 'consistency'} model: ${Math.round(Number(message.progress) || 0)}%`, 'working'); return; }
+    if (message.type === 'in-note-ready') { this.plugin.recordActivity?.('In-note search', `${message.kind === 'rank' ? 'Relevance' : 'Consistency'} model ready`, 'success'); return; }
     if (message.type === 'progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.modelActivity?.(`Downloading ${message.file}: ${percent}%`); return; }
     const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); clearTimeout(pending.timer);
     if (message.type === 'error') pending.reject(new Error(message.message));
@@ -256,8 +258,17 @@ class DesktopEmbedder {
   }
   releaseInNoteWorker() { this.inNoteWorker?.stop(); this.inNoteWorker = null; }
   rerankPassages(pairs) { return this.request({ type: 'rerank', pairs }, 180000); }
+  inNotePairs(pairs, kind) {
+    if (!pairs.length) return Promise.resolve([]);
+    this.inNoteRelevanceWorker ||= new DesktopEmbedder(this.plugin, { relationOnly: true });
+    return this.inNoteRelevanceWorker.request({ type: kind === 'rank' ? 'in-note-rank' : 'in-note-guard', pairs }, 300000);
+  }
+  prepareInNoteModels() {
+    this.inNoteRelevanceWorker ||= new DesktopEmbedder(this.plugin, { relationOnly: true });
+    return this.inNoteRelevanceWorker.request({ type: 'in-note-warm' }, 300000);
+  }
   generateTopicLabels(prompts) { return this.request({ type: 'topic-labels', prompts }, 600000); }
-  stop() { this.inNoteWorker?.stop(); this.inNoteWorker = null; const worker = this.worker; this.worker = null; this.disabled = false; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('Desktop embedding worker stopped')); } this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
+  stop() { this.inNoteRelevanceWorker?.stop(); this.inNoteRelevanceWorker = null; this.inNoteWorker?.stop(); this.inNoteWorker = null; const worker = this.worker; this.worker = null; this.disabled = false; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('Desktop embedding worker stopped')); } this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
 }
 function activeTweaks(plugin) {
   return plugin.settings.modelTweaks.bge;
@@ -993,6 +1004,9 @@ class SemanticInNoteSearch {
     this.observer = new MutationObserver(() => { clearTimeout(this.paintTimer); this.paintTimer = window.setTimeout(() => this.paintHighlights(), 40); });
     const content = this.host.querySelector('.cm-content, .ProseMirror'); if (content) this.observer.observe(content, { childList: true, subtree: true, characterData: true });
     this.input.focus();
+    const preparationVersion = this.queryVersion;
+    if (this.options.semantic) this.plugin.desktopEmbedder?.prepareInNoteModels?.().catch(error => this.plugin.logDiagnostic(`In-file models unavailable: ${error.message}`));
+    this.sourceText().then(source => this.plugin.search.prepareInNote?.(source, { isCurrent: () => Boolean(this.el?.isConnected) && this.queryVersion === preparationVersion && !this.input.value.trim() })).catch(error => { if (error.name !== 'AbortError') this.plugin.logDiagnostic(`In-file preparation unavailable: ${error.message}`); });
   }
   buildOptions() {
     this.optionsRow = this.el.createDiv({ cls: 'gib-in-note-find-options' }); this.optionsRow.hidden = true;
@@ -1591,7 +1605,7 @@ module.exports = class GibSearch extends Plugin {
     const invalidateVaultDerivedData = () => { this.quickFilterScopeGeneration++; this.quickFilterScopeCache.clear(); this.invalidateRevisionCatalog(this.settings.revisionBundlingEnabled); }; this.registerEvent(this.app.metadataCache.on('changed', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('create', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('modify', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('delete', invalidateVaultDerivedData)); this.registerEvent(this.app.vault.on('rename', invalidateVaultDerivedData));
     this.registerView(SIMILAR_NOTES_VIEW, leaf => new SimilarNotesView(leaf, this));
     this.registerView(WRITING_PROFILE_VIEW, leaf => new WritingProfileView(leaf, this));
-    this.registerEvent(this.app.workspace.on('active-leaf-change', () => { if (!this.settings.writingProfileIndexEnabled) return; const file = this.app.workspace.getActiveFile(); if (file instanceof TFile && file.extension.toLowerCase() === 'md') this.search.prioritizeWritingProfile(file.path); }));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => { this.prepareActiveNote(); if (!this.settings.writingProfileIndexEnabled) return; const file = this.app.workspace.getActiveFile(); if (file instanceof TFile && file.extension.toLowerCase() === 'md') this.search.prioritizeWritingProfile(file.path); }));
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, view) => { const file = view?.file || this.app.workspace.getActiveFile(); if (file instanceof TFile && file.extension.toLowerCase() === 'md') menu.addItem(item => item.setTitle('Search current file').setIcon('file-search').onClick(() => this.launchFileSearch(file.path))); const selection = String(editor?.getSelection?.() || '').trim(); if (selection.length >= 3) menu.addItem(item => item.setTitle('Find similar to selection').setIcon('search').onClick(() => this.openSimilarToSelection(selection, file?.path || ''))); }));
     this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => { if (file instanceof TFile && file.extension.toLowerCase() === 'md') menu.addItem(item => item.setTitle('Search within file').setIcon('file-search').onClick(() => this.launchFileSearch(file.path))); }));
     if (this.atlasEnabled) { this.registerView(GRAPH_VIEW, leaf => new GraphView(leaf, this)); this.registerView(NAVIGATOR_VIEW, leaf => new AtlasNavigatorView(leaf, this)); this.registerView(NEIGHBORHOOD_VIEW, leaf => new NeighborhoodView(leaf, this)); }
@@ -1667,5 +1681,14 @@ module.exports = class GibSearch extends Plugin {
     try { let leaf = this.app.workspace.getLeavesOfType(SIMILAR_NOTES_VIEW)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false) || this.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: SIMILAR_NOTES_VIEW, active: true }); } this.app.workspace.revealLeaf(leaf); if (leaf.view instanceof SimilarNotesView && (leaf.view.selectionQuery?.text !== query || leaf.view.selectionQuery?.sourcePath !== pending.sourcePath)) leaf.view.showSelection(query, pending.sourcePath); return leaf; }
     finally { if (this.pendingSimilarSelection === pending) this.pendingSimilarSelection = null; }
   }
-  onunload() { this.activeInNoteSearch?.close(); this.runtime?.stop(); this.indexer?.stop(); }
+  prepareActiveNote() {
+    clearTimeout(this.inNotePreparationTimer); const generation = this.inNotePreparationGeneration = (this.inNotePreparationGeneration || 0) + 1;
+    this.inNotePreparationTimer = setTimeout(async () => {
+      const file = this.app.workspace.getActiveFile(), leaf = this.app.workspace.activeLeaf;
+      if (!(file instanceof TFile) || file.extension.toLowerCase() !== 'md' || this.search.phase !== 'ready' || this.search.liveRunning || this.search.livePending || this.activeInNoteSearch) return;
+      const valid = () => generation === this.inNotePreparationGeneration && this.app.workspace.activeLeaf === leaf && !this.activeInNoteSearch && !this.search.liveRunning && !this.search.livePending && this.search.phase === 'ready';
+      try { const source = leaf?.view?.editor?.getValue?.() ?? await this.app.vault.cachedRead(file); await this.search.prepareInNote(source, { isCurrent: valid }); } catch (error) { if (error.name !== 'AbortError') this.logDiagnostic(`In-file preparation unavailable: ${error.message}`); }
+    }, 1500);
+  }
+  onunload() { clearTimeout(this.inNotePreparationTimer); this.inNotePreparationGeneration = (this.inNotePreparationGeneration || 0) + 1; this.activeInNoteSearch?.close(); this.search?.inNoteMatcher?.dispose(); this.runtime?.stop(); this.indexer?.stop(); }
 };

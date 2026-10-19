@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.54.65
+
+- Adds dedicated in-note relevance ranking and consistency checks, with grammatical checks for negation, active/passive roles, reversed relationships, conditional claims, and implicit opposites. A related topic or the same names in the opposite relationship cannot establish a match.
+- Treats natural questions as answer retrieval, preserving useful negative answers. Grounds requested actions in predicates so a shared topic noun cannot supply the action; continues checking complete sentences before highlighting the relevant phrase.
+- Prepares the active note in cancellable background batches, reuses identical sentence checks across every occurrence, and persists a separate, vault-specific note-vector cache capped at 16 MiB. Numbered record labels remain context rather than altering the sentence claim. No vault-wide sentence index is built.
+- Loads two pinned local models for in-note relevance and consistency in a separate CPU worker (about 110 MB of additional quantized model weights downloaded on first use). Opening in-note Find warms these models; first preparation and model loading remain slower than subsequent queries.
+- Expands model-backed release checks to include role reversal, negation scope, inverse relationships, questions, abstention, repeated mixed-topic notes, and source offsets. Adds browser checks for both CPU and WebGPU embedding paths, model isolation, and phrase highlights.
+- Leaves vault retrieval, its models and ranking, and vault-result highlighting unchanged.
+
 ## 0.54.64
 
 - Prevents a matching section heading or shared topic from turning unrelated sentences into in-note Meaning matches. Embeds and verifies sentences independently; headings can help retrieve candidates or resolve references such as "it" or "this topic", but cannot supply a sentence's entire claim.

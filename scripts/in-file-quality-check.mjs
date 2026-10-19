@@ -8,6 +8,8 @@ import { embedInNote } from '../src/in-note-embedding.js';
 import { inNotePhraseCases, additionalPhraseCases } from './in-note-phrase-cases.mjs';
 import { additionalInNoteCases } from './in-note-cases.mjs';
 import { inNoteRelevanceCases } from './in-note-relevance-cases.mjs';
+import { inNoteLogicCases } from './in-note-logic-cases.mjs';
+import { inNoteQuestionCases } from './in-note-question-cases.mjs';
 
 const argumentsFor = name => process.argv.filter(value => value.startsWith(`--${name}=`)).map(value => value.slice(name.length + 3)), argument = name => argumentsFor(name)[0] || '';
 const modelRoot = argument('model-root') || process.env.GIB_SEARCH_MODEL_ROOT || '';
@@ -16,6 +18,18 @@ const inspectionFile = argument('file'), inspectionQueries = argumentsFor('query
 if (modelRoot) { env.localModelPath = modelRoot.replaceAll('\\', '/'); env.allowLocalModels = true; env.allowRemoteModels = false; }
 const extractor = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', { dtype, device: 'cpu' });
 const classifier = await pipeline('text-classification', argument('nli-model') || 'Xenova/mobilebert-uncased-mnli', { dtype: 'q8', device: 'cpu' });
+const relevanceModel = await pipeline('text-classification', 'Xenova/ms-marco-MiniLM-L-6-v2', { revision: 'a09144355adeed5f58c8ed011d209bf8ee5a1fec', dtype: 'q8', device: 'cpu' });
+const consistencyModel = await pipeline('text-classification', 'Xenova/nli-deberta-v3-xsmall', { revision: '2a4f614a701367a02d51389039afc998faeda637', dtype: 'q8', device: 'cpu' });
+const inNotePairs = async (pairs, kind) => {
+  if (!pairs.length) return [];
+  const result = [], batchSize = plugin.isMobile ? 4 : 12;
+  for (let offset = 0; offset < pairs.length; offset += batchSize) {
+    const batch = pairs.slice(offset, offset + batchSize);
+    if (kind === 'guard') result.push(...await classifyWith(consistencyModel, batch));
+    else { const features = relevanceModel.tokenizer(batch.map(pair => pair.query), { text_pair: batch.map(pair => pair.passage), padding: true, truncation: true, max_length: 192 }); result.push(...(await relevanceModel.model(features)).logits.data); }
+  }
+  return result;
+};
 const parallelClassifier = process.argv.includes('--parallel-meaning') ? await pipeline('text-classification', argument('nli-model') || 'Xenova/mobilebert-uncased-mnli', { dtype: 'q8', device: 'cpu' }) : null;
 const embed = async texts => {
   if (!texts.length) return [];
@@ -56,6 +70,7 @@ cases.forEach(test => { test.required = true; });
 cases.push(...additionalInNoteCases);
 cases.push(...additionalPhraseCases);
 cases.push(...inNoteRelevanceCases);
+cases.push(...inNoteLogicCases, ...inNoteQuestionCases);
 const caseFilter = argument('case'); if (caseFilter) cases.splice(0, cases.length, ...cases.filter(test => test.name.toLowerCase().includes(caseFilter.toLowerCase())));
 if (inspectionFile && inspectionQueries.length) {
   const literalPattern = value => new RegExp(String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), splitPatterns = value => String(value || '').split(';;').map(item => item.trim()).filter(Boolean).map(literalPattern), expected = argumentsFor('expect'), forbidden = argumentsFor('forbid'), source = await readFile(inspectionFile, 'utf8');
@@ -65,7 +80,7 @@ const report = [], failures = [];
 for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile]) {
   plugin.isMobile = mobileProfile; let assertions = 0, forbiddenHits = 0, positives = 0, found = 0, phraseAssertions = 0; const durations = [];
   for (const test of cases) {
-    const runtime = new MobileSearchRuntime(plugin); runtime.embedBatch = embed; runtime.classifyRelationPairs = classify;
+    const runtime = new MobileSearchRuntime(plugin); runtime.embedBatch = embed; runtime.classifyRelationPairs = classify; runtime.inNotePairs = inNotePairs;
     // The real UI's live-source method, with no index preloaded or patched scores.
     for (const mode of Object.keys(IN_NOTE_PRESETS)) {
       const started = performance.now(), result = await runtime.searchInNote(test.query, test.source, { breadth: mode, diagnostics: true }), elapsed = performance.now() - started, matches = result.matches, highlights = matches.map(match => match.sourcePhrase);
@@ -75,6 +90,7 @@ for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile
       assertions += (test.forbidden || []).length + (test.empty ? 1 : 0); forbiddenHits += forbidden.length;
       for (const pattern of forbidden) failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} admitted ${pattern}: ${JSON.stringify(highlights)}`);
       if (test.empty && highlights.length) { forbiddenHits += highlights.length; failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} invented matches: ${JSON.stringify(highlights)}`); }
+      if (mode !== 'precise' && Number.isInteger(test.expectedCount) && highlights.length !== test.expectedCount) failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} expected ${test.expectedCount} occurrences, received ${highlights.length}`);
       assert.ok(matches.every(match => test.source.slice(match.from, match.to) === match.sourcePhrase), `${test.name} lost source offsets`);
       assert.ok(matches.every(match => !match.highlight || match.highlight.from >= match.from && match.highlight.to <= match.to && test.source.slice(match.highlight.from, match.highlight.to) === match.highlight.sourcePhrase), `${test.name} lost phrase offsets`);
       const phraseCheck = inNotePhraseCases[test.name];
@@ -90,4 +106,4 @@ for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile
 }
 if (argument('report')) await writeFile(argument('report'), JSON.stringify({ report, failures }, null, 2));
 assert.equal(failures.length, 0, `In-note quality failures:\n${failures.join('\n')}`);
-await extractor.dispose(); await classifier.dispose(); await parallelClassifier?.dispose();
+await extractor.dispose(); await classifier.dispose(); await parallelClassifier?.dispose(); await relevanceModel.dispose(); await consistencyModel.dispose();

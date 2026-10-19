@@ -1,7 +1,7 @@
 // In-note matching deliberately has no dependency on the vault's passage index.
 // Every finding retains its occurrence in the exact editor snapshot that was scored.
 import { inNoteFocusRange, inNoteWordAlignment, inNoteEvidence } from './in-note-focus.js';
-export const IN_NOTE_MATCH_VERSION = 4;
+export const IN_NOTE_MATCH_VERSION = 5;
 export const IN_NOTE_PRESETS = Object.freeze({
   precise: { similarity: .48, entailment: .60, contradiction: .25, neutralSimilarity: .70 },
   balanced: { similarity: .40, entailment: .40, contradiction: .35, neutralSimilarity: .60 },
@@ -70,7 +70,7 @@ export function inNoteUnits(source) {
     if (fenced) { flush(); if (!fence) fence = fenced[1]; else if (fenced[1][0] === fence[0] && fenced[1].length >= fence.length) fence = ''; continue; }
     if (fence || !line.trim()) { flush(); list = false; continue; }
     const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+)/u);
-    if (heading) { flush(); headings.length = heading[1].length; headings[heading[1].length - 1] = inNoteProjection(heading[2]).text; blocks.push({ from: offset + line.indexOf(heading[2]), to: offset + line.length, heading: headings.slice(0, -1).filter(Boolean).join(' > '), topics: headings.slice(0, -1).filter(Boolean), line: lineIndex }); list = false; continue; }
+    if (heading) { flush(); headings.length = heading[1].length; headings[heading[1].length - 1] = inNoteProjection(heading[2]).text; blocks.push({ from: offset + line.indexOf(heading[2]), to: offset + line.length, heading: headings.slice(0, -1).filter(Boolean).join(' > '), topics: headings.slice(0, -1).filter(Boolean), line: lineIndex, isHeading: true }); list = false; continue; }
     const listItem = /^\s*(?:>\s*)*(?:[-*+]\s+|\d+[.)]\s+)/u.test(line);
     if (/^(?:\s{4}|\t)/u.test(line) && !listItem && !list) { flush(); continue; }
     const prefix = line.match(/^\s*(?:(?:>\s*)*(?:[-*+]\s+|\d+[.)]\s+)?(?:\[[ xX]\]\s*)?)/u)?.[0].length || 0;
@@ -84,18 +84,21 @@ export function inNoteUnits(source) {
     // Decimal numbers and times inside a line keep their context.
     const sentences = [...projection.text.matchAll(/(?:[^.!?]|[.!?](?!\s|$))+(?:[.!?]+(?=\s|$)|$)/gu)];
     for (const sentence of sentences) {
-      const words = [...sentence[0].matchAll(/\S+/gu)];
+      // A numbered record label is structural context, like a list marker or
+      // heading. It must not change the statement submitted to the verifier.
+      const record = block.isHeading ? null : sentence[0].match(/^\s*[\p{L}][\p{L}\p{N} _-]{0,40}\s+\d+:\s+/u), label = record?.[0].trim().replace(/:$/u, ''), content = record ? sentence[0].slice(record[0].length) : sentence[0];
+      const words = [...content.matchAll(/\S+/gu)];
       if (!words.length) continue;
       let start = 0;
       while (start < words.length) {
         if (words[start][0].length > 220) { start++; continue; }
         let end = start + 1;
         while (end < words.length && end - start < 36 && words[end].index + words[end][0].length - words[start].index <= 220) end++;
-        const fromPlain = sentence.index + words[start].index, toPlain = sentence.index + words[end - 1].index + words[end - 1][0].length;
+        const fromPlain = sentence.index + (record?.[0].length || 0) + words[start].index, toPlain = sentence.index + (record?.[0].length || 0) + words[end - 1].index + words[end - 1][0].length;
         const from = block.from + projection.positions[fromPlain], to = block.from + projection.positions[toPlain - 1] + 1;
         const phrase = projection.text.slice(fromPlain, toPlain).trim().replace(/\s+/gu, ' ');
         if (phrase.length >= 3) {
-          const unit = { from, to, phrase, sourcePhrase: text.slice(from, to), heading: block.heading, topics: block.topics.map(topic => topic.slice(-160)), line: block.line }, positions = []; let space = false;
+          const unit = { from, to, phrase, sourcePhrase: text.slice(from, to), heading: [block.heading, label].filter(Boolean).join(' > '), contextHeading: block.heading, topics: [...block.topics, ...(label ? [label] : [])].map(topic => topic.slice(-160)), line: block.line, isHeading: Boolean(block.isHeading) }, positions = []; let space = false;
           for (let index = fromPlain; index < toPlain; index++) { const nextSpace = /\s/u.test(projection.text[index]); if (!nextSpace || !space) positions.push(block.from + projection.positions[index] - from); space = nextSpace; }
           Object.defineProperty(unit, 'displayPositions', { value: new Uint32Array(positions) }); units.push(unit);
         }
@@ -151,7 +154,7 @@ export class InNoteMatcher {
     const run = (this.pending || Promise.resolve()).then(() => this.searchCurrent(query, source, options));
     this.pending = run.catch(() => {}); return run;
   }
-  async searchCurrent(query, source, { breadth = 'balanced', isCurrent, diagnostics = false } = {}) {
+  async searchCurrent(query, source, { breadth = 'balanced', isCurrent, diagnostics = false, retrievalOnly = false } = {}) {
     current(isCurrent); const text = String(source || ''), literalQuery = String(query || '').trim();
     if (literalQuery.length < 2 || !text.trim()) return [];
     const preset = IN_NOTE_PRESETS[breadth] || IN_NOTE_PRESETS.balanced, key = JSON.stringify([literalQuery, text, breadth]), cached = this.results.get(key);
@@ -175,6 +178,9 @@ export class InNoteMatcher {
       }
       return { ...unit, unitIndex: index, contextual, bodySimilarity, similarity: score, coverage: new Set(meaningWords(unit.phrase).filter(word => queryWords.has(word))).size };
     }).filter(unit => unit.similarity >= preset.similarity);
+    // Answer retrieval uses its full-sentence ranker and consistency checks;
+    // defer token attribution until an answer is actually selected.
+    if (retrievalOnly) return { matches: [], candidates: retrieved };
     for (let index = 0; index < retrieved.length; index++) {
       if (index && index % 64 === 0) { current(isCurrent); await this.yieldControl(); }
       const unit = retrieved[index], alignment = inNoteWordAlignment(queryFocus, vectors[unit.unitIndex].focus);

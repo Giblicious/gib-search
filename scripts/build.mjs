@@ -36,4 +36,5 @@ await build({
   logLevel: 'warning', legalComments: 'none',
 });
 const outputPath = path.join(root, 'main.js');
-fs.writeFileSync(outputPath, fs.readFileSync(outputPath, 'utf8').replace(/[ \t]+$/gm, ''));
+const notices = fs.readFileSync(path.join(root, 'THIRD_PARTY_NOTICES.txt'), 'utf8').replace(/[ \t]+$/gm, '');
+fs.writeFileSync(outputPath, fs.readFileSync(outputPath, 'utf8').replace(/[ \t]+$/gm, '') + `\n/*!\n${notices.replace(/\*\//g, '* /')}\n*/\n`);

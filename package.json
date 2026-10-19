@@ -1,11 +1,11 @@
 {
   "name": "gib-search",
-  "version": "0.54.64",
+  "version": "0.54.65",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node scripts/check.mjs && node scripts/search-check.mjs && node scripts/in-note-check.mjs && node scripts/in-note-focus-check.mjs && node scripts/hardening-check.mjs && node scripts/performance-check.mjs && node scripts/desktop-index-check.mjs && node scripts/command-compat-check.mjs && node scripts/search-hotkeys-check.mjs && node scripts/terrain-check.mjs && node scripts/mobile-bootstrap-check.mjs && node scripts/revision-bundles-check.mjs",
+    "check": "node scripts/check.mjs && node scripts/search-check.mjs && node scripts/in-note-check.mjs && node scripts/in-note-ranked-check.mjs && node scripts/in-note-focus-check.mjs && node scripts/hardening-check.mjs && node scripts/performance-check.mjs && node scripts/desktop-index-check.mjs && node scripts/command-compat-check.mjs && node scripts/search-hotkeys-check.mjs && node scripts/terrain-check.mjs && node scripts/mobile-bootstrap-check.mjs && node scripts/revision-bundles-check.mjs",
     "benchmark:performance": "node scripts/performance-check.mjs",
     "check:desktop-index": "node scripts/desktop-index-check.mjs",
     "audit:in-file": "node scripts/in-file-quality-check.mjs --all-budgets --parallel-meaning",
@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "@huggingface/transformers": "3.8.1",
+    "compromise": "14.14.4",
     "esbuild": "0.25.12",
     "fake-indexeddb": "6.2.6"
   },
