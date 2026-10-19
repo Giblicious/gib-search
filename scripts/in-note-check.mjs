@@ -4,6 +4,23 @@ import vm from 'node:vm';
 import { InNoteMatcher, inNoteProjection, inNoteUnits } from '../src/in-note-search.js';
 import { MobileSearchRuntime } from '../src/mobile-runtime.js';
 
+function semanticVector(text) {
+  const words = [...text.matchAll(/[a-z]+/giu)].map(match => ({ from: match.index, to: match.index + match[0].length, text: match[0].toLowerCase() })), vectors = new Int8Array(words.length * 3);
+  words.forEach((word, index) => { vectors[index * 3 + (/^(?:repair|repaired)$/.test(word.text) ? 0 : /^(?:engine|motor)$/.test(word.text) ? 1 : 2)] = 127; });
+  const vector = new Float32Array([1, 0, 0]); vector.focus = { words, vectors, dimension: 3 }; return vector;
+}
+const verifiedPremises = [], groundedMatcher = new InNoteMatcher({ embed: async texts => texts.map(semanticVector), classify: async pairs => { verifiedPremises.push(...pairs.map(pair => pair.premise)); return pairs.map(() => ({ entailment: .99, neutral: .005, contradiction: .005 })); }, yieldControl: async () => {} });
+const headedNote = '## Repair engine\n\nThe garden receives sunlight.\n\nThey repaired the motor.';
+const groundedMatches = await groundedMatcher.search('repair engine', headedNote);
+assert.ok(groundedMatches.some(match => /repaired the motor/.test(match.phrase)));
+assert.ok(!groundedMatches.some(match => /garden/.test(match.phrase)), 'Even 99% NLI confidence bypassed missing sentence evidence');
+assert.ok(!verifiedPremises.some(premise => /garden/.test(premise)), 'An unrelated sentence consumed an avoidable verifier call');
+assert.ok(verifiedPremises.includes('They repaired the motor.'), 'The verifier was given a heading as a sentence assertion');
+assert.equal((await groundedMatcher.search('repair engine', '## Engine\n\nRepair it tomorrow.')).some(match => /Repair it tomorrow/.test(match.phrase)), true, 'Contextual retrieval discarded a heading-resolved reference');
+const repeatedReference = '## Engine\n\nRepair it tomorrow.\n\n## Garden\n\nRepair it tomorrow.', referenceMatches = await groundedMatcher.search('repair engine', repeatedReference);
+assert.equal(referenceMatches.filter(match => /Repair it tomorrow/.test(match.phrase)).length, 1, 'Identical wording inherited another occurrence\'s heading context');
+assert.ok(referenceMatches.some(match => match.from === repeatedReference.indexOf('Repair it tomorrow')));
+
 const source = '---\nalias: Private metadata\n---\n# Finance\n\n**Encrypt** the [[Records|private records]] and [backup](https://example.test/backup).\n\n```md\nIgnore this code example.\n```\n\nVersion 2.5 uses 1.2 GB.\nThis paragraph continues\non the next line.\n\n- Parent item\n    - Nested item\n';
 const units = inNoteUnits(source);
 assert.ok(units.every(unit => source.slice(unit.from, unit.to) === unit.sourcePhrase));
@@ -23,6 +40,10 @@ assert.ok(inNoteUnits(long).every(unit => unit.phrase.length <= 220));
 
 const affirmative = { entailment: .98, neutral: .01, contradiction: .01 }, unrelated = { entailment: .01, neutral: .98, contradiction: .01 }, contradiction = { entailment: .01, neutral: .01, contradiction: .98 };
 const embedding = async texts => texts.map(() => new Float32Array([1, 0]));
+const groupedBatches = [], grouped = new InNoteMatcher({ embed: embedding, batchSize: 2, classify: async pairs => { groupedBatches.push(pairs.map(pair => pair.premise.length)); return pairs.map(pair => ({ entailment: pair.premise.length / 100, contradiction: .01, neutral: .99 - pair.premise.length / 100 })); }, yieldControl: async () => {} });
+const groupedScores = await grouped.meaning([90, 10, 50, 10].map(length => ({ premise: 'x'.repeat(length), hypothesis: 'test' })));
+assert.deepEqual(groupedBatches, [[10, 50], [90]], 'Verifier batches did not group sentence lengths or deduplicate pairs');
+assert.deepEqual(groupedScores.map(score => score.entailment), [.9, .1, .5, .1], 'Grouped verification attached a score to the wrong occurrence');
 let embeddingCalls = 0, classificationCalls = 0;
 const matcher = new InNoteMatcher({ embed: async texts => { embeddingCalls++; return embedding(texts); }, classify: async pairs => { classificationCalls++; return pairs.map(pair => /repaired|fix the car/i.test(pair.premise) ? affirmative : unrelated); }, batchSize: 3 });
 const many = Array.from({ length: 30 }, (_, index) => `## Job ${index}\nThe mechanic repaired the automobile for client ${index}.`).join('\n\n');
@@ -37,6 +58,8 @@ const emptyMatcher = new InNoteMatcher({ embed: embedding, classify: async pairs
 assert.equal((await emptyMatcher.search('unavailable concept', 'An unrelated sentence is the best available candidate.')).length, 0, 'Relative best-of-bad candidates must abstain');
 const oppositeMatcher = new InNoteMatcher({ embed: embedding, classify: async pairs => pairs.map(() => contradiction) });
 assert.equal((await oppositeMatcher.search('data is encrypted', 'Data is not encrypted.')).length, 0, 'Complete keyword coverage bypassed meaning verification');
+const ambiguousMatcher = new InNoteMatcher({ embed: embedding, classify: async pairs => pairs.map(() => ({ entailment: .425, neutral: .263, contradiction: .312 })) });
+for (const breadth of ['balanced', 'broad']) assert.equal((await ambiguousMatcher.search('speak quietly', 'A quiet street leads to the park.', { breadth })).length, 0, 'A mixed contradiction verdict passed as a positive statement');
 let current = true, batches = 0;
 const cancelling = new InNoteMatcher({ embed: async texts => { batches++; current = false; return embedding(texts); }, classify: async () => { throw new Error('obsolete inference continued'); }, batchSize: 2 });
 await assert.rejects(cancelling.search('new query', many, { isCurrent: () => current }), { name: 'AbortError' }); assert.equal(batches, 1);

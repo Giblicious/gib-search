@@ -7,6 +7,7 @@ import { IN_NOTE_PRESETS } from '../src/in-note-search.js';
 import { embedInNote } from '../src/in-note-embedding.js';
 import { inNotePhraseCases, additionalPhraseCases } from './in-note-phrase-cases.mjs';
 import { additionalInNoteCases } from './in-note-cases.mjs';
+import { inNoteRelevanceCases } from './in-note-relevance-cases.mjs';
 
 const argumentsFor = name => process.argv.filter(value => value.startsWith(`--${name}=`)).map(value => value.slice(name.length + 3)), argument = name => argumentsFor(name)[0] || '';
 const modelRoot = argument('model-root') || process.env.GIB_SEARCH_MODEL_ROOT || '';
@@ -54,6 +55,7 @@ const cases = [
 cases.forEach(test => { test.required = true; });
 cases.push(...additionalInNoteCases);
 cases.push(...additionalPhraseCases);
+cases.push(...inNoteRelevanceCases);
 const caseFilter = argument('case'); if (caseFilter) cases.splice(0, cases.length, ...cases.filter(test => test.name.toLowerCase().includes(caseFilter.toLowerCase())));
 if (inspectionFile && inspectionQueries.length) {
   const literalPattern = value => new RegExp(String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), splitPatterns = value => String(value || '').split(';;').map(item => item.trim()).filter(Boolean).map(literalPattern), expected = argumentsFor('expect'), forbidden = argumentsFor('forbid'), source = await readFile(inspectionFile, 'utf8');
@@ -76,15 +78,15 @@ for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile
       assert.ok(matches.every(match => test.source.slice(match.from, match.to) === match.sourcePhrase), `${test.name} lost source offsets`);
       assert.ok(matches.every(match => !match.highlight || match.highlight.from >= match.from && match.highlight.to <= match.to && test.source.slice(match.highlight.from, match.highlight.to) === match.highlight.sourcePhrase), `${test.name} lost phrase offsets`);
       const phraseCheck = inNotePhraseCases[test.name];
-      if (phraseCheck) for (const match of matches) { assert.ok(match.highlight, `${test.name} did not produce phrase attribution`); assert.ok(phraseCheck.expected.test(match.highlight.phrase) && !phraseCheck.excluded?.test(match.highlight.phrase), `${test.name} ${mode} lost the relevant phrase: ${match.highlight.phrase}`); phraseAssertions += 2; }
+      if (phraseCheck) for (const match of matches) { if (!match.highlight || !phraseCheck.expected.test(match.highlight.phrase) || phraseCheck.excluded?.test(match.highlight.phrase)) failures.push(`${test.name} ${mode} lost the relevant phrase: ${match.highlight?.phrase}`); phraseAssertions += 2; }
       const row = { name: test.name, query: test.query, mobile: mobileProfile, mode, elapsed, highlights, phrases: matches.map(match => match.highlight?.phrase || match.phrase), missed: missed.map(String), forbidden: forbidden.map(String), ...(diagnostics ? { candidates: result.candidates } : {}) }; report.push(row);
       if (verbose) console.log(JSON.stringify(row));
     }
   }
   const p95 = durations.slice().sort((a, b) => a - b)[Math.max(0, Math.ceil(durations.length * .95) - 1)];
   console.log(`In-note audit: ${assertions} checks, ${cases.length} cases, all 3 breadth modes, ${mobileProfile ? 'mobile' : 'desktop'} batches; ${found}/${positives} paraphrases; ${forbiddenHits} forbidden hits; ${phraseAssertions} phrase-span checks; warm p95 ${p95.toFixed(1)} ms (${dtype}).`);
-  assert.ok(!positives || found / positives >= .95, `In-note paraphrase recall regressed below 95%: ${found}/${positives}`);
-  assert.ok(p95 < 5000, `In-note audit p95 is too slow: ${p95.toFixed(1)} ms`);
+  if (positives && found / positives < .95) failures.push(`In-note paraphrase recall regressed below 95%: ${found}/${positives}`);
+  if (p95 >= 5000) failures.push(`In-note audit p95 is too slow: ${p95.toFixed(1)} ms`);
 }
 if (argument('report')) await writeFile(argument('report'), JSON.stringify({ report, failures }, null, 2));
 assert.equal(failures.length, 0, `In-note quality failures:\n${failures.join('\n')}`);

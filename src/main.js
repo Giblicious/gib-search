@@ -12,7 +12,7 @@ const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } 
 const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-index-store');
 const { normalizeIndexScope } = require('./index-scope');
 const { inNoteProjection } = require('./in-note-search');
-const BUILD_VERSION = '0.54.63';
+const BUILD_VERSION = '0.54.64';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;

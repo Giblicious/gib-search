@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.64
+
+- Prevents a matching section heading or shared topic from turning unrelated sentences into in-note Meaning matches. Embeds and verifies sentences independently; headings can help retrieve candidates or resolve references such as "it" or "this topic", but cannot supply a sentence's entire claim.
+- Checks cached support for the query's content concepts before meaning verification; mixed verdicts need balanced evidence from the sentence itself, and a strong shared word cannot replace the rest of the requested meaning.
+- Reuses cached token representations for evidence and phrase highlights, skips unsupported verifier candidates, and retains cancellation between evidence batches without additional inference passes per query.
+- Groups similarly sized verification inputs to reduce CPU padding while restoring each result to its original occurrence.
+- Adds cross-topic relevance, quoted-text, heading-leakage, and actual browser backend regressions alongside the existing sentence, phrase, and source-location checks.
+
 ## 0.54.63
 
 - Keeps sentence retrieval, meaning verification, contradiction checks, thresholds, scores, and accepted occurrences unchanged while highlighting the relevant phrase inside each verified sentence.

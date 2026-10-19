@@ -1,11 +1,11 @@
 // In-note matching deliberately has no dependency on the vault's passage index.
 // Every finding retains its occurrence in the exact editor snapshot that was scored.
-import { inNoteFocusRange } from './in-note-focus.js';
-export const IN_NOTE_MATCH_VERSION = 3;
+import { inNoteFocusRange, inNoteWordAlignment, inNoteEvidence } from './in-note-focus.js';
+export const IN_NOTE_MATCH_VERSION = 4;
 export const IN_NOTE_PRESETS = Object.freeze({
   precise: { similarity: .48, entailment: .60, contradiction: .25, neutralSimilarity: .70 },
   balanced: { similarity: .40, entailment: .40, contradiction: .35, neutralSimilarity: .60 },
-  broad: { similarity: .34, entailment: .30, contradiction: .40, neutralSimilarity: .58 },
+  broad: { similarity: .34, entailment: .30, contradiction: .40, neutralSimilarity: .60 },
 });
 
 function remember(cache, key, value, limit) {
@@ -39,8 +39,8 @@ export function inNoteProjection(source) {
   return { text: characters.join(''), positions };
 }
 
-export function inNotePhraseHighlight(unit, queryFocus, passageFocus, contextOffset, sourcePositions) {
-  const range = inNoteFocusRange(queryFocus, passageFocus, contextOffset, contextOffset + unit.phrase.length);
+export function inNotePhraseHighlight(unit, queryFocus, passageFocus, contextOffset, sourcePositions, alignment) {
+  const range = inNoteFocusRange(queryFocus, passageFocus, contextOffset, contextOffset + unit.phrase.length, alignment);
   if (!range || range.from < 0 || range.to > unit.phrase.length || range.to <= range.from) return null;
   let projected = sourcePositions ? { text: unit.phrase, positions: sourcePositions } : null;
   if (!projected) {
@@ -70,12 +70,12 @@ export function inNoteUnits(source) {
     if (fenced) { flush(); if (!fence) fence = fenced[1]; else if (fenced[1][0] === fence[0] && fenced[1].length >= fence.length) fence = ''; continue; }
     if (fence || !line.trim()) { flush(); list = false; continue; }
     const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+)/u);
-    if (heading) { flush(); headings.length = heading[1].length; headings[heading[1].length - 1] = inNoteProjection(heading[2]).text; blocks.push({ from: offset + line.indexOf(heading[2]), to: offset + line.length, heading: headings.slice(0, -1).filter(Boolean).join(' > '), line: lineIndex }); list = false; continue; }
+    if (heading) { flush(); headings.length = heading[1].length; headings[heading[1].length - 1] = inNoteProjection(heading[2]).text; blocks.push({ from: offset + line.indexOf(heading[2]), to: offset + line.length, heading: headings.slice(0, -1).filter(Boolean).join(' > '), topics: headings.slice(0, -1).filter(Boolean), line: lineIndex }); list = false; continue; }
     const listItem = /^\s*(?:>\s*)*(?:[-*+]\s+|\d+[.)]\s+)/u.test(line);
     if (/^(?:\s{4}|\t)/u.test(line) && !listItem && !list) { flush(); continue; }
     const prefix = line.match(/^\s*(?:(?:>\s*)*(?:[-*+]\s+|\d+[.)]\s+)?(?:\[[ xX]\]\s*)?)/u)?.[0].length || 0;
     if (listItem) { flush(); list = true; }
-    if (!block) block = { from: offset + prefix, to: offset + line.length, heading: headings.filter(Boolean).join(' > '), line: lineIndex };
+    if (!block) block = { from: offset + prefix, to: offset + line.length, heading: headings.filter(Boolean).join(' > '), topics: headings.filter(Boolean), line: lineIndex };
     else block.to = offset + line.length;
   }
   flush();
@@ -95,7 +95,7 @@ export function inNoteUnits(source) {
         const from = block.from + projection.positions[fromPlain], to = block.from + projection.positions[toPlain - 1] + 1;
         const phrase = projection.text.slice(fromPlain, toPlain).trim().replace(/\s+/gu, ' ');
         if (phrase.length >= 3) {
-          const unit = { from, to, phrase, sourcePhrase: text.slice(from, to), heading: block.heading, line: block.line }, positions = []; let space = false;
+          const unit = { from, to, phrase, sourcePhrase: text.slice(from, to), heading: block.heading, topics: block.topics.map(topic => topic.slice(-160)), line: block.line }, positions = []; let space = false;
           for (let index = fromPlain; index < toPlain; index++) { const nextSpace = /\s/u.test(projection.text[index]); if (!nextSpace || !space) positions.push(block.from + projection.positions[index] - from); space = nextSpace; }
           Object.defineProperty(unit, 'displayPositions', { value: new Uint32Array(positions) }); units.push(unit);
         }
@@ -134,7 +134,9 @@ export class InNoteMatcher {
   async meaning(pairs, check) {
     const keys = pairs.map(pair => `${pair.premise}\0${pair.hypothesis}`), resolved = new Map(), missing = new Map();
     pairs.forEach((pair, index) => { const key = keys[index]; if (this.classifications.has(key)) resolved.set(key, this.classifications.get(key)); else missing.set(key, pair); });
-    const entries = [...missing];
+    // Group similarly sized premises so short sentences do not pay for the
+    // longest sentence's padding throughout every CPU verification batch.
+    const entries = [...missing].sort((first, second) => first[1].premise.length - second[1].premise.length);
     for (let offset = 0; offset < entries.length; offset += this.batchSize) {
       current(check); const batch = entries.slice(offset, offset + this.batchSize), values = await this.classify(batch.map(([, pair]) => pair)); current(check);
       if (values.length !== batch.length || values.some(value => !['entailment', 'neutral', 'contradiction'].every(key => Number.isFinite(value?.[key]) && value[key] >= 0 && value[key] <= 1) || Math.abs(value.entailment + value.neutral + value.contradiction - 1) > .01)) throw new Error('In-note meaning model returned invalid scores');
@@ -154,33 +156,66 @@ export class InNoteMatcher {
     if (literalQuery.length < 2 || !text.trim()) return [];
     const preset = IN_NOTE_PRESETS[breadth] || IN_NOTE_PRESETS.balanced, key = JSON.stringify([literalQuery, text, breadth]), cached = this.results.get(key);
     if (cached && !diagnostics) return cached;
-    const context = unit => [unit.heading.slice(-160), unit.phrase].filter(Boolean).join('. ');
     let prepared = this.sources.get(text);
-    if (!prepared) { const units = inNoteUnits(text); prepared = remember(this.sources, text, { units, representations: units.map(context), vectors: new Map() }, 2); }
+    if (!prepared) { const units = inNoteUnits(text); prepared = remember(this.sources, text, { units, representations: [...new Set(units.flatMap(unit => [unit.phrase, ...unit.topics]))], vectors: new Map() }, 2); }
     const { units, representations } = prepared, anchors = [...new Set(meaningWords(literalQuery))].slice(0, 8), queryWords = new Set(anchors);
     // Pin this note's vectors independently of the small shared phrase cache.
     // Otherwise notes over 2,048 units evict themselves on every new query.
-    const vectors = await this.embeddings(representations, isCurrent, prepared.vectors), [queryVector] = await this.embeddings([literalQuery], isCurrent);
-    const candidates = units.map((unit, index) => ({ ...unit, unitIndex: index, similarity: similarity(queryVector, vectors[index]), coverage: new Set(meaningWords(unit.phrase).filter(word => queryWords.has(word))).size })).filter(unit => unit.similarity >= preset.similarity);
-    // Classify each occurrence with its own heading; never score a neighboring
-    // sentence and then paint every occurrence of a winning string.
-    const scores = await this.meaning(candidates.map(unit => ({ premise: context(unit), hypothesis: literalQuery })), isCurrent);
-    const needsAnchors = anchors.length > 1 && candidates.some((unit, index) => unit.coverage > 0 && unit.coverage < anchors.length && scores[index].entailment >= preset.entailment && scores[index].entailment < .9 && scores[index].contradiction <= preset.contradiction);
+    await this.embeddings(representations, isCurrent, prepared.vectors);
+    const [queryVector] = await this.embeddings([literalQuery], isCurrent), vectors = units.map(unit => prepared.vectors.get(unit.phrase)), topicAlignments = new Map(), queryFocus = queryVector.focus;
+    const alignments = new Map(), retrieved = units.map((unit, index) => {
+      // Headings may improve candidate recall. They can fill missing concepts
+      // only when the sentence refers back to a topic; verification stays local.
+      const contextual = unit.topics.length > 0 && /\b(?:it|its|this|these|those|that|such|topic|subject)\b/iu.test(unit.phrase), vector = vectors[index];
+      const bodySimilarity = similarity(queryVector, vector); let score = bodySimilarity;
+      for (const topic of unit.topics) {
+        const heading = prepared.vectors.get(topic); let squared = 0, dot = 0;
+        for (let column = 0; column < vector.length; column++) { const value = .7 * vector[column] + .3 * heading[column]; squared += value * value; dot += queryVector[column] * value; }
+        score = Math.max(score, dot / (Math.sqrt(squared) || 1));
+      }
+      return { ...unit, unitIndex: index, contextual, bodySimilarity, similarity: score, coverage: new Set(meaningWords(unit.phrase).filter(word => queryWords.has(word))).size };
+    }).filter(unit => unit.similarity >= preset.similarity);
+    for (let index = 0; index < retrieved.length; index++) {
+      if (index && index % 64 === 0) { current(isCurrent); await this.yieldControl(); }
+      const unit = retrieved[index], alignment = inNoteWordAlignment(queryFocus, vectors[unit.unitIndex].focus);
+      const contexts = unit.contextual ? unit.topics.map(topic => { if (!topicAlignments.has(topic)) topicAlignments.set(topic, inNoteWordAlignment(queryFocus, prepared.vectors.get(topic).focus)); return topicAlignments.get(topic); }) : [];
+      unit.evidence = inNoteEvidence(alignment, contexts);
+      if (alignment && unit.evidence?.supported) alignments.set(unit.unitIndex, alignment);
+    }
+    const candidates = retrieved.filter(unit => !unit.evidence || unit.evidence.supported);
+    // Headings can resolve a topic for retrieval, but cannot assert that every
+    // sentence beneath them entails the query. Verify the actual occurrence.
+    const scores = await this.meaning(candidates.map(unit => ({ premise: unit.phrase, hypothesis: literalQuery })), isCurrent);
+    const needsAnchors = anchors.length > 1 && candidates.some((unit, index) => !unit.evidence && unit.coverage > 0 && unit.coverage < anchors.length && scores[index].entailment >= preset.entailment && scores[index].entailment < .9 && scores[index].contradiction <= preset.contradiction);
     const anchorVectors = needsAnchors ? await this.embeddings(anchors, isCurrent) : [];
     const findings = candidates.map((unit, index) => {
       const vector = vectors[unit.unitIndex];
       return { ...unit, ...scores[index], specificity: anchorVectors.length ? unit.similarity - Math.max(...anchorVectors.map(anchor => similarity(anchor, vector))) : -Infinity };
-    }).filter(unit => unit.contradiction <= preset.contradiction && (unit.entailment >= preset.entailment && (anchors.length < 2 || !unit.coverage || unit.coverage === anchors.length || unit.specificity >= -.015 || unit.entailment >= .9) || unit.neutral >= .90 && unit.entailment >= .015 && unit.contradiction <= .10 && unit.similarity >= preset.neutralSimilarity && !unit.coverage));
+    }).filter(unit => {
+      if (unit.contradiction > preset.contradiction) return false;
+      // A mixed verdict needs balanced support for every query concept in the
+      // sentence itself. A heading or one strong shared word cannot supply it.
+      const specific = unit.evidence || anchors.length < 2 || !unit.coverage || unit.coverage === anchors.length || unit.specificity >= -.015 || unit.entailment >= .9;
+      const entailed = unit.entailment >= preset.entailment && unit.entailment >= (unit.evidence?.reliable ? 1 : 2) * unit.contradiction && specific;
+      // A sentence with "it" or "this topic" may remain neutral in isolation.
+      // Only supported body + heading evidence may fill that missing reference.
+      const contextual = unit.contextual && unit.evidence?.supported;
+      const neutralSimilarity = contextual ? unit.similarity : unit.bodySimilarity;
+      const neutral = unit.neutral >= .90 && (unit.entailment >= .015 || contextual) && unit.contradiction <= .10 && neutralSimilarity >= preset.neutralSimilarity && !unit.coverage;
+      return entailed || neutral;
+    });
     current(isCurrent);
     const selected = [];
     for (const unit of findings.sort((a, b) => b.entailment - a.entailment || b.similarity - a.similarity)) {
       if (!selected.some(other => unit.from < other.to && unit.to > other.from)) selected.push(unit);
     }
     const matches = selected.sort((a, b) => a.from - b.from).map(unit => {
-      const highlight = inNotePhraseHighlight(unit, queryVector.focus, vectors[unit.unitIndex].focus, representations[unit.unitIndex].length - unit.phrase.length, prepared.units[unit.unitIndex].displayPositions);
+      const highlight = inNotePhraseHighlight(unit, queryFocus, vectors[unit.unitIndex].focus, 0, prepared.units[unit.unitIndex].displayPositions, alignments.get(unit.unitIndex));
       return { from: unit.from, to: unit.to, phrase: unit.phrase, sourcePhrase: unit.sourcePhrase, score: unit.entailment, similarity: unit.similarity, kind: 'semantic', ...(highlight ? { highlight } : {}) };
     });
     remember(this.results, key, matches, 4);
-    return diagnostics ? { matches, candidates: candidates.map((unit, index) => ({ ...unit, ...scores[index] })) } : matches;
+    if (!diagnostics) return matches;
+    const verified = new Map(candidates.map((unit, index) => [unit.unitIndex, scores[index]]));
+    return { matches, candidates: retrieved.map(unit => ({ ...unit, ...(verified.get(unit.unitIndex) || { rejected: 'unsupported-query-evidence' }) })) };
   }
 }

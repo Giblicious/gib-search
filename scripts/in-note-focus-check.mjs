@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { Tensor } from '@huggingface/transformers';
-import { packInNoteFocus, inNoteFocusRange } from '../src/in-note-focus.js';
+import { packInNoteFocus, inNoteFocusRange, inNoteWordAlignment, inNoteEvidence } from '../src/in-note-focus.js';
 import { embedInNote } from '../src/in-note-embedding.js';
 import { inNotePhraseHighlight, inNoteUnits } from '../src/in-note-search.js';
 
@@ -22,6 +22,21 @@ const markdown = 'The mechanic **repaired** the [[Fleet|automobile]] yesterday.'
 const marked = inNotePhraseHighlight({ ...unit, unitIndex: 0 }, query, normalized, 0, unit.displayPositions);
 assert.equal(marked.phrase, 'repaired the automobile'); assert.equal(markdown.slice(marked.from, marked.to), marked.sourcePhrase);
 assert.ok(marked.from > unit.from && marked.to < unit.to, 'The focused display still paints the whole sentence');
+const alignment = inNoteWordAlignment(query, normalized);
+assert.ok(inNoteEvidence(alignment).supported, 'A full paraphrase lost independent token support');
+assert.ok(inNoteEvidence(alignment).reliable, 'Balanced body support did not distinguish a full paraphrase from a shared topic');
+assert.equal(inNoteFocusRange(query, normalized, 0, Infinity, alignment).from, unit.phrase.indexOf('repaired'));
+const absent = inNoteWordAlignment(query, profile('The garden receives sunlight.'));
+assert.equal(inNoteEvidence(absent).supported, false, 'Unrelated body tokens passed whole-query evidence');
+const title = inNoteWordAlignment(query, profile('Fix the car', { fix: 0, car: 1 }));
+const onlyTitle = inNoteEvidence(absent, [title]);
+assert.ok(onlyTitle.complete && !onlyTitle.grounded && !onlyTitle.supported, 'A matching heading stood in for sentence evidence');
+assert.equal(onlyTitle.reliable, false, 'A matching title supplied confident sentence evidence');
+const reference = inNoteWordAlignment(query, profile('Repair it tomorrow.', { repair: 0 }));
+assert.equal(inNoteEvidence(reference).supported, false);
+assert.equal(inNoteEvidence(reference, [title]).supported, true, 'Heading context could not resolve a genuine reference');
+assert.equal(inNoteEvidence(inNoteWordAlignment(query, profile('Repair', { repair: 0 })), [title]).supported, false, 'A single partial concept inherited an entire multi-concept query');
+assert.equal(inNoteEvidence(null), null, 'Unavailable attribution did not leave sentence verification available');
 const packed = packInNoteFocus('Café running at 5:30pm', ['[CLS]', 'cafe', 'runn', '##ing', 'at', '5', ':', '30', '##pm', '[SEP]'], Float32Array.from({ length: 30 }, (_, index) => index % 3 + 1), new Float32Array(3), 3);
 assert.deepEqual(packed.words.map(word => word.text), ['cafe', 'running', 'at', '5:30pm']);
 assert.equal(packed.words[1].to - packed.words[1].from, 7, 'WordPiece continuation split the displayed word');

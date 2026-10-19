@@ -15,6 +15,7 @@ const parallel = process.argv.includes('--parallel');
 const unitCount = Number(process.argv.find(value => value.startsWith('--units='))?.slice(8)) || 400;
 const queryCount = Number(process.argv.find(value => value.startsWith('--query-count='))?.slice(14)) || 5;
 const matcherSource = process.argv.find(value => value.startsWith('--matcher-source='))?.slice(17);
+const embeddingSource = process.argv.find(value => value.startsWith('--embedding-source='))?.slice(19);
 const screenshotPath = process.argv.find(value => value.startsWith('--screenshot='))?.slice(13);
 const chrome = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 if (!fs.existsSync(chrome)) throw new Error(`Chrome was not found at ${chrome}; set CHROME_PATH to run this optional smoke check`);
@@ -24,8 +25,8 @@ const wasmModule = fs.readFileSync(path.join(root, 'node_modules', '@huggingface
   .replace('n="object"==typeof process&&"object"==typeof process.versions&&"string"==typeof process.versions.node&&"renderer"!=process.type', 'n=false')
   .replace("var isNode = typeof globalThis.process?.versions?.node == 'string';\nif (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';", 'var isNode = false;')
   .replace('Xa??=e.locateFile?e.locateFile?e.locateFile("ort-wasm-simd-threaded.jsep.wasm",v):v+"ort-wasm-simd-threaded.jsep.wasm":(new URL("ort-wasm-simd-threaded.jsep.wasm",import.meta.url)).href', 'Xa??="embedded.wasm"');
-const config = { type: 'init', mobile: false, preferWebGpu: !wasmOnly, hardwareConcurrency: 4, wasmThreads: 2, maximumEmbedBatchSize: 4, benchmark, batchSize, parallel, unitCount, queryCount, tokenFocus: !matcherSource, wasmGzip: zlib.gzipSync(wasm, { level: 9 }).toString('base64'), wasmModuleGzip: zlib.gzipSync(wasmModule, { level: 9 }).toString('base64') };
-const workerBuild = await build({ entryPoints: [path.join(root, 'src', 'desktop-embed-worker.js')], bundle: true, write: false, platform: 'browser', format: 'iife', target: 'es2020', conditions: ['browser', 'module', 'import'], define: { global: 'globalThis', 'process.env.NODE_ENV': '"production"', 'process.release.name': '"browser"' }, logLevel: 'silent', legalComments: 'none' });
+const config = { type: 'init', mobile: false, preferWebGpu: !wasmOnly, hardwareConcurrency: 4, wasmThreads: 2, maximumEmbedBatchSize: 4, benchmark, batchSize, parallel, unitCount, queryCount, relevanceEvidence: !matcherSource || process.argv.includes('--relevance-audit'), tokenFocus: !matcherSource || process.argv.includes('--token-focus'), wasmGzip: zlib.gzipSync(wasm, { level: 9 }).toString('base64'), wasmModuleGzip: zlib.gzipSync(wasmModule, { level: 9 }).toString('base64') };
+const workerBuild = await build({ entryPoints: [path.join(root, 'src', 'desktop-embed-worker.js')], bundle: true, write: false, platform: 'browser', format: 'iife', target: 'es2020', conditions: ['browser', 'module', 'import'], define: { global: 'globalThis', 'process.env.NODE_ENV': '"production"', 'process.release.name': '"browser"' }, logLevel: 'silent', legalComments: 'none', plugins: embeddingSource ? [{ name: 'frozen-baseline-embedding', setup(builder) { builder.onLoad({ filter: /in-note-embedding\.js$/ }, args => ({ contents: fs.readFileSync(embeddingSource, 'utf8'), loader: 'js', resolveDir: path.dirname(args.path) })); } }] : [] });
 const workerSource = workerBuild.outputFiles[0].text;
 
 let finish;
@@ -54,8 +55,15 @@ async function inNoteSmoke() {
   ];
   const findings = [];
   for (const check of checks) { const matches = await matcher.search(check.query, check.text); findings.push({ query: check.query, count: matches.length, expected: check.count, validOffsets: matches.every(match => check.text.slice(match.from, match.to) === match.sourcePhrase && (!configuration.tokenFocus || match.highlight && check.text.slice(match.highlight.from, match.highlight.to) === match.highlight.sourcePhrase)), phrases: matches.map(match => match.highlight?.phrase) }); }
-  const ui = configuration.tokenFocus ? await inNoteUiSmoke(matcher) : { ok: true, skipped: true };
-  return { ok: findings.every(check => check.count === check.expected && check.validOffsets) && ui.ok, findings, ui };
+  const ui = configuration.tokenFocus ? await inNoteUiSmoke(matcher) : { ok: true, skipped: true }, relevance = [];
+  if (configuration.relevanceEvidence) {
+    const { inNoteRelevanceCases } = await import('/in-note-relevance-cases.mjs');
+    for (const test of inNoteRelevanceCases) for (const breadth of ['precise', 'balanced', 'broad']) {
+      const { matches, candidates } = await matcher.search(test.query, test.source, { breadth, diagnostics: true }), forbidden = (test.forbidden || []).filter(pattern => matches.some(match => pattern.test(match.phrase))).length + (test.empty ? matches.length : 0), missed = (test.expected || []).filter(pattern => !matches.some(match => pattern.test(match.phrase))).length;
+      relevance.push({ name: test.name, breadth, forbidden, missed, ok: !forbidden && (breadth === 'precise' || !test.required || !missed), phrases: matches.map(match => match.highlight?.phrase || match.phrase), ...(missed || forbidden ? { candidates } : {}) });
+    }
+  }
+  return { ok: findings.every(check => check.count === check.expected && check.validOffsets) && ui.ok && relevance.every(check => check.ok), findings, ui, relevance };
 }
 async function inNoteUiSmoke(matcher) {
   const { SemanticInNoteSearch } = await import('/in-note-ui.js'), source = 'The mechanic **repaired** the [[Fleet|automobile]] after diagnosing the engine.\\n\\nThe mechanic **repaired** the [[Fleet|automobile]] after diagnosing the engine.';
@@ -111,6 +119,7 @@ worker.postMessage(configuration);
 const server = http.createServer((request, response) => {
   if (request.url === '/in-note-ui.js') { const main = fs.readFileSync(path.join(root, 'src/main.js'), 'utf8'), cleanStart = main.indexOf('function cleanSourceText('), clean = main.slice(cleanStart, main.indexOf('\nfunction ', cleanStart + 1)), pool = main.slice(main.indexOf('function inNoteSemanticPool('), main.indexOf('\nconst IMAGE_EXTENSION')), ui = main.slice(main.indexOf('class SemanticInNoteSearch'), main.indexOf('\nclass AtlasNavigatorView')); response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); response.end("import { inNoteProjection } from '/in-note-search.js';\n" + clean + '\n' + pool + '\n' + ui + '\nexport { SemanticInNoteSearch };'); return; }
   if (request.url === '/in-note-focus.js') { response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); response.end(fs.readFileSync(path.join(root, 'src/in-note-focus.js'), 'utf8')); return; }
+  if (request.url === '/in-note-relevance-cases.mjs') { response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); response.end(fs.readFileSync(path.join(root, 'scripts/in-note-relevance-cases.mjs'), 'utf8')); return; }
   if (request.url === '/desktop-embedder.js') { const main = fs.readFileSync(path.join(root, 'src/main.js'), 'utf8'), source = main.slice(main.indexOf('class DesktopEmbedder {'), main.indexOf('\nfunction activeTweaks(')); response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); response.end(`const configuration = await fetch('/config').then(response => response.json()); const EMBEDDED_DESKTOP_WORKER = await fetch('/worker.js').then(response => response.text()), EMBEDDED_WASM_GZIP = configuration.wasmGzip, EMBEDDED_WASM_MODULE_GZIP = configuration.wasmModuleGzip; ${source}; export { DesktopEmbedder };`); return; }
   if (request.url.startsWith('/model-cache?')) { const key = new URL(request.url, 'http://localhost').searchParams.get('key'), match = key?.match(/^https:\/\/huggingface.co\/([^/]+\/[^/]+)\/resolve\/[^/]+\/(.+)$/u), file = modelRoot && match && path.resolve(modelRoot, match[1], match[2]); if (file && file.startsWith(path.resolve(modelRoot) + path.sep) && fs.existsSync(file)) { response.writeHead(200); fs.createReadStream(file).pipe(response); } else { response.writeHead(404); response.end(); } return; }
   if (request.method === 'POST' && request.url === '/progress') { let body = ''; request.on('data', chunk => { body += chunk; }); request.on('end', () => { console.log(body); response.end('ok'); }); return; }

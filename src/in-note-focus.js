@@ -1,5 +1,5 @@
-// Display attribution only. These scores never admit or reject a search result.
-const FUNCTION_WORDS = new Set('a an the of to for from in on at is are was were be been being this that it its with and or how when what where who whom whose which his her their our your my each as before after again later by so there those these i you he she we they do does did have has had can could will would should may might among than then while although because both all some'.split(' '));
+// Reuse one token alignment for conservative query evidence and display focus.
+const FUNCTION_WORDS = new Set('a an the of to for from in on at about is are was were be been being this that it its with and or how when what where who whom whose which his her their our your my each as before after again later by so there those these i you he she we they do does did have has had can could will would should may might among than then while although because both all some'.split(' '));
 const NEGATION = /^(?:no|not|never|without|cannot|neither|nor|cant|wont|dont|doesnt|didnt|isnt|arent|wasnt|werent)$/u;
 const surfaceWords = text => { let previous = 0; return [...text.matchAll(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*(?:['’:_-][\p{L}\p{N}\p{M}]+)*/gu)].map(match => { const word = { from: match.index, to: match.index + match[0].length, text: wordKey(match[0]), breakBefore: /[,;.!?]/u.test(text.slice(previous, match.index)) }; previous = word.to; return word; }); };
 function wordKey(text) { return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/['’]/gu, ''); }
@@ -53,7 +53,7 @@ export function packInNoteFocus(text, pieces, hidden, center, dimension) {
   return { words: selected.map(({ word }) => word), vectors, dimension };
 }
 
-export function inNoteFocusRange(query, passage, from = 0, to = Infinity) {
+export function inNoteWordAlignment(query, passage, from = 0, to = Infinity) {
   if (!query?.words?.length || !passage?.words?.length || !query.vectors || !passage.vectors || !Number.isInteger(query.dimension) || query.dimension < 1 || query.dimension !== passage.dimension) return null;
   const dimension = query.dimension, queryRows = query.words.map((word, index) => ({ ...word, index })).filter(word => !FUNCTION_WORDS.has(word.text)).slice(0, 12);
   const words = passage.words.map((word, index) => ({ ...word, index })).filter(word => word.from >= from && word.to <= to);
@@ -67,6 +67,46 @@ export function inNoteFocusRange(query, passage, from = 0, to = Infinity) {
       scores[row * queryRows.length + anchor] = dot / 16129 + (stem(queryRows[anchor].text) === stem(words[row].text) ? .15 : 0);
     }
   }
+  return { queryRows, words, scores };
+}
+
+// Absolute support for each content concept prevents a shared topic (especially
+// a heading) from standing in for the requested action or relationship. Degree
+// modifiers are weaker evidence than content concepts; NLI still checks polarity.
+const DEGREE_MODIFIERS = new Set('big brief broad deep extreme great high huge intense large little long low major minor quick severe short small strong tiny very'.split(' '));
+export function inNoteEvidence(alignment, contexts = []) {
+  if (!alignment) return null;
+  const { queryRows, words, scores } = alignment, support = new Float32Array(queryRows.length), body = new Float32Array(queryRows.length);
+  support.fill(-1); body.fill(-1);
+  for (let row = 0; row < words.length; row++) for (let anchor = 0; anchor < queryRows.length; anchor++) {
+    // The exact-word bonus belongs to display selection, never evidence gating.
+    const value = scores[row * queryRows.length + anchor] - (stem(queryRows[anchor].text) === stem(words[row].text) ? .15 : 0);
+    support[anchor] = Math.max(support[anchor], value);
+    body[anchor] = Math.max(body[anchor], value);
+  }
+  for (const context of contexts) if (context && context.queryRows.length === queryRows.length) for (let row = 0; row < context.words.length; row++) for (let anchor = 0; anchor < queryRows.length; anchor++) {
+    const value = context.scores[row * queryRows.length + anchor] - (stem(queryRows[anchor].text) === stem(context.words[row].text) ? .15 : 0);
+    support[anchor] = Math.max(support[anchor], value);
+  }
+  const contentWords = words.filter(word => !FUNCTION_WORDS.has(word.text)).length;
+  // This is a missing-evidence veto, not a second relevance score. Keep its
+  // floor conservative across q8 CPU and fp16 GPU token representations.
+  // One strong shared word cannot drown out the other requested concepts.
+  const strongest = Math.max(...queryRows.map((word, index) => DEGREE_MODIFIERS.has(word.text) ? 0 : support[index])), minimum = Math.max(.15, .35 * strongest);
+  const complete = contentWords >= Math.min(2, queryRows.length) && queryRows.every((word, index) => support[index] >= (DEGREE_MODIFIERS.has(word.text) ? .12 : minimum));
+  const grounded = queryRows.some((word, index) => !DEGREE_MODIFIERS.has(word.text) && body[index] >= .25);
+  const strongestBody = Math.max(...queryRows.map((word, index) => DEGREE_MODIFIERS.has(word.text) ? 0 : body[index]));
+  const reliable = complete && grounded && queryRows.every((word, index) => DEGREE_MODIFIERS.has(word.text) || body[index] >= Math.max(.25, .5 * strongestBody));
+  return { supported: complete && grounded, complete, grounded, reliable, support: Array.from(support), body: Array.from(body) };
+}
+
+export function inNoteFocusRange(query, passage, from = 0, to = Infinity, aligned = null) {
+  const alignment = aligned || inNoteWordAlignment(query, passage, from, to);
+  if (!alignment) return null;
+  const { queryRows } = alignment, indices = alignment.words.map((word, index) => ({ word, index })).filter(({ word }) => word.from >= from && word.to <= to), words = indices.map(({ word }) => word);
+  if (!words.length) return null;
+  const scores = new Float32Array(words.length * queryRows.length);
+  indices.forEach(({ index }, row) => scores.set(alignment.scores.subarray(index * queryRows.length, (index + 1) * queryRows.length), row * queryRows.length));
   const minimumWords = Math.min(2, queryRows.length, words.filter(word => !FUNCTION_WORDS.has(word.text)).length);
   const queryKeys = new Set(queryRows.map(word => stem(word.text))), anchors = words.map(word => queryKeys.has(stem(word.text)));
   let best = -Infinity, first = 0, last = words.length - 1;
