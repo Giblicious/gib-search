@@ -24,6 +24,8 @@ Plugin settings are divided into Status, Search, and Console pages. Status repor
 
 Vault search waits for its semantic ranking before displaying results. It does not display an exact-first list and then replace its order with semantic results. Long notes retain up to three strong passages per result while distinct files receive their own result slots.
 
+**Search current file → Meaning** searches the current editor snapshot independently of the vault index, including unsaved Markdown edits. It checks sentences, headings, lists, and overlapping windows through long sentences, then verifies meaning with the local MobileBERT model. A literal hit cannot suppress paraphrases elsewhere, and findings retain their own source positions rather than highlighting every copy of a winning string. Matches can abstain when evidence is weak; Precise, Balanced, and Broad trade recall for selectivity. These compact English models can still miss paraphrases or misinterpret context, so Meaning is not an exhaustive linguistic guarantee. Exact matching remains available independently.
+
 ## Install with BRAT
 
 1. Install and enable **BRAT** in Obsidian.
@@ -43,8 +45,7 @@ The release-blocking synthetic performance budgets and local-only runtime measur
 
 - Notes, queries, embeddings, and indexes remain on the local device.
 - Inference runs directly inside Obsidian using desktop WebGPU or the bundled WebAssembly fallback.
-- BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached. GPU-capable desktops cache its fp16 model; the fallback engine and mobile cache its q8 model. Enabling Writing Profile indexing also downloads the local MobileBERT MNLI analysis model in desktop fp16 or fallback/mobile q8 form.
-- Search in the current file lazily downloads the local MS MARCO TinyBERT L2 passage reranker in q8 form. It runs in the background worker; queries and passages stay on the device.
+- BGE Small English v1.5 is downloaded from Hugging Face when it is not already cached. GPU-capable desktops cache its fp16 model; the fallback engine and mobile cache its q8 model. Current-file Meaning search and optional Writing Profile indexing share the lazily downloaded MobileBERT MNLI model in desktop fp16 or fallback/mobile q8 form. Both models run in the background worker; queries and passages stay on the device.
 - After setup, searching and indexing do not require a remote service.
 - Gib Search has no telemetry, accounts, advertising, or analytics.
 
@@ -52,7 +53,7 @@ On desktop, downloaded models remain in the Gib Search plugin directory, while t
 
 ## Model
 
-Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. The optional Writing Profile index uses **MobileBERT MNLI** for local emotion, purpose, and form classification, combined with conservative applicability gates and Markdown-aware structural evidence. Raw model entailment is calibrated before display, and weak evidence can abstain rather than becoming a finding.
+Gib Search uses **BGE Small English v1.5**, a compact local embedding model chosen for strong search quality and lower device requirements. Current-file matching combines symmetric BGE similarity with **MobileBERT MNLI** meaning checks and contradiction rejection. The optional Writing Profile index shares MobileBERT for local emotion, purpose, and form classification, combined with conservative applicability gates and Markdown-aware structural evidence. Weak evidence can abstain rather than becoming a finding.
 
 ## Commands
 
@@ -71,6 +72,8 @@ npm run check
 `npm run build` bundles the shared inference runtime and its compressed WebAssembly binary into `main.js`, allowing BRAT to install the plugin using Obsidian's standard three release assets.
 
 Release tags must be reachable from `main`; the release workflow verifies ancestry, the manifest version, the complete check suite, labeled semantic relevance, and the full locked dependency audit before publishing. Native Node-only dependencies used by the development harness are pinned with security overrides; the production browser bundle uses the separate WebAssembly/WebGPU runtime.
+
+`npm run audit:in-file` exercises the same live-source method as the UI, with real local models and both desktop/mobile batch sizes. It protects the existing paraphrase cases and checks all breadth modes against absent concepts, misleading topical matches, negation, reversed relationships, formatting, long sentences, and many independent occurrences. The broader recall benchmark retains conservative misses in its report and requires at least 95% recall; a finite test corpus does not establish perfect accuracy on arbitrary notes. Use `--report=path.json` to save all measured misses and `--diagnostics` to retain candidate scores.
 
 ## License
 

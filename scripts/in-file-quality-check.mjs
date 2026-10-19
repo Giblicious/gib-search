@@ -1,27 +1,29 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { env, pipeline } from '@huggingface/transformers';
-import { MobileSearchRuntime, chunkMarkdown } from '../src/mobile-runtime.js';
+import { MobileSearchRuntime } from '../src/mobile-runtime.js';
+import { IN_NOTE_PRESETS } from '../src/in-note-search.js';
+import { additionalInNoteCases } from './in-note-cases.mjs';
 
 const argumentsFor = name => process.argv.filter(value => value.startsWith(`--${name}=`)).map(value => value.slice(name.length + 3)), argument = name => argumentsFor(name)[0] || '';
 const modelRoot = argument('model-root') || process.env.GIB_SEARCH_MODEL_ROOT || '';
 const dtype = argument('dtype') || process.env.GIB_SEARCH_AUDIT_DTYPE || 'q8';
-const inspectionFile = argument('file'), inspectionQueries = argumentsFor('query'), summaryOnly = process.argv.includes('--summary'), requestedMobileProfile = process.argv.includes('--mobile'), allBudgets = process.argv.includes('--all-budgets'), diagnostics = process.argv.includes('--diagnostics'), verbose = !summaryOnly && (process.argv.includes('--verbose') || diagnostics || Boolean(inspectionFile)), compact = process.argv.includes('--compact');
+const inspectionFile = argument('file'), inspectionQueries = argumentsFor('query'), summaryOnly = process.argv.includes('--summary'), requestedMobileProfile = process.argv.includes('--mobile'), allBudgets = process.argv.includes('--all-budgets'), diagnostics = process.argv.includes('--diagnostics'), verbose = !summaryOnly && (process.argv.includes('--verbose') || diagnostics || Boolean(inspectionFile));
 if (modelRoot) { env.localModelPath = modelRoot.replaceAll('\\', '/'); env.allowLocalModels = true; env.allowRemoteModels = false; }
 const extractor = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', { dtype, device: 'cpu' });
-const reranker = await pipeline('text-classification', 'Xenova/ms-marco-TinyBERT-L-2-v2', { dtype: 'q8', device: 'cpu' });
-const embed = async (texts, query = false) => {
+const classifier = await pipeline('text-classification', argument('nli-model') || 'Xenova/mobilebert-uncased-mnli', { dtype: 'q8', device: 'cpu' });
+const embed = async texts => {
   if (!texts.length) return [];
-  const input = texts.map(text => query ? `Represent this sentence for searching relevant passages: ${text}` : text), output = await extractor(input, { pooling: 'mean', normalize: true }), dimension = output.dims.at(-1);
+  const output = await extractor(texts, { pooling: 'mean', normalize: true }), dimension = output.dims.at(-1);
   return texts.map((_, index) => new Float32Array(output.data.slice(index * dimension, (index + 1) * dimension)));
 };
-const rerank = async pairs => { if (!pairs.length) return []; const features = reranker.tokenizer(pairs.map(pair => pair.query), { text_pair: pairs.map(pair => pair.passage), padding: true, truncation: true, max_length: 192 }), output = await reranker.model(features), width = Math.max(1, Number(output.logits.dims.at(-1)) || 1); return pairs.map((_, index) => Number(output.logits.data[index * width])); };
-const plugin = { isMobile: requestedMobileProfile, settings: {}, manifest: { id: 'gib-search' }, recordActivity() {}, logDiagnostic() {}, reportOnce() {}, app: { vault: { adapter: { getBasePath: () => 'quality-audit' }, configDir: '.obsidian', getName: () => 'quality-audit' }, metadataCache: { getFileCache: () => ({ frontmatter: {} }) }, workspace: { getActiveFile: () => null } } };
-const tuning = {
-  balanced: { resultMinScore: .3, passageMinScore: .43, phraseMinScore: .54, clauseMinScore: .53, clauseMargin: .015, fallbackMinScore: .57, fallbackLimit: 2, sentenceBeam: 6, localLimit: 4, localWindow: .1, resultWindow: .18, resultLimit: 6, sentenceLimit: 32, scoreWindow: .24, limit: 40 },
-  broad: { resultMinScore: .18, passageMinScore: .34, phraseMinScore: .48, clauseMinScore: .44, clauseMargin: .005, fallbackMinScore: .49, fallbackLimit: 4, sentenceBeam: 8, localLimit: 6, localWindow: .16, resultWindow: .28, resultLimit: 10, sentenceLimit: 40, scoreWindow: .38, limit: 64 },
+const classify = async pairs => {
+  if (!pairs.length) return [];
+  const features = classifier.tokenizer(pairs.map(pair => pair.premise), { text_pair: pairs.map(pair => pair.hypothesis), padding: true, truncation: true, max_length: 256 }), output = await classifier.model(features), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label;
+  return pairs.map((_, index) => { const logits = Array.from(output.logits.data.slice(index * width, (index + 1) * width)), exponents = logits.map(value => Math.exp(value - Math.max(...logits))), sum = exponents.reduce((a, b) => a + b, 0); return Object.fromEntries(exponents.map((value, label) => [labels[label].toLowerCase(), value / sum])); });
 };
+const plugin = { isMobile: requestedMobileProfile, settings: {}, manifest: { id: 'gib-search' }, recordActivity() {}, logDiagnostic() {}, reportOnce() {}, app: { vault: { adapter: { getBasePath: () => 'quality-audit' }, configDir: '.obsidian', getName: () => 'quality-audit' }, metadataCache: { getFileCache: () => ({ frontmatter: {} }) }, workspace: { getActiveFile: () => null } } };
 const cases = [
   { name: 'relational synonym', query: 'child of god', source: 'The doctrine says humanity is the divine offspring of God. A speaker might say that God remains mysterious. God is correctly understood by the congregation. The Spirit of God inspired the hymn.', expected: [/offspring of God/i], forbidden: [/say that God/i, /God is correctly/i, /Spirit of God/i] },
   { name: 'reordered possessive relation', query: 'gods power', source: 'Creation unfolds through the direction and power of God. Humanity is described as the offspring of God. God does not convey truth through every rumor.', expected: [/power of God/i], forbidden: [/offspring of God/i, /convey truth/i] },
@@ -41,25 +43,38 @@ const cases = [
   { name: 'heading-resolved discourse', query: 'emotional debate about evolution', source: '## Does Evolution Matter?\n\nThere is a tremendous amount of emotion among those who hold opinions on this topic, both for and against.\n\n## Definition\n\nOrganic evolution describes gradual biological change. The evolution magazine arrived yesterday.', expected: [/tremendous amount of emotion/i], forbidden: [/biological change/i, /evolution magazine/i] },
   { name: 'distributed relational context', query: 'human ancestor without a soul', source: '## Why Pre-Adamites Matter\n\nHow do we compare Adam and his genetic father? Would his genetic father be inhuman, something taking the form of man, but having no salvation or soul?\n\n## Other Claims\n\nOne theory says man is not the divine offspring of God. Scholars disagree about the origins of man.', expected: [/genetic father/i, /no salvation or soul/i], forbidden: [/divine offspring/i, /origins of man/i] },
 ];
+
+cases.forEach(test => { test.required = true; });
+cases.push(...additionalInNoteCases);
 const caseFilter = argument('case'); if (caseFilter) cases.splice(0, cases.length, ...cases.filter(test => test.name.toLowerCase().includes(caseFilter.toLowerCase())));
 if (inspectionFile && inspectionQueries.length) {
   const literalPattern = value => new RegExp(String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), splitPatterns = value => String(value || '').split(';;').map(item => item.trim()).filter(Boolean).map(literalPattern), expected = argumentsFor('expect'), forbidden = argumentsFor('forbid'), source = await readFile(inspectionFile, 'utf8');
-  inspectionQueries.forEach((query, index) => cases.unshift({ name: `inspection ${index + 1} ${inspectionFile}`, query, source, expected: splitPatterns(expected[index]), forbidden: splitPatterns(forbidden[index]) }));
+  inspectionQueries.forEach((query, index) => cases.unshift({ name: `inspection ${index + 1}`, query, source, expected: splitPatterns(expected[index]), forbidden: splitPatterns(forbidden[index]) }));
 }
-
+const report = [], failures = [];
 for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile]) {
-  plugin.isMobile = mobileProfile; let assertions = 0, forbiddenHits = 0; const durations = [], failures = [];
+  plugin.isMobile = mobileProfile; let assertions = 0, forbiddenHits = 0, positives = 0, found = 0; const durations = [];
   for (const test of cases) {
-    const chunks = chunkMarkdown(test.source, 700), runtime = new MobileSearchRuntime(plugin); runtime.embedBatch = embed; runtime.rerankPassages = rerank; runtime.meta = chunks.map((chunk, index) => ({ ...chunk, file: `${test.name}.md`, passageIndex: index, contentHash: `${test.name}:${index}`, highlightCandidates: [] })); runtime.vectors = await embed(chunks.map(chunk => chunk.text)); runtime.refreshLexical();
-    for (const [mode, values] of Object.entries(tuning)) {
-      const started = performance.now(), results = await runtime.search(test.query, values.limit, 0, { file: `${test.name}.md`, disableQueryCorrection: true, scoreWindow: values.scoreWindow, semanticHighlights: true, semanticPassages: true, semanticPassagesOnly: true, semanticDiagnostics: diagnostics || Boolean(inspectionFile), resultMinScore: values.resultMinScore, passageMinScore: values.passageMinScore, localPhraseMinScore: values.phraseMinScore, clauseMinScore: values.clauseMinScore, clauseParentMargin: values.clauseMargin, clauseContextWeight: .18, localSentenceBeam: values.sentenceBeam, localSemanticLimit: values.localLimit, localSemanticWindow: values.localWindow, sentenceFallbackMinScore: values.fallbackMinScore, sentenceFallbackLimit: values.fallbackLimit, passageResultWindow: values.resultWindow, passageResultLimit: values.resultLimit, passageSentenceLimit: values.sentenceLimit }), elapsed = performance.now() - started, highlights = [...new Set(results.flatMap(result => [...(result.semanticPhrases || []), ...(result.semanticPassages || [])]).map(item => String(item.sourcePhrase || item.phrase || '').trim()).filter(Boolean))]; durations.push(elapsed);
-      if (verbose) console.log(`${dtype} ${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name}: ${JSON.stringify(highlights)}${compact ? diagnostics || test.name.startsWith('inspection') ? ` candidates=${JSON.stringify(results.flatMap(result => result.semanticDiagnostics || []).sort((a, b) => b.rankScore - a.rankScore).slice(0, 24))}` : '' : ` chunks=${JSON.stringify(results.map(result => ({ score: Number(result.semanticScore || 0).toFixed(3), text: result.text })))}`}`);
-      for (const expected of test.expected) { assertions++; if (!highlights.some(phrase => expected.test(phrase))) failures.push(`${mode} ${test.name} missed ${expected}: ${JSON.stringify(highlights)}`); }
-      for (const forbidden of test.forbidden) { assertions++; const matches = highlights.filter(phrase => forbidden.test(phrase)); forbiddenHits += matches.length; if (matches.length) failures.push(`${mode} ${test.name} admitted ${forbidden}: ${JSON.stringify(highlights)}`); }
-      if (!highlights.every(phrase => !/^(?:and|but|or|say that|that)\b/i.test(phrase))) failures.push(`${mode} ${test.name} emitted an incomplete grammatical fragment: ${JSON.stringify(highlights)}`);
+    const runtime = new MobileSearchRuntime(plugin); runtime.embedBatch = embed; runtime.classifyRelationPairs = classify;
+    // The real UI's live-source method, with no index preloaded or patched scores.
+    for (const mode of Object.keys(IN_NOTE_PRESETS)) {
+      const started = performance.now(), result = await runtime.searchInNote(test.query, test.source, { breadth: mode, diagnostics: true }), elapsed = performance.now() - started, matches = result.matches, highlights = matches.map(match => match.sourcePhrase);
+      durations.push(elapsed);
+      const missed = (test.expected || []).filter(pattern => !highlights.some(phrase => pattern.test(phrase))), forbidden = (test.forbidden || []).filter(pattern => highlights.some(phrase => pattern.test(phrase)));
+      if (mode !== 'precise') { assertions += (test.expected || []).length; positives += (test.expected || []).length; found += (test.expected || []).length - missed.length; if (test.required) for (const pattern of missed) failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} missed ${pattern}: ${JSON.stringify(highlights)}`); }
+      assertions += (test.forbidden || []).length + (test.empty ? 1 : 0); forbiddenHits += forbidden.length;
+      for (const pattern of forbidden) failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} admitted ${pattern}: ${JSON.stringify(highlights)}`);
+      if (test.empty && highlights.length) { forbiddenHits += highlights.length; failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} invented matches: ${JSON.stringify(highlights)}`); }
+      assert.ok(matches.every(match => test.source.slice(match.from, match.to) === match.sourcePhrase), `${test.name} lost source offsets`);
+      const row = { name: test.name, query: test.query, mobile: mobileProfile, mode, elapsed, highlights, missed: missed.map(String), forbidden: forbidden.map(String), ...(diagnostics ? { candidates: result.candidates } : {}) }; report.push(row);
+      if (verbose) console.log(JSON.stringify(row));
     }
   }
-  const ordered = durations.slice().sort((a, b) => a - b), p95 = ordered[Math.max(0, Math.ceil(ordered.length * .95) - 1)];
-  assert.equal(failures.length, 0, `In-file semantic quality failures (${mobileProfile ? 'mobile' : 'desktop'} budget):\n${failures.join('\n')}`); assert.equal(forbiddenHits, 0); assert.ok(p95 < 5000, `Warm in-file quality audit p95 is too slow: ${p95.toFixed(1)} ms`);
-  console.log(`In-file semantic quality audit passed ${assertions} labeled checks across ${cases.length} cases and 2 breadth modes using the ${mobileProfile ? 'mobile' : 'desktop'} candidate budget; 0 forbidden highlights; warm p95 ${p95.toFixed(1)} ms (${dtype}).`);
+  const p95 = durations.slice().sort((a, b) => a - b)[Math.max(0, Math.ceil(durations.length * .95) - 1)];
+  console.log(`In-note audit: ${assertions} checks, ${cases.length} cases, all 3 breadth modes, ${mobileProfile ? 'mobile' : 'desktop'} batches; ${found}/${positives} paraphrases; ${forbiddenHits} forbidden hits; warm p95 ${p95.toFixed(1)} ms (${dtype}).`);
+  assert.ok(!positives || found / positives >= .95, `In-note paraphrase recall regressed below 95%: ${found}/${positives}`);
+  assert.ok(p95 < 5000, `In-note audit p95 is too slow: ${p95.toFixed(1)} ms`);
 }
+if (argument('report')) await writeFile(argument('report'), JSON.stringify({ report, failures }, null, 2));
+assert.equal(failures.length, 0, `In-note quality failures:\n${failures.join('\n')}`);
+await extractor.dispose(); await classifier.dispose();

@@ -267,7 +267,7 @@ self.onmessage = event => {
   else if (message.type === 'embed') enqueueTask(message.priority ?? (message.query ? 0 : 2), () => handleEmbed(message));
   else if (message.type === 'mobile-bootstrap') enqueueTask(5, () => handleMobileBootstrap(message));
   else if (message.type === 'release-mobile-bootstrap') enqueueTask(5, async () => { const previous = mobileBootstrapPipe; mobileBootstrapPipe = null; await disposePipeline(previous); self.postMessage({ type: 'mobile-bootstrap-released', id: message.id }); });
-  else if (message.type === 'relations') enqueueTask(message.lowPriority ? 4 : 2, () => handleRelations(message));
+  else if (message.type === 'relations') enqueueTask(message.lowPriority ? 4 : message.interactive ? 1 : 2, () => handleRelations(message));
   else if (message.type === 'rerank') enqueueTask(1, () => handleRerank(message));
   else if (message.type === 'topic-labels') enqueueTask(5, () => handleTopicLabels(message));
 };

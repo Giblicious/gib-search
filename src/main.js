@@ -11,7 +11,8 @@ const { registerCommandAlias } = require('./command-compat');
 const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } = require('./search-result-open');
 const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-index-store');
 const { normalizeIndexScope } = require('./index-scope');
-const BUILD_VERSION = '0.54.60';
+const { inNoteProjection } = require('./in-note-search');
+const BUILD_VERSION = '0.54.61';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -237,7 +238,7 @@ class DesktopEmbedder {
   releaseMobileBootstrap() {
     if (!this.worker) return Promise.resolve(); return this.request({ type: 'release-mobile-bootstrap' }, 60000);
   }
-  classifyRelations(pairs, options = {}) { return this.request({ type: 'relations', pairs, lowPriority: Boolean(options.lowPriority) }, 300000); }
+  classifyRelations(pairs, options = {}) { return this.request({ type: 'relations', pairs, lowPriority: Boolean(options.lowPriority), interactive: Boolean(options.interactive) }, 300000); }
   rerankPassages(pairs) { return this.request({ type: 'rerank', pairs }, 180000); }
   generateTopicLabels(prompts) { return this.request({ type: 'topic-labels', prompts }, 600000); }
   stop() { const worker = this.worker; this.worker = null; this.disabled = false; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('Desktop embedding worker stopped')); } this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
@@ -322,9 +323,7 @@ function semanticPassagePool(results, query, maximum = 8) {
   return phrases;
 }
 function inNoteSemanticPool(results) {
-  const values = [], seen = new Set();
-  for (const hit of results || []) for (const item of [...(hit.semanticPhrases || []), ...(hit.semanticPassages || [])]) { const sourcePhrase = String(item.sourcePhrase || item.phrase || '').trim(), displayPhrase = cleanSourceText(sourcePhrase || item.phrase), key = displayPhrase.toLowerCase(); if (!displayPhrase || !sourcePhrase || seen.has(key)) continue; seen.add(key); values.push({ phrase: sourcePhrase, displayPhrase, priority: 2, kind: 'semantic', score: Number(item.score || 0) }); }
-  return values.sort((a, b) => b.score - a.score);
+  return (results || []).filter(item => Number.isInteger(item.from) && Number.isInteger(item.to)).map(item => ({ ...item, displayPhrase: item.phrase || cleanSourceText(item.sourcePhrase), phrase: item.sourcePhrase, priority: 2, kind: 'semantic' }));
 }
 const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i;
 function extractImageReferences(source, anchorPhrases = []) {
@@ -971,6 +970,7 @@ class SemanticInNoteSearch {
     this.keyScope = new Scope(this.app.scope); this.keyScope.register([], 'Escape', () => { this.close(); return false; }); this.app.keymap.pushScope(this.keyScope);
     this.leafChangeRef = this.app.workspace.on('active-leaf-change', leaf => { if (leaf !== this.leaf) this.close(); });
     this.editorChangeRef = this.editor ? this.app.workspace.on('editor-change', editor => { if (editor !== this.editor || !this.input.value.trim()) return; this.updateQuery(this.input.value.trim()); }) : null;
+    this.noteChangeRef = this.app.vault.on('modify', file => { if (this.isButter && file.path === this.file.path && this.input.value.trim()) this.updateQuery(this.input.value.trim()); });
     this.observer = new MutationObserver(() => { clearTimeout(this.paintTimer); this.paintTimer = window.setTimeout(() => this.paintHighlights(), 40); });
     const content = this.host.querySelector('.cm-content, .ProseMirror'); if (content) this.observer.observe(content, { childList: true, subtree: true, characterData: true });
     this.input.focus();
@@ -1003,17 +1003,27 @@ class SemanticInNoteSearch {
     this.el.style.setProperty('--gib-in-note-find-top', `${Math.ceil(topToolbar?.getBoundingClientRect().height || 0)}px`); if (this.observedButterToolbar !== topToolbar) { this.toolbarResizeObserver?.disconnect(); this.observedButterToolbar = topToolbar; if (topToolbar && typeof ResizeObserver === 'function') { this.toolbarResizeObserver = new ResizeObserver(() => this.placeButterSearch()); this.toolbarResizeObserver.observe(topToolbar); } }
   }
   compactPhrases(results, query, source) {
-    const candidates = [...(this.options.lexical ? [{ phrase: String(query), displayPhrase: String(query), priority: 3, kind: 'lexical' }] : []), ...(this.options.semantic ? inNoteSemanticPool(results) : [])].filter(item => item.phrase && item.displayPhrase && item.displayPhrase.length >= (item.priority === 3 ? 1 : 3) && item.displayPhrase.length <= 220 && item.phrase.length <= 280);
-    const byPhrase = new Map(); for (const item of candidates) { const key = item.displayPhrase.toLowerCase(), previous = byPhrase.get(key); if (!previous || item.priority > previous.priority || item.score > previous.score) byPhrase.set(key, item); } const unique = [...byPhrase.values()].sort((a, b) => b.priority - a.priority || Number(b.score || 0) - Number(a.score || 0) || b.displayPhrase.length - a.displayPhrase.length); this.highlightPhrases = unique;
+    const candidates = [...(this.options.lexical ? [{ phrase: String(query), displayPhrase: String(query), priority: 3, kind: 'lexical' }] : []), ...(this.options.semantic ? inNoteSemanticPool(results) : [])].filter(item => item.phrase && item.displayPhrase && item.displayPhrase.length >= (item.priority === 3 ? 1 : 3));
+    const unique = candidates.sort((a, b) => b.priority - a.priority || Number(b.score || 0) - Number(a.score || 0)); this.highlightPhrases = [];
+    const needsOccurrence = this.isButter || typeof this.editor?.cm?.posAtDOM !== 'function', frontmatterSize = source.match(/^---\s*\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*\r?\n/u)?.[0].length || 0, projected = needsOccurrence ? inNoteProjection(source.slice(frontmatterSize)) : null, occurrencePositions = new Map();
     const occupied = []; const matches = [];
     for (const candidate of unique) {
+      if (candidate.kind === 'semantic') {
+        if (!Number.isInteger(candidate.from) || !Number.isInteger(candidate.to) || source.slice(candidate.from, candidate.to) !== candidate.phrase || occupied.some(range => candidate.from < range.to && candidate.to > range.from)) continue;
+        if (projected) { const key = candidate.displayPhrase.toLowerCase(); if (!occurrencePositions.has(key)) occurrencePositions.set(key, [...projected.text.matchAll(this.matchRegex(candidate, true))].map(match => frontmatterSize + projected.positions[match.index])); candidate.occurrence = occurrencePositions.get(key).filter(position => position < candidate.from).length; }
+        occupied.push({ from: candidate.from, to: candidate.to }); this.highlightPhrases.push(candidate); matches.push({ from: candidate.from, to: candidate.to, text: candidate.phrase, kind: 'semantic' }); continue;
+      }
+      this.highlightPhrases.push(candidate);
       const regex = this.matchRegex(candidate);
       for (const match of source.matchAll(regex)) { const from = match.index, to = from + match[0].length; if (occupied.some(range => from < range.to && to > range.from)) continue; occupied.push({ from, to }); matches.push({ from, to, text: match[0], kind: candidate.kind }); }
     }
     return matches.sort((a, b) => a.from - b.from);
   }
-  matchRegex(candidate, rendered = false) { const phrase = rendered ? candidate.displayPhrase : candidate.phrase, escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), bounded = candidate.kind === 'semantic' || this.options.wholeWord, pattern = bounded ? `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])` : escaped, insensitive = candidate.kind === 'semantic' || !this.options.caseSensitive; return new RegExp(pattern, `gu${insensitive ? 'i' : ''}`); }
-  semanticTuning() { const presets = { precise: { resultMinScore: .46, passageMinScore: .52, phraseMinScore: .7, clauseMinScore: .64, clauseMargin: .03, fallbackMinScore: .64, fallbackLimit: 1, sentenceBeam: 4, localLimit: 3, localWindow: .07, resultWindow: .1, resultLimit: 4, sentenceLimit: 24, scoreWindow: .14, limit: 24 }, balanced: { resultMinScore: .3, passageMinScore: .43, phraseMinScore: .54, clauseMinScore: .53, clauseMargin: .015, fallbackMinScore: .57, fallbackLimit: 2, sentenceBeam: 6, localLimit: 4, localWindow: .1, resultWindow: .18, resultLimit: 6, sentenceLimit: 32, scoreWindow: .24, limit: 40 }, broad: { resultMinScore: .18, passageMinScore: .34, phraseMinScore: .48, clauseMinScore: .44, clauseMargin: .005, fallbackMinScore: .49, fallbackLimit: 4, sentenceBeam: 8, localLimit: 6, localWindow: .16, resultWindow: .28, resultLimit: 10, sentenceLimit: 40, scoreWindow: .38, limit: 64 } }; return presets[this.options.breadth] || presets.balanced; }
+  matchRegex(candidate, rendered = false) {
+    const phrase = rendered ? candidate.displayPhrase : candidate.phrase, escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), bounded = candidate.kind === 'semantic' || this.options.wholeWord;
+    const body = candidate.kind === 'semantic' && rendered ? escaped.replace(/\s+/gu, '\\s+') : escaped, prefix = bounded && /^[\p{L}\p{N}]/u.test(phrase) ? '(?<![\\p{L}\\p{N}])' : '', suffix = bounded && /[\p{L}\p{N}]$/u.test(phrase) ? '(?![\\p{L}\\p{N}])' : '';
+    return new RegExp(`${prefix}${body}${suffix}`, `gu${candidate.kind === 'semantic' || !this.options.caseSensitive ? 'i' : ''}`);
+  }
   async sourceText() { return this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue(); }
   setSemanticLoading(loading) { const active = Boolean(loading), loadingTitle = 'Finding related wording by meaning'; if (this.loading) this.loading.hidden = !active; if (this.searchIcon) this.searchIcon.hidden = active; this.count?.toggleClass('is-searching', active); this.input?.setAttribute('aria-busy', String(active)); if (active) this.count?.setAttribute('title', loadingTitle); else if (this.count?.getAttribute('title') === loadingTitle) this.count.removeAttribute('title'); }
   updateQuery(query) {
@@ -1028,8 +1038,10 @@ class SemanticInNoteSearch {
   }
   async searchSemantically(query, version) {
     try {
-      const tuning = this.semanticTuning(), options = { scoreWindow: tuning.scoreWindow, semanticHighlights: true, semanticPassages: true, semanticPassagesOnly: true, disableQueryCorrection: true, resultMinScore: tuning.resultMinScore, passageMinScore: tuning.passageMinScore, localPhraseMinScore: tuning.phraseMinScore, clauseMinScore: tuning.clauseMinScore, clauseParentMargin: tuning.clauseMargin, clauseContextWeight: .18, localSentenceBeam: tuning.sentenceBeam, localSemanticLimit: tuning.localLimit, localSemanticWindow: tuning.localWindow, sentenceFallbackMinScore: tuning.fallbackMinScore, sentenceFallbackLimit: tuning.fallbackLimit, passageResultWindow: tuning.resultWindow, passageResultLimit: tuning.resultLimit, passageSentenceLimit: tuning.sentenceLimit, file: this.file.path };
-      const runSearch = this.plugin.search.searchLive?.bind(this.plugin.search) || this.plugin.search.search.bind(this.plugin.search), results = await runSearch(query, tuning.limit, 0, options); await this.refreshMatches(query, results, version, true);
+      const source = await this.sourceText(), results = await this.plugin.search.searchInNote(query, source, { breadth: this.options.breadth, isCurrent: () => version === this.queryVersion && Boolean(this.el?.isConnected) });
+      if (version !== this.queryVersion || !this.el?.isConnected) return;
+      if (source !== await this.sourceText()) { this.updateQuery(query); return; }
+      await this.refreshMatches(query, results, version, true);
     } catch (error) { if (version === this.queryVersion) { this.count?.setAttribute('title', 'Exact matches shown; semantic matching is not currently available'); this.plugin.logDiagnostic(`In-file semantic enrichment unavailable: ${error.message}`); } }
     finally { if (version === this.queryVersion) { this.setSemanticLoading(false); this.updateCount(); } }
   }
@@ -1058,15 +1070,21 @@ class SemanticInNoteSearch {
     if (!globalThis.CSS?.highlights || typeof globalThis.Highlight !== 'function' || !this.el?.isConnected) return;
     CSS.highlights.delete(this.highlightNames.lexicalCurrent); CSS.highlights.delete(this.highlightNames.semanticCurrent);
     const root = this.host?.querySelector('.cm-content, .ProseMirror'); if (!root) return;
-    const candidates = this.highlightPhrases || [], textNodes = []; let value = ''; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let node;
-    while ((node = walker.nextNode())) { const text = node.nodeValue || ''; if (!text) continue; textNodes.push({ node, from: value.length, to: value.length + text.length }); value += text; }
+    const candidates = this.highlightPhrases || [], textNodes = []; let value = '', previousBlock = null; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let node;
+    while ((node = walker.nextNode())) { const text = node.nodeValue || ''; if (!text) continue; const block = node.parentElement?.closest?.('.cm-line, p, li, h1, h2, h3, h4, h5, h6, blockquote, pre'); if (previousBlock && block && block !== previousBlock) value += '\n'; if (block) previousBlock = block; textNodes.push({ node, from: value.length, to: value.length + text.length }); value += text; }
     const occupied = [], ranges = { lexical: [], semantic: [] }, domMatches = [];
     for (const candidate of candidates) {
       const regex = this.matchRegex(candidate, true);
+      let occurrence = 0;
       for (const match of value.matchAll(regex)) {
-        const from = match.index, to = from + match[0].length; if (occupied.some(item => from < item.to && to > item.from)) continue;
+        const ordinal = occurrence++, from = match.index, to = from + match[0].length; if (occupied.some(item => from < item.to && to > item.from)) continue;
         const first = textNodes.find(item => from >= item.from && from < item.to), last = [...textNodes].reverse().find(item => to > item.from && to <= item.to); if (!first || !last) continue;
-        const range = new Range(); range.setStart(first.node, from - first.from); range.setEnd(last.node, to - last.from); occupied.push({ from, to }); ranges[candidate.kind].push(range); domMatches.push({ range, text: match[0], kind: candidate.kind });
+        if (candidate.kind === 'semantic') {
+          const cm = this.editor?.cm;
+          if (!this.isButter && typeof cm?.posAtDOM === 'function') { try { if (cm.posAtDOM(first.node, from - first.from) < candidate.from || cm.posAtDOM(last.node, to - last.from) > candidate.to) continue; } catch { continue; } }
+          else if (ordinal !== candidate.occurrence) continue;
+        }
+        const range = new Range(); range.setStart(first.node, from - first.from); range.setEnd(last.node, to - last.from); occupied.push({ from, to }); ranges[candidate.kind].push(range); domMatches.push({ range, text: match[0], kind: candidate.kind, ...(candidate.kind === 'semantic' ? { from: candidate.from, to: candidate.to } : {}) });
       }
     }
     domMatches.sort((a, b) => a.range.compareBoundaryPoints(Range.START_TO_START, b.range));
@@ -1075,7 +1093,7 @@ class SemanticInNoteSearch {
   }
   clearHighlights() { for (const name of Object.values(this.highlightNames)) globalThis.CSS?.highlights?.delete(name); }
   close() {
-    clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.setSemanticLoading(false); if (this.keyScope) { this.app.keymap.popScope(this.keyScope); this.keyScope = null; } this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
+    clearTimeout(this.timer); clearTimeout(this.paintTimer); clearTimeout(this.toolbarTimer); this.queryVersion++; this.setSemanticLoading(false); if (this.keyScope) { this.app.keymap.popScope(this.keyScope); this.keyScope = null; } if (this.noteChangeRef) this.app.vault.offref(this.noteChangeRef); this.observer?.disconnect(); this.toolbarObserver?.disconnect(); this.toolbarResizeObserver?.disconnect(); if (this.leafChangeRef) this.app.workspace.offref(this.leafChangeRef); if (this.editorChangeRef) this.app.workspace.offref(this.editorChangeRef); this.clearHighlights(); this.el?.remove(); if (!this.isButter && !this.nativeSearchingWasActive && !this.host?.querySelector('.document-search-container')) this.host?.removeClass('is-searching'); this.host?.removeClass('gib-in-note-find-host'); if (this.plugin.activeInNoteSearch === this) this.plugin.activeInNoteSearch = null; if (typeof this.editor?.focus === 'function') this.editor.focus();
   }
 }
 

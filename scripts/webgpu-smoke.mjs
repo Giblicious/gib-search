@@ -23,12 +23,28 @@ const workerSource = workerBuild.outputFiles[0].text;
 let finish;
 const completed = new Promise(resolve => { finish = resolve; });
 const page = `<!doctype html><meta charset="utf-8"><script type="module">
+import { InNoteMatcher } from '/in-note-search.js';
 const [source, configuration] = await Promise.all([fetch('/worker.js').then(value => value.text()), fetch('/config').then(value => value.json())]);
 const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })), { name: 'gib-search-webgpu-smoke' });
+const inferencePending = new Map(); let inferenceId = 100;
+function inference(message) { const id = inferenceId++; return new Promise((resolve, reject) => { inferencePending.set(id, { resolve, reject }); worker.postMessage({ ...message, id }); }); }
+async function inNoteSmoke() {
+  const matcher = new InNoteMatcher({ embed: async texts => (await inference({ type: 'embed', texts, query: false, priority: 1 })).buffers.map(buffer => new Float32Array(buffer)), classify: async pairs => (await inference({ type: 'relations', pairs, interactive: true })).results, batchSize: 6 });
+  const checks = [
+    { query: 'reset database password', text: 'Water the tomato plants before sunrise. The garden receives six hours of sunlight.', count: 0 },
+    { query: 'fix the car', text: 'We plan to fix the car tomorrow. The mechanic repaired the automobile yesterday.', count: 2 },
+    { query: 'data is encrypted', text: 'Data is not encrypted in the archive. Confidential records are stored as plaintext.', count: 0 },
+    { query: 'Alice paid Bob', text: 'Bob paid Alice for the repairs. Later, Alice sent money to Bob for the supplies.', count: 1 },
+  ];
+  const findings = [];
+  for (const check of checks) { const matches = await matcher.search(check.query, check.text); findings.push({ query: check.query, count: matches.length, expected: check.count, validOffsets: matches.every(match => check.text.slice(match.from, match.to) === match.sourcePhrase) }); }
+  return { ok: findings.every(check => check.count === check.expected && check.validOffsets), findings };
+}
 let profile = null, relationProfile = null, semanticResult = null, mobileResult = null, priorityCompleted = false;
 worker.onmessage = async event => {
   const message = event.data;
   if (message.type === 'cache') { worker.postMessage({ type: 'cache-result', id: message.id }); return; }
+  if (inferencePending.has(message.id)) { const pending = inferencePending.get(message.id); inferencePending.delete(message.id); if (message.type === 'error') pending.reject(new Error(message.message)); else pending.resolve(message); return; }
   if (message.type === 'runtime-profile') { profile = message; return; }
   if (message.type === 'relation-ready') { relationProfile = message; return; }
   if (message.type === 'initialized') { worker.postMessage({ type: 'embed', id: 1, texts: ['Contained WebGPU semantic indexing smoke check.'], query: false, priority: 0 }); return; }
@@ -36,7 +52,7 @@ worker.onmessage = async event => {
   if (message.type === 'result' && message.id === 4) { const vector = new Float32Array(message.buffers[0]); const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)); mobileResult = { ok: vector.length === 384 && vector.every(Number.isFinite) && Math.abs(magnitude - 1) < .01, dimension: vector.length, magnitude }; worker.postMessage({ type: 'release-mobile-bootstrap', id: 5 }); return; }
   if (message.type === 'mobile-bootstrap-released' && message.id === 5) { const pair = { premise: 'A written schedule organizes actions and times.', hypothesis: 'This text is a plan.' }; worker.postMessage({ type: 'relations', id: 2, lowPriority: true, pairs: Array.from({ length: 24 }, () => pair) }); worker.postMessage({ type: 'embed', id: 3, texts: ['Priority search must run between profile batches.'], query: true, priority: 0 }); return; }
   if (message.type === 'result' && message.id === 3) { priorityCompleted = true; return; }
-  if (message.type === 'relation-result' && message.id === 2) { const row = message.results?.[0] || {}, probabilities = [row.entailment, row.neutral, row.contradiction].map(Number), total = probabilities.reduce((sum, value) => sum + value, 0), relation = { ok: message.results?.length === 24 && probabilities.every(Number.isFinite) && Math.abs(total - 1) < .01 && priorityCompleted, backend: relationProfile?.backend, dtype: relationProfile?.dtype, probabilities, interactivePreemption: priorityCompleted }; await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: semanticResult?.ok && mobileResult?.ok && relation.ok, semantic: semanticResult, mobile: mobileResult, relation }) }); return; }
+  if (message.type === 'relation-result' && message.id === 2) { const row = message.results?.[0] || {}, probabilities = [row.entailment, row.neutral, row.contradiction].map(Number), total = probabilities.reduce((sum, value) => sum + value, 0), relation = { ok: message.results?.length === 24 && probabilities.every(Number.isFinite) && Math.abs(total - 1) < .01 && priorityCompleted, backend: relationProfile?.backend, dtype: relationProfile?.dtype, probabilities, interactivePreemption: priorityCompleted }; let inNote; try { inNote = await inNoteSmoke(); } catch (error) { inNote = { ok: false, error: error.message }; } await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: semanticResult?.ok && mobileResult?.ok && relation.ok && inNote.ok, semantic: semanticResult, mobile: mobileResult, relation, inNote }) }); return; }
   if (message.type === 'error') await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: false, error: message.message, backend: profile?.backend }) });
 };
 worker.onerror = event => fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: false, error: event.message }) });
@@ -44,7 +60,7 @@ worker.postMessage(configuration);
 </script>`;
 const server = http.createServer((request, response) => {
   if (request.method === 'POST' && request.url === '/result') { let body = ''; request.on('data', chunk => { body += chunk; }); request.on('end', () => { try { finish(JSON.parse(body)); } catch (error) { finish({ ok: false, error: error.message }); } response.end('ok'); }); return; }
-  const [content, type] = request.url === '/worker.js' ? [workerSource, 'text/javascript'] : request.url === '/config' ? [JSON.stringify(config), 'application/json'] : [page, 'text/html'];
+  const [content, type] = request.url === '/worker.js' ? [workerSource, 'text/javascript'] : request.url === '/in-note-search.js' ? [fs.readFileSync(path.join(root, 'src', 'in-note-search.js'), 'utf8'), 'text/javascript'] : request.url === '/config' ? [JSON.stringify(config), 'application/json'] : [page, 'text/html'];
   response.writeHead(200, { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'no-store' }); response.end(content);
 });
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -55,7 +71,7 @@ const timeout = setTimeout(() => finish({ ok: false, error: 'Timed out waiting f
 try {
   const result = await completed; clearTimeout(timeout);
   if (!result.ok || result.semantic?.backend !== 'webgpu' || result.relation?.backend !== 'webgpu') throw new Error(`WebGPU smoke check failed: ${JSON.stringify(result)}${browserError ? `\n${browserError.slice(-1200)}` : ''}`);
-  console.log(`WebGPU worker smoke check passed (semantic ${result.semantic.dtype}, ${result.semantic.dimension} dimensions; mobile bootstrap q8 ${result.mobile.dimension} dimensions; profile ${result.relation.dtype}, probabilities ${result.relation.probabilities.map(value => value.toFixed(3)).join('/')}; interactive preemption verified).`);
+  console.log(`WebGPU worker smoke check passed (semantic ${result.semantic.dtype}, ${result.semantic.dimension} dimensions; mobile bootstrap q8 ${result.mobile.dimension} dimensions; profile ${result.relation.dtype}, probabilities ${result.relation.probabilities.map(value => value.toFixed(3)).join('/')}; interactive preemption verified; ${result.inNote.findings.length} live-source meaning/polarity checks passed).`);
 } finally {
   clearTimeout(timeout); browser.kill();
   if (browser.exitCode === null) await Promise.race([new Promise(resolve => browser.once('exit', resolve)), new Promise(resolve => setTimeout(resolve, 2000))]);

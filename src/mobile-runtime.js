@@ -4,6 +4,7 @@ import { WRITING_PROFILE_SIGNALS, WRITING_PROFILE_VERSION, combineWritingProfile
 import { BoundedMetricWindow, IncrementalBm25, assembleIndexSegments, boundedTopK, centroidSimilarity, diverseCentroids, insertTopK, mergeIndexReplacements } from './search-core.js';
 import { MOBILE_BOOTSTRAP_SEGMENTS, bootstrapBucket, mobileBootstrapFileIndex, readMobileBootstrap, readMobileBootstrapManifest, readMobileBootstrapSegment, writeMobileBootstrap } from './mobile-bootstrap.js';
 import { indexScopeIncludes, indexScopePreview, normalizeIndexScope } from './index-scope.js';
+import { InNoteMatcher } from './in-note-search.js';
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
@@ -741,8 +742,8 @@ export class MobileSearchRuntime {
   }
   async classifyRelationPairs(pairs, options = {}) {
     if (!pairs.length) return []; const background = this.plugin.desktopEmbedder;
-    if (background && !background.disabled) { try { return await background.classifyRelations(pairs, { lowPriority: Boolean(options.lowPriority) }); } catch (error) { if (!this.isMobile || options.backgroundOnly) { if (options.backgroundOnly) error.name = 'BackgroundWorkerUnavailableError'; throw error; } this.plugin.logDiagnostic?.(`Mobile background relationship inference unavailable: ${error?.message || error}`); } }
-    if (this.isMobile && options.backgroundOnly) { const unavailable = new Error('Background relationship analysis is unavailable'); unavailable.name = 'BackgroundWorkerUnavailableError'; throw unavailable; }
+    if (background && !background.disabled) { try { return await background.classifyRelations(pairs, { lowPriority: Boolean(options.lowPriority), interactive: Boolean(options.interactive) }); } catch (error) { if (!this.isMobile || options.backgroundOnly) { if (options.backgroundOnly) error.name = 'BackgroundWorkerUnavailableError'; throw error; } this.plugin.logDiagnostic?.(`Mobile background relationship inference unavailable: ${error?.message || error}`); } }
+    if (options.backgroundOnly) { const unavailable = new Error('Background relationship analysis is unavailable'); unavailable.name = 'BackgroundWorkerUnavailableError'; throw unavailable; }
     const classifier = await this.initializeRelationModel(), results = [], batchSize = this.isMobile ? 6 : 24, softmax = values => { const maximum = Math.max(...values), exponents = values.map(value => Math.exp(value - maximum)), total = exponents.reduce((sum, value) => sum + value, 0) || 1; return exponents.map(value => value / total); };
     for (let offset = 0; offset < pairs.length; offset += batchSize) { const batch = pairs.slice(offset, offset + batchSize), premises = batch.map(pair => String(pair.premise || '').slice(0, 1200)), hypotheses = batch.map(pair => String(pair.hypothesis || '').slice(0, 1200)), inputs = classifier.tokenizer(premises, { text_pair: hypotheses, padding: true, truncation: true, max_length: 256 }), output = await classifier.model(inputs), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label || {}; results.push(...batch.map((_, index) => { const probabilities = softmax(Array.from(output.logits.data.slice(index * width, (index + 1) * width))), result = { entailment: 0, neutral: 0, contradiction: 0 }; probabilities.forEach((score, labelIndex) => { const label = String(labels[labelIndex] || labels[String(labelIndex)] || '').toLowerCase(); if (label.includes('entail') || !label && labelIndex === 2) result.entailment = score; else if (label.includes('contrad') || !label && labelIndex === 0) result.contradiction = score; else result.neutral = score; }); return result; })); await yieldToUi(); }
     return results;
@@ -1216,6 +1217,10 @@ export class MobileSearchRuntime {
   }
   async highlightResults(results, query, options = {}) { if (!results?.length) return results || []; const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery); await this.semanticHighlights(results, queryVector, { ...options, query: correctedQuery }); return results; }
   cacheResult(cache, key, value, maximum) { cache.delete(key); cache.set(key, value); while (cache.size > maximum) cache.delete(cache.keys().next().value); return value; }
+  searchInNote(query, source, options = {}) {
+    this.inNoteMatcher ||= new InNoteMatcher({ embed: texts => this.embedBatch(texts, false, this.isMobile ? 8 : 24), classify: pairs => this.classifyRelationPairs(pairs, { interactive: true, backgroundOnly: true }), batchSize: this.isMobile ? 6 : 24 });
+    return this.inNoteMatcher.search(query, source, options);
+  }
   async queryVector(query, correction = true) {
     const prepared = correction ? this.correctQuery(query) : String(query || ''), key = String(prepared || '').trim().replace(/\s+/g, ' ').toLowerCase(); const cached = this.queryCache.get(key); if (cached) return await cached;
     const pending = this.embed(prepared, true); this.cacheResult(this.queryCache, key, pending, 48);

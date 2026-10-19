@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.54.61
+
+- Replaces current-file Meaning search with a dedicated live-source matcher, independent of vault indexing progress and saved passage snapshots.
+- Checks local meaning and contradictions instead of promoting the best of unrelated candidates; literal wording no longer suppresses paraphrases, and results no longer stop at a handful of passages.
+- Retains each scored occurrence's source offsets through Markdown formatting, links, long sentences, wrapped paragraphs, and repeated wording; rich-text and virtualized editor highlights stay attached to those locations.
+- Reuses bounded source, embedding, and meaning caches, cancels obsolete queries between inference batches, and gives in-note analysis priority over background indexing/profile work.
+- Shares the existing local MobileBERT model with Writing Profiles; current-file search no longer uses TinyBERT's relative passage ranking. Global search's completed semantic ranking is unchanged.
+- Adds behavioral editor/range regressions and a real-model live-source audit covering 43 cases, all breadth modes, and desktop/mobile inference batch sizes, including explicit no-match examples and reported conservative recall misses.
+
 ## 0.54.60
 
 - Keeps semantic search as one completed ranking, with no exact-first result list or later semantic reorder.
