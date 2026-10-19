@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.54.63
+
+- Keeps sentence retrieval, meaning verification, contradiction checks, thresholds, scores, and accepted occurrences unchanged while highlighting the relevant phrase inside each verified sentence.
+- Reuses token representations from the existing BGE forward pass, stores compact word attribution in the note cache, and selects phrases without extra embedding or meaning-model calls.
+- Preserves negation, complete words, modifiers, numeric deadlines, and context needed for ambiguous contrasts; phrase offsets stay anchored through Markdown, aliases, and wrapped text. Sentences retain their full verification evidence.
+- Locates native editor highlights directly by checked source positions and shares rich-editor regex scans across repeated phrases, avoiding repeated document scans for the shorter spans.
+- Adds phrase-boundary, stale-context, repeated-occurrence, encoder-call, and latency regressions; extends the model accuracy audit to 51 cases with real phrase checks, and exercises formatted rich-text highlighting in the browser.
+
 ## 0.54.62
 
 - Keeps the active note's prepared embeddings beyond the shared 2,048-phrase cache, including unchanged passages across edits, so long notes do not rebuild themselves on each query.

@@ -115,4 +115,23 @@ ui.paintHighlights(); assert.equal(highlights.get(ui.highlightNames.semantic).ra
 ui.isButter = false; ui.options.lexical = true; ui.options.semantic = true;
 const bothSource = 'fix the car.\nRepair the automobile.', bothFrom = bothSource.indexOf('Repair');
 assert.equal(ui.compactPhrases([{ from: bothFrom, to: bothSource.length, sourcePhrase: bothSource.slice(bothFrom), phrase: bothSource.slice(bothFrom), score: .9 }], 'fix the car', bothSource).length, 2, 'Literal matches suppress valid paraphrases');
+
+const verifiedSentence = 'He always paid the invoice.', focusedFrom = verifiedSentence.indexOf('paid'), focusedTo = verifiedSentence.length - 1;
+const focusedHit = { from: 0, to: verifiedSentence.length, phrase: verifiedSentence, sourcePhrase: verifiedSentence, score: .9, highlight: { from: focusedFrom, to: focusedTo, phrase: 'paid the invoice', sourcePhrase: 'paid the invoice' } };
+ui.options = { lexical: false, semantic: true };
+assert.equal(ui.compactPhrases([focusedHit], 'paid invoice', verifiedSentence)[0].from, focusedFrom);
+assert.equal(ui.compactPhrases([focusedHit], 'paid invoice', 'He never  paid the invoice.').length, 0, 'An unchanged phrase inherited verification after its sentence was negated');
+
+const focusedSentence = 'The mechanic repaired the automobile yesterday.', repeated = Array.from({ length: 30 }, () => focusedSentence).join('\n\n'), repeatedHits = [...repeated.matchAll(/The mechanic repaired the automobile yesterday\./gu)].map(match => ({ from: match.index, to: match.index + focusedSentence.length, phrase: focusedSentence, sourcePhrase: focusedSentence, score: .9, highlight: { from: match.index + 13, to: match.index + 36, phrase: 'repaired the automobile', sourcePhrase: focusedSentence.slice(13, 36) } }));
+// Count actual full-document regex scans, not merely construction of a pattern.
+const regularMatchRegex = ui.matchRegex.bind(ui); let scans = 0;
+ui.matchRegex = (...args) => { const regex = regularMatchRegex(...args); return { source: regex.source, flags: regex.flags, [Symbol.matchAll](value) { scans++; return regex[Symbol.matchAll](value); } }; };
+ui.isButter = true; ui.current = 0; ui.compactPhrases(repeatedHits, 'fix the car', repeated); scans = 0; state.nodes = [{ nodeValue: repeated.replaceAll('\n\n', '') }];
+ui.paintHighlights(); assert.equal(highlights.get(ui.highlightNames.semantic).ranges.length, 30); assert.equal(scans, 1, 'Repeated focused phrases rescanned the rendered note for every occurrence');
+
+ui.matchRegex = regularMatchRegex; ui.isButter = false;
+const nativeSource = 'The mechanic **repaired** the [[Fleet|automobile]] yesterday.', nativeFrom = nativeSource.indexOf('repaired'), nativeTo = nativeSource.indexOf(']]');
+ui.compactPhrases([{ from: 0, to: nativeSource.length, phrase: 'The mechanic repaired the automobile yesterday.', sourcePhrase: nativeSource, score: .9, highlight: { from: nativeFrom, to: nativeTo, phrase: 'repaired the automobile', sourcePhrase: nativeSource.slice(nativeFrom, nativeTo) } }], 'fix the car', nativeSource);
+const nativeNode = { nodeValue: nativeSource }; state.nodes = [nativeNode]; ui.host = { querySelector: () => ({ contains: node => node === nativeNode }) }; ui.editor.cm = { domAtPos: offset => ({ node: nativeNode, offset }), posAtDOM: (_, offset) => offset, viewport: { from: 0, to: nativeSource.length } };
+ui.paintHighlights(); const nativeRange = highlights.get(ui.highlightNames.semantic).ranges[0]; assert.equal(nativeRange.from, nativeFrom); assert.equal(nativeRange.to, nativeTo, 'Native Markdown formatting broke the focused source range');
 console.log('In-note regressions passed: live source, exhaustive occurrences, abstention, polarity, bounded caches, cancellation, Markdown spans, and source/rich-editor highlight locations.');

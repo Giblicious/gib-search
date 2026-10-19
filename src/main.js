@@ -12,7 +12,7 @@ const { SEARCH_RESULT_OPEN_MODE, searchResultLeafTarget, searchResultOpenMode } 
 const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-index-store');
 const { normalizeIndexScope } = require('./index-scope');
 const { inNoteProjection } = require('./in-note-search');
-const BUILD_VERSION = '0.54.62';
+const BUILD_VERSION = '0.54.63';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -197,7 +197,7 @@ class DesktopEmbedder {
     else if (message.type === 'relation-result') pending.resolve(message.results || []);
     else if (message.type === 'rerank-result') pending.resolve(message.scores || []);
     else if (message.type === 'topic-label-result') pending.resolve(message.labels || []);
-    else pending.resolve((message.buffers || []).map(buffer => new Float32Array(buffer)));
+    else pending.resolve((message.buffers || []).map((buffer, index) => { const vector = new Float32Array(buffer); if (message.focus?.[index]) vector.focus = message.focus[index]; return vector; }));
   }
   async cache(message) {
     try {
@@ -224,7 +224,7 @@ class DesktopEmbedder {
   }
   fail(error, recoverable = false) { this.releaseInNoteWorker(); const worker = this.worker; this.worker = null; this.disabled = !recoverable; worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); } this.pending.clear(); this.ready = false; this.rerankerReady = false; this.backend = recoverable ? 'restarting' : 'failed'; this.dtype = ''; this.relationBackend = recoverable ? 'restarting' : 'failed'; this.relationDtype = ''; this.plugin.logDiagnostic(`Background embedding worker ${recoverable ? 'stalled and will restart with WASM' : 'failed'}: ${error.message}`, true); if (!this.plugin.isMobile) this.plugin.reportOnce(`Desktop embedding worker ${recoverable ? 'restarting' : 'failed'}: ${error.message}`); }
   embedBatch(texts, query = false, options = {}) {
-    return this.request({ type: 'embed', texts, query, priority: Number(options.priority ?? (query ? 0 : 2)) }, this.plugin.isMobile ? 180000 : 120000);
+    return this.request({ type: 'embed', texts, query, tokenFocus: Boolean(options.tokenFocus), priority: Number(options.priority ?? (query ? 0 : 2)) }, this.plugin.isMobile ? 180000 : 120000);
   }
   warmup() {
     if (this.ready) return Promise.resolve();
@@ -339,7 +339,10 @@ function semanticPassagePool(results, query, maximum = 8) {
   return phrases;
 }
 function inNoteSemanticPool(results) {
-  return (results || []).filter(item => Number.isInteger(item.from) && Number.isInteger(item.to)).map(item => ({ ...item, displayPhrase: item.phrase || cleanSourceText(item.sourcePhrase), phrase: item.sourcePhrase, priority: 2, kind: 'semantic' }));
+  return (results || []).filter(item => Number.isInteger(item.from) && Number.isInteger(item.to)).map(item => {
+    const highlight = item.highlight, focused = highlight && Number.isInteger(highlight.from) && Number.isInteger(highlight.to) && highlight.from >= item.from && highlight.to <= item.to && highlight.to > highlight.from && highlight.phrase && highlight.sourcePhrase ? highlight : item;
+    return { ...item, from: focused.from, to: focused.to, displayPhrase: focused.phrase || cleanSourceText(focused.sourcePhrase), phrase: focused.sourcePhrase, evidenceFrom: item.from, evidenceTo: item.to, evidenceText: item.sourcePhrase, priority: 2, kind: 'semantic' };
+  });
 }
 const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i;
 function extractImageReferences(source, anchorPhrases = []) {
@@ -1019,12 +1022,13 @@ class SemanticInNoteSearch {
     this.el.style.setProperty('--gib-in-note-find-top', `${Math.ceil(topToolbar?.getBoundingClientRect().height || 0)}px`); if (this.observedButterToolbar !== topToolbar) { this.toolbarResizeObserver?.disconnect(); this.observedButterToolbar = topToolbar; if (topToolbar && typeof ResizeObserver === 'function') { this.toolbarResizeObserver = new ResizeObserver(() => this.placeButterSearch()); this.toolbarResizeObserver.observe(topToolbar); } }
   }
   compactPhrases(results, query, source) {
-    const candidates = [...(this.options.lexical ? [{ phrase: String(query), displayPhrase: String(query), priority: 3, kind: 'lexical' }] : []), ...(this.options.semantic ? inNoteSemanticPool(results) : [])].filter(item => item.phrase && item.displayPhrase && item.displayPhrase.length >= (item.priority === 3 ? 1 : 3));
+    const candidates = [...(this.options.lexical ? [{ phrase: String(query), displayPhrase: String(query), priority: 3, kind: 'lexical' }] : []), ...(this.options.semantic ? inNoteSemanticPool(results) : [])].filter(item => item.phrase && item.displayPhrase);
     const unique = candidates.sort((a, b) => b.priority - a.priority || Number(b.score || 0) - Number(a.score || 0)); this.highlightPhrases = [];
     const needsOccurrence = this.isButter || typeof this.editor?.cm?.posAtDOM !== 'function', frontmatterSize = source.match(/^---\s*\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*\r?\n/u)?.[0].length || 0, projected = needsOccurrence ? inNoteProjection(source.slice(frontmatterSize)) : null, occurrencePositions = new Map();
     const occupied = []; const matches = [];
     for (const candidate of unique) {
       if (candidate.kind === 'semantic') {
+        if (source.slice(candidate.evidenceFrom, candidate.evidenceTo) !== candidate.evidenceText) continue;
         if (!Number.isInteger(candidate.from) || !Number.isInteger(candidate.to) || source.slice(candidate.from, candidate.to) !== candidate.phrase || occupied.some(range => candidate.from < range.to && candidate.to > range.from)) continue;
         if (projected) { const key = candidate.displayPhrase.toLowerCase(); if (!occurrencePositions.has(key)) occurrencePositions.set(key, [...projected.text.matchAll(this.matchRegex(candidate, true))].map(match => frontmatterSize + projected.positions[match.index])); candidate.occurrence = occurrencePositions.get(key).filter(position => position < candidate.from).length; }
         occupied.push({ from: candidate.from, to: candidate.to }); this.highlightPhrases.push(candidate); matches.push({ from: candidate.from, to: candidate.to, text: candidate.phrase, kind: 'semantic' }); continue;
@@ -1088,12 +1092,24 @@ class SemanticInNoteSearch {
     const root = this.host?.querySelector('.cm-content, .ProseMirror'); if (!root) return;
     const candidates = this.highlightPhrases || [], textNodes = []; let value = '', previousBlock = null; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let node;
     while ((node = walker.nextNode())) { const text = node.nodeValue || ''; if (!text) continue; const block = node.parentElement?.closest?.('.cm-line, p, li, h1, h2, h3, h4, h5, h6, blockquote, pre'); if (previousBlock && block && block !== previousBlock) value += '\n'; if (block) previousBlock = block; textNodes.push({ node, from: value.length, to: value.length + text.length }); value += text; }
-    const occupied = [], ranges = { lexical: [], semantic: [] }, domMatches = [];
+    const occupied = [], ranges = { lexical: [], semantic: [] }, domMatches = [], renderedMatches = new Map();
     for (const candidate of candidates) {
+      const cm = this.editor?.cm;
+      if (candidate.kind === 'semantic' && !this.isButter && typeof cm?.domAtPos === 'function' && typeof cm?.posAtDOM === 'function') {
+        if (cm.viewport && (candidate.from < cm.viewport.from || candidate.to > cm.viewport.to)) continue;
+        try {
+          const first = cm.domAtPos(candidate.from), last = cm.domAtPos(candidate.to);
+          if (root.contains(first.node) && root.contains(last.node) && cm.posAtDOM(first.node, first.offset) === candidate.from && cm.posAtDOM(last.node, last.offset) === candidate.to) {
+            const range = new Range(); range.setStart(first.node, first.offset); range.setEnd(last.node, last.offset); ranges.semantic.push(range); domMatches.push({ range, text: candidate.displayPhrase, kind: 'semantic', from: candidate.from, to: candidate.to }); continue;
+          }
+        } catch {}
+      }
       const regex = this.matchRegex(candidate, true);
+      const key = `${regex.source}\0${regex.flags}`; if (!renderedMatches.has(key)) renderedMatches.set(key, [...value.matchAll(regex)]);
+      const found = renderedMatches.get(key), ordinalOnly = candidate.kind === 'semantic' && (this.isButter || typeof this.editor?.cm?.posAtDOM !== 'function'), visibleMatches = ordinalOnly ? [found[candidate.occurrence]].filter(Boolean) : found;
       let occurrence = 0;
-      for (const match of value.matchAll(regex)) {
-        const ordinal = occurrence++, from = match.index, to = from + match[0].length; if (occupied.some(item => from < item.to && to > item.from)) continue;
+      for (const match of visibleMatches) {
+        const ordinal = ordinalOnly ? candidate.occurrence : occurrence++, from = match.index, to = from + match[0].length; if (occupied.some(item => from < item.to && to > item.from)) continue;
         const first = textNodes.find(item => from >= item.from && from < item.to), last = [...textNodes].reverse().find(item => to > item.from && to <= item.to); if (!first || !last) continue;
         if (candidate.kind === 'semantic') {
           const cm = this.editor?.cm;

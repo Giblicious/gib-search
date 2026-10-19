@@ -15,6 +15,7 @@ const parallel = process.argv.includes('--parallel');
 const unitCount = Number(process.argv.find(value => value.startsWith('--units='))?.slice(8)) || 400;
 const queryCount = Number(process.argv.find(value => value.startsWith('--query-count='))?.slice(14)) || 5;
 const matcherSource = process.argv.find(value => value.startsWith('--matcher-source='))?.slice(17);
+const screenshotPath = process.argv.find(value => value.startsWith('--screenshot='))?.slice(13);
 const chrome = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 if (!fs.existsSync(chrome)) throw new Error(`Chrome was not found at ${chrome}; set CHROME_PATH to run this optional smoke check`);
 
@@ -23,18 +24,19 @@ const wasmModule = fs.readFileSync(path.join(root, 'node_modules', '@huggingface
   .replace('n="object"==typeof process&&"object"==typeof process.versions&&"string"==typeof process.versions.node&&"renderer"!=process.type', 'n=false')
   .replace("var isNode = typeof globalThis.process?.versions?.node == 'string';\nif (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';", 'var isNode = false;')
   .replace('Xa??=e.locateFile?e.locateFile?e.locateFile("ort-wasm-simd-threaded.jsep.wasm",v):v+"ort-wasm-simd-threaded.jsep.wasm":(new URL("ort-wasm-simd-threaded.jsep.wasm",import.meta.url)).href', 'Xa??="embedded.wasm"');
-const config = { type: 'init', mobile: false, preferWebGpu: !wasmOnly, hardwareConcurrency: 4, wasmThreads: 2, maximumEmbedBatchSize: 4, benchmark, batchSize, parallel, unitCount, queryCount, wasmGzip: zlib.gzipSync(wasm, { level: 9 }).toString('base64'), wasmModuleGzip: zlib.gzipSync(wasmModule, { level: 9 }).toString('base64') };
+const config = { type: 'init', mobile: false, preferWebGpu: !wasmOnly, hardwareConcurrency: 4, wasmThreads: 2, maximumEmbedBatchSize: 4, benchmark, batchSize, parallel, unitCount, queryCount, tokenFocus: !matcherSource, wasmGzip: zlib.gzipSync(wasm, { level: 9 }).toString('base64'), wasmModuleGzip: zlib.gzipSync(wasmModule, { level: 9 }).toString('base64') };
 const workerBuild = await build({ entryPoints: [path.join(root, 'src', 'desktop-embed-worker.js')], bundle: true, write: false, platform: 'browser', format: 'iife', target: 'es2020', conditions: ['browser', 'module', 'import'], define: { global: 'globalThis', 'process.env.NODE_ENV': '"production"', 'process.release.name': '"browser"' }, logLevel: 'silent', legalComments: 'none' });
 const workerSource = workerBuild.outputFiles[0].text;
 
 let finish;
 const completed = new Promise(resolve => { finish = resolve; });
-const page = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><script>window.onerror = message => fetch('/result', { method: 'POST', body: JSON.stringify({ ok: false, error: String(message) }) });</script><script type="module">
+const page = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><style>body{background:#202025;color:#ddd;font:18px system-ui;padding:32px}section{margin-top:40px;--color-purple:#b48aeb;--text-accent:#b48aeb}p{line-height:1.8}</style><script>window.onerror = message => fetch('/result', { method: 'POST', body: JSON.stringify({ ok: false, error: String(message) }) });</script><script type="module">
 import { InNoteMatcher } from '/in-note-search.js';
 const [source, configuration] = await Promise.all([fetch('/worker.js').then(value => value.text()), fetch('/config').then(value => value.json())]);
 const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })), { name: 'gib-search-webgpu-smoke' });
 const inferencePending = new Map(); let inferenceId = 100;
 function inference(message) { const id = inferenceId++; return new Promise((resolve, reject) => { inferencePending.set(id, { resolve, reject }); worker.postMessage({ ...message, id }); }); }
+function embeddings(message) { return message.buffers.map((buffer, index) => { const vector = new Float32Array(buffer); vector.focus = message.focus?.[index]; return vector; }); }
 function highlightSmoke() {
   const elements = ['--text-highlight-bg:transparent', '--text-highlight-bg:initial', '--color-yellow:#E0DE71;--text-highlight-bg:transparent'].map(properties => { const element = document.createElement('p'); element.style = properties; element.textContent = 'Exact text stays visibly highlighted.'; document.body.append(element); return element; });
   const ranges = elements.map(element => { const range = new Range(); range.selectNodeContents(element); return range; }); CSS.highlights.set('gib-search-lexical-find', new Highlight(...ranges)); CSS.highlights.set('gib-search-lexical-current', new Highlight(ranges[0]));
@@ -43,7 +45,7 @@ function highlightSmoke() {
   return { ok: fills.every(fill => fill.alpha >= 80), fills };
 }
 async function inNoteSmoke() {
-  const matcher = new InNoteMatcher({ embed: async texts => (await inference({ type: 'embed', texts, query: false, priority: 1 })).buffers.map(buffer => new Float32Array(buffer)), classify: async pairs => (await inference({ type: 'relations', pairs, interactive: true })).results, batchSize: 6 });
+  const matcher = new InNoteMatcher({ embed: async texts => embeddings(await inference({ type: 'embed', texts, query: false, tokenFocus: configuration.tokenFocus, priority: 1 })), classify: async pairs => (await inference({ type: 'relations', pairs, interactive: true })).results, batchSize: 6 });
   const checks = [
     { query: 'reset database password', text: 'Water the tomato plants before sunrise. The garden receives six hours of sunlight.', count: 0 },
     { query: 'fix the car', text: 'We plan to fix the car tomorrow. The mechanic repaired the automobile yesterday.', count: 2 },
@@ -51,8 +53,20 @@ async function inNoteSmoke() {
     { query: 'Alice paid Bob', text: 'Bob paid Alice for the repairs. Later, Alice sent money to Bob for the supplies.', count: 1 },
   ];
   const findings = [];
-  for (const check of checks) { const matches = await matcher.search(check.query, check.text); findings.push({ query: check.query, count: matches.length, expected: check.count, validOffsets: matches.every(match => check.text.slice(match.from, match.to) === match.sourcePhrase) }); }
-  return { ok: findings.every(check => check.count === check.expected && check.validOffsets), findings };
+  for (const check of checks) { const matches = await matcher.search(check.query, check.text); findings.push({ query: check.query, count: matches.length, expected: check.count, validOffsets: matches.every(match => check.text.slice(match.from, match.to) === match.sourcePhrase && (!configuration.tokenFocus || match.highlight && check.text.slice(match.highlight.from, match.highlight.to) === match.highlight.sourcePhrase)), phrases: matches.map(match => match.highlight?.phrase) }); }
+  const ui = configuration.tokenFocus ? await inNoteUiSmoke(matcher) : { ok: true, skipped: true };
+  return { ok: findings.every(check => check.count === check.expected && check.validOffsets) && ui.ok, findings, ui };
+}
+async function inNoteUiSmoke(matcher) {
+  const { SemanticInNoteSearch } = await import('/in-note-ui.js'), source = 'The mechanic **repaired** the [[Fleet|automobile]] after diagnosing the engine.\\n\\nThe mechanic **repaired** the [[Fleet|automobile]] after diagnosing the engine.';
+  const matches = await matcher.search('fix the car', source), host = document.createElement('section');
+  host.innerHTML = '<h3>Only the verified occurrence is highlighted</h3><div class="ProseMirror"><p data-index="0">The mechanic <strong>repaired</strong> the <a>automobile</a> after diagnosing the engine.</p><p data-index="1">The mechanic <strong>repaired</strong> the <a>automobile</a> after diagnosing the engine.</p></div>'; document.body.append(host);
+  const ui = new SemanticInNoteSearch({ workspace: {} }, {}, { file: { path: 'Example.md' } }); ui.host = host; ui.el = document.createElement('div'); host.append(ui.el); ui.isButter = true; ui.options = { lexical: false, semantic: true }; ui.current = 0;
+  ui.matches = ui.compactPhrases(matches, 'fix the car', source); ui.paintHighlights(); const ranges = [...CSS.highlights.get(ui.highlightNames.semantic)];
+  const allNarrow = ranges.length === 2 && ranges.every(range => range.toString() === 'repaired the automobile');
+  ui.matches = ui.compactPhrases([matches[1]], 'fix the car', source); ui.current = 0; ui.paintHighlights(); const second = [...CSS.highlights.get(ui.highlightNames.semantic)];
+  const onlyVerified = second.length === 1 && second[0].startContainer.parentElement.closest('p').dataset.index === '1';
+  return { ok: allNarrow && onlyVerified, allNarrow, onlyVerified, spans: ranges.map(range => range.toString()) };
 }
 async function inNoteBenchmark() {
   const { DesktopEmbedder } = await import('/desktop-embedder.js');
@@ -63,8 +77,8 @@ async function inNoteBenchmark() {
   if (configuration.parallel) { const results = await classify(Array.from({ length: 12 }, () => ({ premise: 'The mechanic repaired the automobile.', hypothesis: 'fix the car' }))); if (results.length !== 12 || results.some(result => result.entailment < .4)) throw new Error('Parallel meaning verification lost results'); }
   const cpuHelper = { active: Boolean(pool.inNoteWorker?.worker), embeddingModelLoaded: helperModels.some(key => key.includes('bge-small')), models: [...new Set(helperModels.map(key => key.split('/resolve/')[0]))] };
   if (cpuHelper.embeddingModelLoaded || configuration.parallel && profile.backend === 'wasm' && !cpuHelper.active) throw new Error('CPU helper model isolation failed');
-  const metrics = { embedTexts: 0, embedMs: 0, classifiedPairs: 0, classifyMs: 0, classifyBatches: 0 }, matcher = new InNoteMatcher({ batchSize: configuration.batchSize,
-    embed: async texts => { const start = performance.now(); const result = await inference({ type: 'embed', texts, query: false, priority: 1 }); metrics.embedTexts += texts.length; metrics.embedMs += performance.now() - start; return result.buffers.map(buffer => new Float32Array(buffer)); },
+  const metrics = { embedTexts: 0, embedBatches: 0, embedMs: 0, classifiedPairs: 0, classifyMs: 0, classifyBatches: 0, focusBytes: 0 }, matcher = new InNoteMatcher({ batchSize: configuration.batchSize,
+    embed: async texts => { const start = performance.now(); const result = await inference({ type: 'embed', texts, query: false, tokenFocus: configuration.tokenFocus, priority: 1 }); metrics.embedTexts += texts.length; metrics.embedBatches++; metrics.embedMs += performance.now() - start; metrics.focusBytes += (result.focus || []).reduce((sum, value) => sum + (value?.vectors?.byteLength || 0), 0); return embeddings(result); },
     classify: async pairs => { const start = performance.now(); const result = await classify(pairs); metrics.classifiedPairs += pairs.length; metrics.classifyBatches++; metrics.classifyMs += performance.now() - start; return result; },
   });
   const patterns = ['Encrypt confidential records before creating a backup.', 'Private data remains in plaintext in the archive.', 'The security report describes access to confidential files.', 'Private meetings occur on Friday and records are reviewed.', 'The mechanic repaired the automobile after diagnosing the engine.', 'The subscription renews automatically each month.', 'Slow breathing helped her feel calm again.', 'The garden receives six hours of sunlight.'];
@@ -95,6 +109,8 @@ worker.onerror = event => fetch('/result', { method: 'POST', headers: { 'content
 worker.postMessage(configuration);
 </script>`;
 const server = http.createServer((request, response) => {
+  if (request.url === '/in-note-ui.js') { const main = fs.readFileSync(path.join(root, 'src/main.js'), 'utf8'), cleanStart = main.indexOf('function cleanSourceText('), clean = main.slice(cleanStart, main.indexOf('\nfunction ', cleanStart + 1)), pool = main.slice(main.indexOf('function inNoteSemanticPool('), main.indexOf('\nconst IMAGE_EXTENSION')), ui = main.slice(main.indexOf('class SemanticInNoteSearch'), main.indexOf('\nclass AtlasNavigatorView')); response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); response.end("import { inNoteProjection } from '/in-note-search.js';\n" + clean + '\n' + pool + '\n' + ui + '\nexport { SemanticInNoteSearch };'); return; }
+  if (request.url === '/in-note-focus.js') { response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); response.end(fs.readFileSync(path.join(root, 'src/in-note-focus.js'), 'utf8')); return; }
   if (request.url === '/desktop-embedder.js') { const main = fs.readFileSync(path.join(root, 'src/main.js'), 'utf8'), source = main.slice(main.indexOf('class DesktopEmbedder {'), main.indexOf('\nfunction activeTweaks(')); response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); response.end(`const configuration = await fetch('/config').then(response => response.json()); const EMBEDDED_DESKTOP_WORKER = await fetch('/worker.js').then(response => response.text()), EMBEDDED_WASM_GZIP = configuration.wasmGzip, EMBEDDED_WASM_MODULE_GZIP = configuration.wasmModuleGzip; ${source}; export { DesktopEmbedder };`); return; }
   if (request.url.startsWith('/model-cache?')) { const key = new URL(request.url, 'http://localhost').searchParams.get('key'), match = key?.match(/^https:\/\/huggingface.co\/([^/]+\/[^/]+)\/resolve\/[^/]+\/(.+)$/u), file = modelRoot && match && path.resolve(modelRoot, match[1], match[2]); if (file && file.startsWith(path.resolve(modelRoot) + path.sep) && fs.existsSync(file)) { response.writeHead(200); fs.createReadStream(file).pipe(response); } else { response.writeHead(404); response.end(); } return; }
   if (request.method === 'POST' && request.url === '/progress') { let body = ''; request.on('data', chunk => { body += chunk; }); request.on('end', () => { console.log(body); response.end('ok'); }); return; }
@@ -104,7 +120,7 @@ const server = http.createServer((request, response) => {
 });
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
 const address = server.address(), profileDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gib-search-webgpu-'));
-const browser = spawn(chrome, [`--user-data-dir=${profileDirectory}`, '--headless=new', '--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--no-first-run', '--disable-sync', `http://127.0.0.1:${address.port}/`], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+const browser = spawn(chrome, [`--user-data-dir=${profileDirectory}`, '--headless=new', '--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--no-first-run', '--disable-sync', '--window-size=1100,760', ...(screenshotPath ? ['--remote-debugging-port=0'] : []), `http://127.0.0.1:${address.port}/`], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
 let browserError = ''; browser.stderr.on('data', chunk => { browserError += chunk; });
 const timeout = setTimeout(() => finish({ ok: false, error: 'Timed out waiting for WebGPU semantic and profile inference' }), 180000);
 try {
@@ -112,6 +128,13 @@ try {
   if (reportPath) fs.writeFileSync(path.resolve(reportPath), JSON.stringify(result, null, 2));
   const expectedBackend = wasmOnly ? 'wasm' : 'webgpu';
   if (!result.ok || result.semantic?.backend !== expectedBackend || result.relation?.backend !== expectedBackend) throw new Error(`Browser inference smoke check failed: ${JSON.stringify(result)}${browserError ? `\n${browserError.slice(-1200)}` : ''}`);
+  if (screenshotPath) {
+    const port = browserError.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//u)?.[1]; if (!port) throw new Error('Chrome did not expose a screenshot connection');
+    const tabs = await fetch(`http://127.0.0.1:${port}/json/list`).then(response => response.json()), target = tabs.find(tab => tab.type === 'page');
+    const socket = new WebSocket(target.webSocketDebuggerUrl); await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
+    const captured = new Promise((resolve, reject) => socket.addEventListener('message', event => { const message = JSON.parse(event.data); if (message.id === 1) message.error ? reject(new Error(message.error.message)) : resolve(message.result.data); })); socket.send(JSON.stringify({ id: 1, method: 'Page.captureScreenshot', params: { format: 'png' } }));
+    fs.writeFileSync(path.resolve(screenshotPath), Buffer.from(await captured, 'base64')); socket.close();
+  }
   console.log(`${expectedBackend} worker smoke check passed (semantic ${result.semantic.dtype}, ${result.semantic.dimension} dimensions; mobile bootstrap q8 ${result.mobile.dimension} dimensions; profile ${result.relation.dtype}, probabilities ${result.relation.probabilities.map(value => value.toFixed(3)).join('/')}; interactive preemption verified; ${result.inNote.findings.length} live-source meaning/polarity checks passed).`);
   if (result.benchmark) console.log(JSON.stringify(result.benchmark, null, 2));
 } finally {

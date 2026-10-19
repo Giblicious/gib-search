@@ -4,6 +4,8 @@ import { performance } from 'node:perf_hooks';
 import { env, pipeline } from '@huggingface/transformers';
 import { MobileSearchRuntime } from '../src/mobile-runtime.js';
 import { IN_NOTE_PRESETS } from '../src/in-note-search.js';
+import { embedInNote } from '../src/in-note-embedding.js';
+import { inNotePhraseCases, additionalPhraseCases } from './in-note-phrase-cases.mjs';
 import { additionalInNoteCases } from './in-note-cases.mjs';
 
 const argumentsFor = name => process.argv.filter(value => value.startsWith(`--${name}=`)).map(value => value.slice(name.length + 3)), argument = name => argumentsFor(name)[0] || '';
@@ -16,8 +18,7 @@ const classifier = await pipeline('text-classification', argument('nli-model') |
 const parallelClassifier = process.argv.includes('--parallel-meaning') ? await pipeline('text-classification', argument('nli-model') || 'Xenova/mobilebert-uncased-mnli', { dtype: 'q8', device: 'cpu' }) : null;
 const embed = async texts => {
   if (!texts.length) return [];
-  const output = await extractor(texts, { pooling: 'mean', normalize: true }), dimension = output.dims.at(-1);
-  return texts.map((_, index) => new Float32Array(output.data.slice(index * dimension, (index + 1) * dimension)));
+  return embedInNote(extractor, texts);
 };
 const classifyWith = async (classifier, pairs) => {
   if (!pairs.length) return [];
@@ -52,6 +53,7 @@ const cases = [
 
 cases.forEach(test => { test.required = true; });
 cases.push(...additionalInNoteCases);
+cases.push(...additionalPhraseCases);
 const caseFilter = argument('case'); if (caseFilter) cases.splice(0, cases.length, ...cases.filter(test => test.name.toLowerCase().includes(caseFilter.toLowerCase())));
 if (inspectionFile && inspectionQueries.length) {
   const literalPattern = value => new RegExp(String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), splitPatterns = value => String(value || '').split(';;').map(item => item.trim()).filter(Boolean).map(literalPattern), expected = argumentsFor('expect'), forbidden = argumentsFor('forbid'), source = await readFile(inspectionFile, 'utf8');
@@ -59,7 +61,7 @@ if (inspectionFile && inspectionQueries.length) {
 }
 const report = [], failures = [];
 for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile]) {
-  plugin.isMobile = mobileProfile; let assertions = 0, forbiddenHits = 0, positives = 0, found = 0; const durations = [];
+  plugin.isMobile = mobileProfile; let assertions = 0, forbiddenHits = 0, positives = 0, found = 0, phraseAssertions = 0; const durations = [];
   for (const test of cases) {
     const runtime = new MobileSearchRuntime(plugin); runtime.embedBatch = embed; runtime.classifyRelationPairs = classify;
     // The real UI's live-source method, with no index preloaded or patched scores.
@@ -72,12 +74,15 @@ for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile
       for (const pattern of forbidden) failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} admitted ${pattern}: ${JSON.stringify(highlights)}`);
       if (test.empty && highlights.length) { forbiddenHits += highlights.length; failures.push(`${mobileProfile ? 'mobile' : 'desktop'} ${mode} ${test.name} invented matches: ${JSON.stringify(highlights)}`); }
       assert.ok(matches.every(match => test.source.slice(match.from, match.to) === match.sourcePhrase), `${test.name} lost source offsets`);
-      const row = { name: test.name, query: test.query, mobile: mobileProfile, mode, elapsed, highlights, missed: missed.map(String), forbidden: forbidden.map(String), ...(diagnostics ? { candidates: result.candidates } : {}) }; report.push(row);
+      assert.ok(matches.every(match => !match.highlight || match.highlight.from >= match.from && match.highlight.to <= match.to && test.source.slice(match.highlight.from, match.highlight.to) === match.highlight.sourcePhrase), `${test.name} lost phrase offsets`);
+      const phraseCheck = inNotePhraseCases[test.name];
+      if (phraseCheck) for (const match of matches) { assert.ok(match.highlight, `${test.name} did not produce phrase attribution`); assert.ok(phraseCheck.expected.test(match.highlight.phrase) && !phraseCheck.excluded?.test(match.highlight.phrase), `${test.name} ${mode} lost the relevant phrase: ${match.highlight.phrase}`); phraseAssertions += 2; }
+      const row = { name: test.name, query: test.query, mobile: mobileProfile, mode, elapsed, highlights, phrases: matches.map(match => match.highlight?.phrase || match.phrase), missed: missed.map(String), forbidden: forbidden.map(String), ...(diagnostics ? { candidates: result.candidates } : {}) }; report.push(row);
       if (verbose) console.log(JSON.stringify(row));
     }
   }
   const p95 = durations.slice().sort((a, b) => a - b)[Math.max(0, Math.ceil(durations.length * .95) - 1)];
-  console.log(`In-note audit: ${assertions} checks, ${cases.length} cases, all 3 breadth modes, ${mobileProfile ? 'mobile' : 'desktop'} batches; ${found}/${positives} paraphrases; ${forbiddenHits} forbidden hits; warm p95 ${p95.toFixed(1)} ms (${dtype}).`);
+  console.log(`In-note audit: ${assertions} checks, ${cases.length} cases, all 3 breadth modes, ${mobileProfile ? 'mobile' : 'desktop'} batches; ${found}/${positives} paraphrases; ${forbiddenHits} forbidden hits; ${phraseAssertions} phrase-span checks; warm p95 ${p95.toFixed(1)} ms (${dtype}).`);
   assert.ok(!positives || found / positives >= .95, `In-note paraphrase recall regressed below 95%: ${found}/${positives}`);
   assert.ok(p95 < 5000, `In-note audit p95 is too slow: ${p95.toFixed(1)} ms`);
 }

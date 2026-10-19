@@ -5,6 +5,7 @@ import { BoundedMetricWindow, IncrementalBm25, assembleIndexSegments, boundedTop
 import { MOBILE_BOOTSTRAP_SEGMENTS, bootstrapBucket, mobileBootstrapFileIndex, readMobileBootstrap, readMobileBootstrapManifest, readMobileBootstrapSegment, writeMobileBootstrap } from './mobile-bootstrap.js';
 import { indexScopeIncludes, indexScopePreview, normalizeIndexScope } from './index-scope.js';
 import { InNoteMatcher } from './in-note-search.js';
+import { embedInNote } from './in-note-embedding.js';
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
@@ -693,12 +694,12 @@ export class MobileSearchRuntime {
       if (this.plugin.embeddedWasmModuleUrl) { URL.revokeObjectURL(this.plugin.embeddedWasmModuleUrl); this.plugin.embeddedWasmModuleUrl = null; }
     }
   }
-  async embedBatch(texts, query = false, preferredBatchSize = null, backgroundOnly = false) {
+  async embedBatch(texts, query = false, preferredBatchSize = null, backgroundOnly = false, tokenFocus = false) {
     if (!texts.length) return [];
     const batchSize = preferredBatchSize || (query ? 8 : 2);
     const backgroundEmbedder = this.plugin.desktopEmbedder;
     if (backgroundEmbedder) {
-      try { const results = []; for (let i = 0; i < texts.length; i += batchSize) results.push(...await backgroundEmbedder.embedBatch(texts.slice(i, i + batchSize), query, { priority: query ? 0 : backgroundOnly ? 3 : 1 })); this.modelBackend = `web-worker-${backgroundEmbedder.backend === 'webgpu' ? 'webgpu' : 'wasm'}`; return results; }
+      try { const results = []; for (let i = 0; i < texts.length; i += batchSize) results.push(...await backgroundEmbedder.embedBatch(texts.slice(i, i + batchSize), query, { priority: query ? 0 : backgroundOnly ? 3 : 1, tokenFocus })); this.modelBackend = `web-worker-${backgroundEmbedder.backend === 'webgpu' ? 'webgpu' : 'wasm'}`; return results; }
       catch (error) { if (!this.isMobile) throw error; backgroundEmbedder.stop?.(); backgroundEmbedder.disabled = true; this.plugin.logDiagnostic(`Mobile background inference unavailable: ${error?.message || error}`, true); this.modelBackend = 'wasm-fallback'; if (backgroundOnly) { const unavailable = new Error('Mobile background inference is unavailable'); unavailable.name = 'BackgroundWorkerUnavailableError'; throw unavailable; } }
     }
     if (backgroundOnly && this.isMobile) { const unavailable = new Error('Mobile background inference is unavailable'); unavailable.name = 'BackgroundWorkerUnavailableError'; throw unavailable; }
@@ -707,6 +708,7 @@ export class MobileSearchRuntime {
       const results = [];
       for (let i = 0; i < texts.length; i += batchSize) {
         const batch = texts.slice(i, i + batchSize).map(text => query ? `${QUERY_PREFIX}${text}` : text);
+        if (tokenFocus) { results.push(...await embedInNote(this.pipe, batch)); await yieldToUi(); continue; }
         const output = await this.pipe(batch, { pooling: 'mean', normalize: true }); const dim = output.dims.at(-1);
         for (let j = 0; j < batch.length; j++) results.push(new Float32Array(output.data.slice(j * dim, (j + 1) * dim)));
         await yieldToUi();
@@ -1218,7 +1220,7 @@ export class MobileSearchRuntime {
   async highlightResults(results, query, options = {}) { if (!results?.length) return results || []; const correctedQuery = this.correctQuery(query), queryVector = await this.queryVector(correctedQuery); await this.semanticHighlights(results, queryVector, { ...options, query: correctedQuery }); return results; }
   cacheResult(cache, key, value, maximum) { cache.delete(key); cache.set(key, value); while (cache.size > maximum) cache.delete(cache.keys().next().value); return value; }
   searchInNote(query, source, options = {}) {
-    this.inNoteMatcher ||= new InNoteMatcher({ embed: texts => this.embedBatch(texts, false, this.isMobile ? 8 : 24), classify: pairs => this.classifyRelationPairs(pairs, { interactive: true, backgroundOnly: true }), batchSize: this.isMobile ? 6 : 24 });
+    this.inNoteMatcher ||= new InNoteMatcher({ embed: texts => this.embedBatch(texts, false, this.isMobile ? 8 : 24, false, true), classify: pairs => this.classifyRelationPairs(pairs, { interactive: true, backgroundOnly: true }), batchSize: this.isMobile ? 6 : 24 });
     return this.inNoteMatcher.search(query, source, options);
   }
   async queryVector(query, correction = true) {

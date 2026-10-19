@@ -1,4 +1,5 @@
 const { pipeline, env } = require('@huggingface/transformers');
+const { embedInNote } = require('./in-note-embedding');
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
@@ -123,14 +124,15 @@ async function initializeModel() {
   try { return await modelPromise; } finally { modelPromise = null; }
 }
 
-async function embed(texts, query) {
+async function embed(texts, query, tokenFocus = false) {
   const model = await initializeModel(); const input = texts.map(text => query ? `${QUERY_PREFIX}${text}` : text);
   let output;
-  try { output = await model(input, { pooling: 'mean', normalize: true }); }
+  try { output = tokenFocus ? await embedInNote(model, input) : await model(input, { pooling: 'mean', normalize: true }); }
   catch (error) {
     if (modelBackend !== 'webgpu') throw error;
-    const fallback = await activateWasm(error); output = await fallback(input, { pooling: 'mean', normalize: true });
+    const fallback = await activateWasm(error); output = tokenFocus ? await embedInNote(fallback, input) : await fallback(input, { pooling: 'mean', normalize: true });
   }
+  if (tokenFocus) { const buffers = output.map(vector => vector.buffer), focus = output.map(vector => vector.focus); return { buffers, focus, transfer: [...buffers, ...focus.filter(value => value?.vectors).map(value => value.vectors.buffer)] }; }
   const dimension = output.dims.at(-1);
   const buffers = input.map((_, index) => new Float32Array(output.data.slice(index * dimension, (index + 1) * dimension)).buffer);
   return { buffers, transfer: buffers };
@@ -242,7 +244,7 @@ async function generateTopicLabels(prompts) {
 }
 
 async function handleEmbed(message) {
-  try { const result = await embed(message.texts || [], Boolean(message.query)); self.postMessage({ type: 'result', id: message.id, buffers: result.buffers }, result.transfer); }
+  try { const result = await embed(message.texts || [], Boolean(message.query), Boolean(message.tokenFocus)); self.postMessage({ type: 'result', id: message.id, buffers: result.buffers, focus: result.focus }, result.transfer); }
   catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
 }
 async function handleWarmup(message) {

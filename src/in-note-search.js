@@ -1,6 +1,7 @@
 // In-note matching deliberately has no dependency on the vault's passage index.
 // Every finding retains its occurrence in the exact editor snapshot that was scored.
-export const IN_NOTE_MATCH_VERSION = 2;
+import { inNoteFocusRange } from './in-note-focus.js';
+export const IN_NOTE_MATCH_VERSION = 3;
 export const IN_NOTE_PRESETS = Object.freeze({
   precise: { similarity: .48, entailment: .60, contradiction: .25, neutralSimilarity: .70 },
   balanced: { similarity: .40, entailment: .40, contradiction: .35, neutralSimilarity: .60 },
@@ -38,6 +39,26 @@ export function inNoteProjection(source) {
   return { text: characters.join(''), positions };
 }
 
+export function inNotePhraseHighlight(unit, queryFocus, passageFocus, contextOffset, sourcePositions) {
+  const range = inNoteFocusRange(queryFocus, passageFocus, contextOffset, contextOffset + unit.phrase.length);
+  if (!range || range.from < 0 || range.to > unit.phrase.length || range.to <= range.from) return null;
+  let projected = sourcePositions ? { text: unit.phrase, positions: sourcePositions } : null;
+  if (!projected) {
+    const raw = inNoteProjection(unit.sourcePhrase), characters = [], positions = [];
+    for (let index = 0; index < raw.text.length; index++) {
+      const character = raw.text[index], space = /\s/u.test(character);
+      if (space && (!characters.length || characters.at(-1) === ' ')) continue;
+      characters.push(space ? ' ' : character); positions.push(raw.positions[index]);
+    }
+    if (characters.at(-1) === ' ') { characters.pop(); positions.pop(); }
+    projected = { text: characters.join(''), positions };
+  }
+  if (projected.text !== unit.phrase) return null;
+  const from = projected.positions[range.from], to = projected.positions[range.to - 1] + 1;
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from >= to) return null;
+  return { from: unit.from + from, to: unit.from + to, phrase: unit.phrase.slice(range.from, range.to), sourcePhrase: unit.sourcePhrase.slice(from, to) };
+}
+
 export function inNoteUnits(source) {
   const text = String(source || ''), units = [], headings = [], lines = [...text.matchAll(/[^\n]*(?:\n|$)/gu)], blocks = [];
   let fence = '', frontmatter = /^---\s*\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/u.test(text), block = null, list = false;
@@ -73,7 +94,11 @@ export function inNoteUnits(source) {
         const fromPlain = sentence.index + words[start].index, toPlain = sentence.index + words[end - 1].index + words[end - 1][0].length;
         const from = block.from + projection.positions[fromPlain], to = block.from + projection.positions[toPlain - 1] + 1;
         const phrase = projection.text.slice(fromPlain, toPlain).trim().replace(/\s+/gu, ' ');
-        if (phrase.length >= 3) units.push({ from, to, phrase, sourcePhrase: text.slice(from, to), heading: block.heading, line: block.line });
+        if (phrase.length >= 3) {
+          const unit = { from, to, phrase, sourcePhrase: text.slice(from, to), heading: block.heading, line: block.line }, positions = []; let space = false;
+          for (let index = fromPlain; index < toPlain; index++) { const nextSpace = /\s/u.test(projection.text[index]); if (!nextSpace || !space) positions.push(block.from + projection.positions[index] - from); space = nextSpace; }
+          Object.defineProperty(unit, 'displayPositions', { value: new Uint32Array(positions) }); units.push(unit);
+        }
         if (end >= words.length) break;
         start = Math.max(start + 1, end - 8);
       }
@@ -151,7 +176,10 @@ export class InNoteMatcher {
     for (const unit of findings.sort((a, b) => b.entailment - a.entailment || b.similarity - a.similarity)) {
       if (!selected.some(other => unit.from < other.to && unit.to > other.from)) selected.push(unit);
     }
-    const matches = selected.sort((a, b) => a.from - b.from).map(unit => ({ from: unit.from, to: unit.to, phrase: unit.phrase, sourcePhrase: unit.sourcePhrase, score: unit.entailment, similarity: unit.similarity, kind: 'semantic' }));
+    const matches = selected.sort((a, b) => a.from - b.from).map(unit => {
+      const highlight = inNotePhraseHighlight(unit, queryVector.focus, vectors[unit.unitIndex].focus, representations[unit.unitIndex].length - unit.phrase.length, prepared.units[unit.unitIndex].displayPositions);
+      return { from: unit.from, to: unit.to, phrase: unit.phrase, sourcePhrase: unit.sourcePhrase, score: unit.entailment, similarity: unit.similarity, kind: 'semantic', ...(highlight ? { highlight } : {}) };
+    });
     remember(this.results, key, matches, 4);
     return diagnostics ? { matches, candidates: candidates.map((unit, index) => ({ ...unit, ...scores[index] })) } : matches;
   }
