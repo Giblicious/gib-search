@@ -89,8 +89,9 @@ assert.ok(Array.isArray(completed.at(-1))); assert.equal(maximumActiveCalls, 1);
 assert.equal(queuedCalls, 2, 'Superseded typing queued redundant source/model work instead of reusing the completed batch');
 
 const plugin = { isMobile: false, settings: {}, manifest: { id: 'gib-search' }, app: { vault: { adapter: {}, getName: () => 'in-note-test' } } }, runtime = new MobileSearchRuntime(plugin);
-runtime.embedBatch = async texts => texts.map(() => { const vector = new Float32Array(384); vector[0] = 1; return vector; });
-runtime.readInNote = async pairs => pairs.map(pair => ({ probability: .99, spans: [{ from: pair.targetFrom, to: pair.targetTo, score: .99 }] }));
+runtime.embedInNote = async texts => texts.map(() => { const vector = new Float32Array(384); vector[0] = 1; return vector; });
+runtime.inNotePairs = async (pairs, kind) => pairs.map(() => kind === 'rank' ? 8 : affirmative);
+runtime.readInNote = async pairs => pairs.map(pair => ({ probability: .99, complete: true, spans: [{ from: pair.targetFrom, to: pair.targetTo, score: .99 }] }));
 assert.equal(runtime.meta.length, 0);
 assert.equal((await runtime.searchInNote('fix the car', 'Repair the automobile.')).length, 1, 'Current-note matching depends on a ready vault index');
 const unavailableRuntime = new MobileSearchRuntime(plugin);

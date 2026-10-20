@@ -135,6 +135,9 @@ export function inNoteFocusRange(query, passage, from = 0, to = Infinity, aligne
   let predicate = first - 1;
   while (predicate >= 0 && /^(?:the|a|an|its|his|her|their|our|your|my)$/u.test(words[predicate].text) && !words[predicate + 1].breakBefore) predicate--;
   if (predicate >= 0 && !words[predicate + 1].breakBefore && /(?:ed|ing)$/u.test(words[predicate].text)) first = predicate;
+  // A selected verb followed by an article/possessive still needs its object:
+  // "settled" must not drop "the outstanding bill" from the visible phrase.
+  if (/(?:ed|ing)$/u.test(words[last].text) && /^(?:the|a|an|its|his|her|their|our|your|my)$/u.test(words[last + 1]?.text || '') && words[last + 2] && !words[last + 1].breakBefore && !words[last + 2].breakBefore) last += 2;
   if ((/(?:ing|ed|ive|ous|ial|al|ic|ful|less)$/u.test(words[last].text) || words[last].text.includes('-')) && words[last + 1] && !words[last + 1].breakBefore && !FUNCTION_WORDS.has(words[last + 1].text)) last++;
   if (/^(?:after|before|until|by|at|for|within)$/u.test(words[last + 1]?.text || '') && /\d/u.test(words[last + 2]?.text || '')) {
     last += 2;

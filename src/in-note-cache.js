@@ -1,4 +1,4 @@
-const VERSION = 'bge-small-mean-word-focus-1';
+const VERSION = 'bge-small-f32-word-focus-single-2';
 const entryBytes = entry => entry.text.length * 2 + entry.vector.byteLength + (entry.focus?.vectors?.byteLength || 0) + (entry.focus?.words?.length || 0) * 64;
 
 export class InNoteVectorStore {

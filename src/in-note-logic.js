@@ -12,15 +12,16 @@ export function inNoteGrammar(text, nested = false) {
   const first = verbs[0], verb = first?.verb || {}, passive = Boolean(verb.grammar?.passive || /\b(?:is|are|was|were|be|been)\b/iu.test(sentence.verb || '') && first?.terms.at(-1)?.tags.includes('PastTense') && !sentence.predicate || !sentence.subject && /\bby\b/iu.test(sentence.predicate || ''));
   const by = String(sentence.predicate || '').match(/\bby\s+(.+?)(?=\b(?:for|during|after|before|because)\b|$)/iu);
   const recipient = String(sentence.predicate || '').match(/\bto\s+(.+?)(?=\b(?:for|during|after|before|because)\b|$)/iu);
+  const receiver = recipient && !nlp(`to ${recipient[1]}`).has('^to #Verb') ? recipient[1] : '';
   const predicate = head(String(sentence.predicate || '').split(/\b(?:for|during|after|before|because|by)\b/iu)[0]);
   let actor = passive ? head(by?.[1] || '') : head(sentence.subject || '');
-  const patient = passive ? head(sentence.subject || '') : head(recipient?.[1] || predicate.join(' '));
+  const patient = passive ? head(sentence.subject || '') : head(receiver || predicate.join(' '));
   let root = verb.grammar?.copula ? stem(predicate.at(-1) || '') : String(verb.infinitive || '').toLowerCase(), copula = Boolean(verb.grammar?.copula);
   const state = String(text).match(/^(.*?)\b(?:is|are|was|were)\s+(?:not\s+)?([^.!?]+)/iu), stateWords = state ? head(state[2].split(/\b(?:by|for|in|from|before|after)\b/iu)[0]) : [], stateHead = stateWords.at(-1);
   if (stateHead && !/(?:ed|en)$/u.test(stateHead) && nlp(stateHead).has('#Adjective')) { root = stateHead; actor = head(state[1]); copula = true; }
   const negative = Boolean(verb.negative || /\b(?:no|neither|none|nobody|nothing|no-one)\b/iu.test(sentence.subject || ''));
   const clauses = nested ? [] : text.split(/\s*(?:;|\b(?:but|whereas|while|although|however)\b)\s*/iu).filter(Boolean);
-  return { sentence, verbs: verbs.map(item => ({ text: item.text, terms: item.terms.map(term => ({ tags: term.tags })) })), actor, patient, root, negative, passive, copula, words: head(text), frames: clauses.length > 1 ? clauses.slice(0, 8).map(clause => inNoteGrammar(clause, true)) : [] };
+  return { sentence, verbs: verbs.map(item => ({ text: item.text, terms: item.terms.map(term => ({ text: term.text, tags: term.tags })) })), adjectives: doc.adjectives().out('array'), dates: doc.match('#Date').out('array'), actor, patient, root, negative, passive, copula, words: head(text), frames: clauses.length > 1 ? clauses.slice(0, 8).map(clause => inNoteGrammar(clause, true)) : [] };
 }
 
 export function inNoteQuery(query) {
@@ -29,10 +30,16 @@ export function inNoteQuery(query) {
   // word", "cross out some text") through their determiner/particle grammar.
   const imperative = !grammar.verbs.length && /^\p{L}+\s+(?:(?:out|up|off|on|away|down|back|over)\s+)?(?:a|an|the|this|that|these|those|my|your|our|either|any|some|each)\b/iu.test(text);
   if (imperative) { const firstWord = text.match(/^\p{L}+/u)[0], doc = nlp(text, { [firstWord]: 'Verb' }), sentence = doc.sentences().json()[0]?.sentence || {}; grammar = { ...grammar, sentence, verbs: doc.verbs().json({ offset: true }), actor: [], root: firstWord.toLowerCase() }; }
-  const question = /\?\s*$/u.test(text) || /^(?:how|why|what|where|when|who|which|can|could|does|do|is|are|should)\b/iu.test(text);
+  const terms = nlp(text).json()[0]?.terms || [], afterAuxiliary = terms.slice(1).find(term => !term.tags.includes('Negative'));
+  // An auxiliary followed by a predicate is an incomplete claim ("could
+  // access records", "is encrypted"). In an inverted question the next
+  // constituent is its subject ("can guests edit", "is the archive encrypted").
+  const auxiliaryQuestion = /^(?:can|could|does|do|is|are|should)\b/iu.test(text) && afterAuxiliary?.tags.some(tag => ['Noun', 'Pronoun', 'Determiner', 'ProperNoun'].includes(tag)) && !afterAuxiliary.tags.includes('Verb');
+  const question = /\?\s*$/u.test(text) || /^(?:how|why|what|where|when|who|which)\b/iu.test(text) || Boolean(auxiliaryQuestion);
   const core = text.replace(/^(?:how\s+(?:can|could|do|does|should)\s+(?:i|we|you)\s+|please\s+)/iu, '').replace(/[?!.]+$/u, '').trim();
   const first = grammar.verbs[0], infinitive = first?.terms.some(term => term.tags.includes('Infinitive') || term.tags.includes('Imperative'));
-  const request = question || !grammar.sentence.subject && infinitive && !grammar.passive && !/\bby\b/iu.test(text) && !/^\S+\s+(?:is|are|was|were|has|have|had)\b/iu.test(text);
+  const modal = first?.terms.some(term => term.tags.includes('Modal')) || /^(?:did|does)\b/iu.test(text);
+  const request = question || !modal && !grammar.sentence.subject && infinitive && !grammar.passive && !/\bby\b/iu.test(text) && !/^\S+\s+(?:is|are|was|were|has|have|had)\b/iu.test(text);
   const claim = request ? nlp(`Someone ${core}`).sentences().toPresentTense().text() : text;
   const lookup = question || /^(?:find|locate|search\s+for|look\s+for|show\s+me|tell\s+me)\b/iu.test(text);
   return { text, core, grammar, question, request, lookup, claim };
@@ -58,7 +65,9 @@ export function inNoteConflict(query, source) {
     const relevant = predicateFrames.filter(frame => !first.actor.length || overlap(first.actor, frame.actor));
     if (relevant.length) return relevant.map(frame => inNoteConflict(query, frame)).every(Boolean) ? inNoteConflict(query, relevant[0]) : '';
   }
-  const opposite = inNoteAntonyms(first.root, second.root), shared = overlap(first.actor, second.actor) || overlap(first.patient, second.patient);
+  // A shared theme (money, a book) does not make opposite transaction verbs
+  // contradictory: a lender and borrower can describe the same transfer.
+  const opposite = inNoteAntonyms(first.root, second.root), shared = overlap(first.actor, second.actor);
   if (!query.question && opposite && shared && first.negative === second.negative) return 'opposite-predicate';
   if (!first.root || !second.root || stem(first.root) !== stem(second.root)) return '';
   if (!query.question && first.negative !== second.negative) return 'opposite-polarity';
@@ -88,7 +97,7 @@ export function inNoteInverseRelation(query, source) {
 
 // Ground a requested action in an actual predicate, rather than a nearby noun
 // such as "security" supplying the entire evidence for "protect".
-export function inNoteActionGrounded(query, text, grammar, alignment) {
+export function inNoteActionGrounded(query, text, grammar, alignment, { relativeFloor = .8, minimum = .22 } = {}) {
   if (!query.request || query.lookup || !alignment || !grammar.verbs.length) return true;
   const queryVerbWords = words(query.grammar.root), anchors = alignment.queryRows.map((word, index) => queryVerbWords.includes(word.text) ? index : -1).filter(index => index >= 0);
   if (!anchors.length) return true;
@@ -98,6 +107,6 @@ export function inNoteActionGrounded(query, text, grammar, alignment) {
   return anchors.every(anchor => {
     let all = 0, predicate = 0;
     alignment.words.forEach((word, row) => { const score = alignment.scores[row * alignment.queryRows.length + anchor]; all = Math.max(all, score); if (ranges.some(([from, to]) => word.from >= from && word.to <= to)) predicate = Math.max(predicate, score); });
-    return predicate >= Math.max(.22, .8 * all);
+    return predicate >= Math.max(minimum, relativeFloor * all);
   });
 }

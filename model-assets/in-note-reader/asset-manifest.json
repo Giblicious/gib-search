@@ -1,0 +1,22 @@
+{
+  "config.json": {
+    "bytes": 2491,
+    "sha256": "23d3d0b3ce54ec1149a876364a6a048ab639931973fd97f4908eb81ff0797dde"
+  },
+  "special_tokens_map.json": {
+    "bytes": 970,
+    "sha256": "b2f1b2f15f29a6b6d9d6ea4eca1675d2c231a71477f151d48f79cc83a625ba21"
+  },
+  "tokenizer.json": {
+    "bytes": 8648865,
+    "sha256": "ef0ffc10518cad1ec3802130898ebf61c38a0666a6a5133b288d6cac005bf019"
+  },
+  "tokenizer_config.json": {
+    "bytes": 1477,
+    "sha256": "3fe02c467612967bd9a405e55ea55cb56862a473e2a9091f7cd87e67f29df8ea"
+  },
+  "onnx/model_quantized.onnx": {
+    "bytes": 87224488,
+    "sha256": "3bb5aed290fdeb216e7cb5eb29dd67bcc1609ae444bea63b36fa4fadd5b3d022"
+  }
+}

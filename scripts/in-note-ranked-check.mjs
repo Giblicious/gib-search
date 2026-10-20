@@ -13,6 +13,10 @@ assert.equal(inNoteFragmentClaim(inNoteQuery('Alice liked people')), '');
 assert.equal(inNoteFragmentClaim(inNoteQuery('He liked people')), '');
 assert.equal(inNoteFragmentClaim(inNoteQuery('given by god')), '');
 assert.equal(inNoteFragmentClaim(inNoteQuery('protect private data')), '');
+for (const query of ['could access records', 'could not access records', "couldn't sleep", 'is encrypted']) {
+  const intent = inNoteQuery(query); assert.equal(intent.question, false, query); assert.equal(intent.request, false, query); assert.equal(intent.lookup, false, query);
+}
+for (const query of ['can I access records?', 'can John access records', 'is the archive encrypted', 'where is the spare key']) assert.equal(inNoteQuery(query).question, true, query);
 assert.ok(hierarchy.length > 1 && hierarchy.every(paragraph => paragraph.indices.length <= 6 && paragraph.phrase.length <= 900));
 assert.equal(hierarchy.flatMap(paragraph => paragraph.indices).length, 20);
 assert.ok(hierarchy.every(paragraph => longParagraph.slice(paragraph.from, paragraph.to) === paragraph.sourcePhrase));
@@ -28,6 +32,8 @@ for (const [query, correct, wrong] of [
   assert.ok(inNoteConflict(intent, inNoteGrammar(wrong)), wrong);
 }
 assert.equal(inNoteConflict(inNoteQuery('Alice borrowed money from Bob'), inNoteGrammar('Bob lent money to Alice.')), '', 'Inverse verbs with exchanged roles are equivalent');
+assert.equal(inNoteConflict(inNoteQuery('Noah borrowed money from Maya'), inNoteGrammar('Maya lent Noah the money for his train ticket.')), '', 'A shared transfer theme cannot reverse the actual participants');
+assert.ok(inNoteConflict(inNoteQuery('Noah borrowed money from Maya'), inNoteGrammar('Noah lent Maya the money.')), 'Opposite transfers by the same actor remain contradictory');
 assert.equal(inNoteRoleMatch(inNoteQuery('Alice paid Bob'), inNoteGrammar("Alice's friend paid Bob.")), false);
 assert.equal(inNoteRoleMatch(inNoteQuery('Alice paid Bob'), inNoteGrammar('If Alice paid Bob, the order would ship.')), false);
 assert.equal(inNoteRoleMatch(inNoteQuery('Alice paid Bob and Sam left'), inNoteGrammar('Alice paid Bob.')), false);

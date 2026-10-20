@@ -1,12 +1,12 @@
-const { pipeline, env, AutoTokenizer, AutoModelForTokenClassification, Tensor } = require('@huggingface/transformers');
+const { pipeline, env } = require('@huggingface/transformers');
 const { embedInNote } = require('./in-note-embedding');
-const { decodeInNoteReader, inNoteReaderFeatures } = require('./in-note-reader-codec');
 
 const MODEL_ID = 'Xenova/bge-small-en-v1.5';
 const RELATION_MODEL_ID = 'Xenova/mobilebert-uncased-mnli';
 const RERANKER_MODEL_ID = 'Xenova/ms-marco-TinyBERT-L-2-v2';
-const IN_NOTE_READER_ID = 'Giblicious/gib-search';
-const IN_NOTE_READER_REVISION = '0.54.67';
+const IN_NOTE_RANKER_ID = 'Xenova/ms-marco-MiniLM-L-6-v2';
+const IN_NOTE_GUARD_ID = 'Xenova/nli-deberta-v3-xsmall';
+const IN_NOTE_MODEL_REVISIONS = { rank: 'a09144355adeed5f58c8ed011d209bf8ee5a1fec', guard: '2a4f614a701367a02d51389039afc998faeda637' };
 const TOPIC_LABEL_MODEL_ID = 'Xenova/flan-t5-base';
 const QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';
 let configuration = null;
@@ -22,7 +22,7 @@ let relationBackend = 'starting';
 let relationDtype = 'q8';
 let rerankerPipe = null;
 let rerankerPromise = null;
-let inNoteReaderPromise = null;
+const inNoteModels = new Map();
 let topicLabelPipe = null;
 let topicLabelPromise = null;
 let nextCacheId = 1;
@@ -66,12 +66,6 @@ async function serviceHigherPriorityTasks(priority) {
 async function configureRuntime() {
   const mobile = Boolean(configuration.mobile);
   env.allowRemoteModels = true; env.allowLocalModels = false; env.useCustomCache = !mobile; env.customCache = mobile ? null : modelCache; env.useBrowserCache = mobile; env.useFSCache = false;
-  if (configuration.readerOnly) {
-    // This runs in a dedicated worker. Vault embedding/reranking workers retain
-    // their existing model host, models, runtime settings and caches.
-    env.remoteHost = 'https://raw.githubusercontent.com/';
-    env.remotePathTemplate = '{model}/{revision}/model-assets/in-note-reader/';
-  }
   if (!env.backends?.onnx?.wasm || env.backends.onnx.wasm.wasmBinary) return;
   const threaded = !mobile && self.crossOriginIsolated === true, requestedThreads = Math.max(1, Math.min(12, Number(configuration?.wasmThreads) || 1));
   env.backends.onnx.wasm.numThreads = threaded ? requestedThreads : 1; env.backends.onnx.wasm.proxy = false;
@@ -233,27 +227,37 @@ async function rerankPassages(pairs) {
   return results;
 }
 
-async function initializeInNoteReader() {
-  if (!configuration.readerOnly) throw new Error('The passage reader requires its dedicated worker');
-  if (!inNoteReaderPromise) inNoteReaderPromise = (async () => {
+async function inNotePairModel(kind) {
+  if (!inNoteModels.has(kind)) inNoteModels.set(kind, (async () => {
     await configureRuntime();
-    const options = { revision: IN_NOTE_READER_REVISION, device: configuration.inNoteDevice || 'wasm', dtype: configuration.inNoteDtype || 'q8', progress_callback: progress => {
-      if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'in-note-progress', kind: 'reader', progress: Number(progress.progress) });
-    } };
-    const tokenizer = await AutoTokenizer.from_pretrained(IN_NOTE_READER_ID, options);
-    const model = await AutoModelForTokenClassification.from_pretrained(IN_NOTE_READER_ID, options);
-    self.postMessage({ type: 'in-note-ready', kind: 'reader' }); return { tokenizer, model };
-  })().catch(error => { inNoteReaderPromise = null; throw error; });
-  return inNoteReaderPromise;
+    // The dedicated in-note host selects a CPU worker for consistent q8 scores.
+    const device = configuration.inNoteDevice || 'wasm';
+    const model = await pipeline('text-classification', kind === 'rank' ? IN_NOTE_RANKER_ID : IN_NOTE_GUARD_ID, { revision: IN_NOTE_MODEL_REVISIONS[kind], device, dtype: 'q8', progress_callback: progress => {
+      if (progress.status === 'progress' && Number.isFinite(Number(progress.progress))) self.postMessage({ type: 'in-note-progress', kind, progress: Number(progress.progress) });
+    } });
+    self.postMessage({ type: 'in-note-ready', kind }); return model;
+  })().catch(error => { inNoteModels.delete(kind); throw error; }));
+  return inNoteModels.get(kind);
 }
-async function readInNote(pairs) {
+
+async function inNotePairs(pairs, kind) {
   if (!pairs.length) return [];
-  const { tokenizer, model } = await initializeInNoteReader();
-  const input = inNoteReaderFeatures(tokenizer, pairs, Tensor, { queryFormat: model.config.reader_query_format || 0 });
-  return decodeInNoteReader(tokenizer, input, (await model(input)).logits, pairs, model.config);
+  const classifier = await inNotePairModel(kind), result = [], batchSize = configuration.mobile ? 4 : 12;
+  for (let offset = 0; offset < pairs.length; offset += batchSize) {
+    const batch = pairs.slice(offset, offset + batchSize), first = batch.map(pair => String(kind === 'rank' ? pair.query : pair.premise).slice(0, 1400)), second = batch.map(pair => String(kind === 'rank' ? pair.passage : pair.hypothesis).slice(0, 1400));
+    const input = classifier.tokenizer(first, { text_pair: second, padding: true, truncation: true, max_length: 192 }), output = await classifier.model(input), width = output.logits.dims.at(-1), labels = classifier.model.config.id2label || {};
+    for (let index = 0; index < batch.length; index++) {
+      const values = Array.from(output.logits.data.slice(index * width, (index + 1) * width));
+      if (kind === 'rank') result.push(values[0]);
+      else { const scores = softmax(values), value = { entailment: 0, neutral: 0, contradiction: 0 }; scores.forEach((score, label) => { const name = String(labels[label] || '').toLowerCase(); if (Object.prototype.hasOwnProperty.call(value, name)) value[name] = score; }); result.push(value); }
+    }
+    if (offset + batchSize < pairs.length) { await new Promise(resolve => setTimeout(resolve, 0)); await serviceHigherPriorityTasks(1); }
+  }
+  return result;
 }
-async function handleInNoteReader(message) {
-  try { self.postMessage({ type: 'in-note-reader-result', id: message.id, results: await readInNote(message.pairs || []) }); }
+
+async function handleInNote(message, kind) {
+  try { const values = await inNotePairs(message.pairs || [], kind); self.postMessage({ type: kind === 'rank' ? 'rerank-result' : 'relation-result', id: message.id, [kind === 'rank' ? 'scores' : 'results']: values }); }
   catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); }
 }
 
@@ -306,7 +310,8 @@ self.onmessage = event => {
   else if (message.type === 'release-mobile-bootstrap') enqueueTask(5, async () => { const previous = mobileBootstrapPipe; mobileBootstrapPipe = null; await disposePipeline(previous); self.postMessage({ type: 'mobile-bootstrap-released', id: message.id }); });
   else if (message.type === 'relations') enqueueTask(message.lowPriority ? 4 : message.interactive ? 1 : 2, () => handleRelations(message));
   else if (message.type === 'rerank') enqueueTask(1, () => handleRerank(message));
-  else if (message.type === 'in-note-read') enqueueTask(1, () => handleInNoteReader(message));
-  else if (message.type === 'in-note-warm') enqueueTask(3, async () => { try { await initializeInNoteReader(); self.postMessage({ type: 'in-note-warm-result', id: message.id }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } });
+  else if (message.type === 'in-note-rank') enqueueTask(1, () => handleInNote(message, 'rank'));
+  else if (message.type === 'in-note-guard') enqueueTask(1, () => handleInNote(message, 'guard'));
+  else if (message.type === 'in-note-warm') enqueueTask(3, async () => { try { await inNotePairModel('rank'); await inNotePairModel('guard'); self.postMessage({ type: 'in-note-warm-result', id: message.id }); } catch (error) { self.postMessage({ type: 'error', id: message.id, message: error?.message || String(error) }); } });
   else if (message.type === 'topic-labels') enqueueTask(5, () => handleTopicLabels(message));
 };

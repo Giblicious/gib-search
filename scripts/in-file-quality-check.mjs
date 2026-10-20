@@ -2,11 +2,10 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
-import { env, pipeline, AutoTokenizer, AutoModelForTokenClassification, Tensor } from '@huggingface/transformers';
+import { env } from '@huggingface/transformers';
+import { auditModels } from './in-note-audit-models.mjs';
 import { MobileSearchRuntime } from '../src/mobile-runtime.js';
 import { IN_NOTE_PRESETS } from '../src/in-note-search.js';
-import { inNoteReaderFeatures, decodeInNoteReader } from '../src/in-note-reader-codec.js';
-import { embedInNote } from '../src/in-note-embedding.js';
 import { inNotePhraseCases, additionalPhraseCases } from './in-note-phrase-cases.mjs';
 import { additionalInNoteCases } from './in-note-cases.mjs';
 import { inNoteRelevanceCases } from './in-note-relevance-cases.mjs';
@@ -19,19 +18,8 @@ const modelRoot = argument('model-root') || process.env.GIB_SEARCH_MODEL_ROOT ||
 const dtype = argument('dtype') || process.env.GIB_SEARCH_AUDIT_DTYPE || 'q8';
 const inspectionFile = argument('file'), inspectionQueries = argumentsFor('query'), summaryOnly = process.argv.includes('--summary'), requestedMobileProfile = process.argv.includes('--mobile'), allBudgets = process.argv.includes('--all-budgets'), diagnostics = process.argv.includes('--diagnostics'), verbose = !summaryOnly && (process.argv.includes('--verbose') || diagnostics || Boolean(inspectionFile));
 if (modelRoot) { env.localModelPath = modelRoot.replaceAll('\\', '/'); env.allowLocalModels = true; env.allowRemoteModels = false; }
-const extractor = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', { dtype, device: 'cpu' });
 const readerRoot = (argument('reader-root') || fileURLToPath(new URL('../model-assets/in-note-reader', import.meta.url))).replaceAll('\\', '/');
-const readerOptions = { local_files_only: true, dtype: 'q8', device: 'cpu', session_options: { intraOpNumThreads: 2, interOpNumThreads: 1 } };
-const readerTokenizer = await AutoTokenizer.from_pretrained(readerRoot, readerOptions), reader = await AutoModelForTokenClassification.from_pretrained(readerRoot, readerOptions);
-assert.equal(reader.config.reader_sentence_check, true, 'The release must retain sentence evidence checks');
-const readPassages = async pairs => {
-  const inputs = inNoteReaderFeatures(readerTokenizer, pairs, Tensor, { queryFormat: reader.config.reader_query_format || 0 });
-  return decodeInNoteReader(readerTokenizer, inputs, (await reader(inputs)).logits, pairs, reader.config);
-};
-const embed = async texts => {
-  if (!texts.length) return [];
-  return embedInNote(extractor, texts);
-};
+const models = await auditModels(readerRoot);
 const plugin = { isMobile: requestedMobileProfile, settings: {}, manifest: { id: 'gib-search' }, recordActivity() {}, logDiagnostic() {}, reportOnce() {}, app: { vault: { adapter: { getBasePath: () => 'quality-audit' }, configDir: '.obsidian', getName: () => 'quality-audit' }, metadataCache: { getFileCache: () => ({ frontmatter: {} }) }, workspace: { getActiveFile: () => null } } };
 const cases = [
   { name: 'relational synonym', query: 'child of god', source: 'The doctrine says humanity is the divine offspring of God. A speaker might say that God remains mysterious. God is correctly understood by the congregation. The Spirit of God inspired the hymn.', expected: [/offspring of God/i], forbidden: [/say that God/i, /God is correctly/i, /Spirit of God/i] },
@@ -68,7 +56,7 @@ const report = [], failures = [];
 for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile]) {
   plugin.isMobile = mobileProfile; let assertions = 0, forbiddenHits = 0, positives = 0, found = 0, phraseAssertions = 0; const durations = [];
   for (const test of cases) {
-    const runtime = new MobileSearchRuntime(plugin); runtime.embedBatch = embed; runtime.readInNote = readPassages;
+    const runtime = new MobileSearchRuntime(plugin); runtime.embedInNote = models.embed; runtime.readInNote = models.read; runtime.inNotePairs = (pairs, kind) => kind === 'classify' ? models.classify(pairs, mobileProfile) : models[kind](pairs);
     // The real UI's live-source method, with no index preloaded or patched scores.
     for (const mode of Object.keys(IN_NOTE_PRESETS)) {
       const started = performance.now(), stages = [], result = await runtime.searchInNote(test.query, test.source, { breadth: mode, diagnostics: true, onProgress: progress => { stages.push({ stage: progress.stage, elapsed: performance.now() - started, ranges: progress.ranges.length }); assert.ok(progress.ranges.every(range => test.source.slice(range.from, range.to) === range.sourcePhrase), `${test.name} provisional offsets changed`); } }), elapsed = performance.now() - started, matches = result.matches, highlights = matches.map(match => match.sourcePhrase);
@@ -98,4 +86,4 @@ for (const mobileProfile of allBudgets ? [false, true] : [requestedMobileProfile
 }
 if (argument('report')) await writeFile(argument('report'), JSON.stringify({ report, failures }, null, 2));
 assert.equal(failures.length, 0, `In-note quality failures:\n${failures.join('\n')}`);
-await extractor.dispose(); await reader.dispose();
+await models.dispose();

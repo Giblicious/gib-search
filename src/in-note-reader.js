@@ -100,7 +100,7 @@ export class PassageInNoteMatcher {
       groups.get(key).units.push(unit);
     });
     const ordered = [...groups.values()].sort((a, b) => b.priority - a.priority), matches = [], candidates = [];
-    const selected = new Set(ordered.length <= 24 || exhaustive ? ordered : [...ordered.slice(0, 16), ...ordered.slice().sort((a, b) => b.lexical - a.lexical || b.similarity - a.similarity).slice(0, 8)]);
+    const selected = new Set(ordered.length <= 12 || exhaustive ? ordered : [...ordered.slice(0, 8), ...ordered.slice().sort((a, b) => b.lexical - a.lexical || b.similarity - a.similarity).slice(0, 4)]);
     const queue = [...selected].sort((a, b) => a.input.passage.length - b.input.passage.length), remaining = ordered.filter(group => !selected.has(group));
     const publish = async (stage, ranges, confirmed) => { current(isCurrent); await onProgress?.({ stage, ranges, ...(confirmed ? { matches: [...confirmed] } : {}) }); current(isCurrent); await this.yieldControl(); };
     await publish('paragraph', paragraphs.slice().sort((a, b) => b.similarity - a.similarity).slice(0, 3));
@@ -111,7 +111,7 @@ export class PassageInNoteMatcher {
     for (let offset = 0; offset < queue.length;) {
       current(isCurrent); const batch = queue.slice(offset, offset + this.batchSize), resolved = new Map(batch.filter(group => this.readings.has(group.key)).map(group => [group.key, this.readings.get(group.key)])), missing = batch.filter(group => !resolved.has(group.key));
       if (missing.length) {
-        const readings = await this.read(missing.map(group => group.input)); current(isCurrent);
+        const readings = await this.read(missing.map(group => group.input), isCurrent); current(isCurrent);
         if (readings.length !== missing.length || readings.some(reading => !Number.isFinite(reading?.probability) || reading.probability < 0 || reading.probability > 1 || !Array.isArray(reading.spans) || reading.spans.some(span => !Number.isInteger(span.from) || !Number.isInteger(span.to) || span.from < 0 || span.to <= span.from))) throw new Error('In-note reader returned invalid spans');
         missing.forEach((group, index) => { resolved.set(group.key, readings[index]); remember(this.readings, group.key, readings[index], 512); });
       }
@@ -125,7 +125,8 @@ export class PassageInNoteMatcher {
           const sentenceFrom = Number.isInteger(span.sentenceFrom) && span.sentenceFrom >= group.input.targetFrom ? span.sentenceFrom - group.input.targetFrom : 0, sentenceTo = Number.isInteger(span.sentenceTo) && span.sentenceTo <= group.input.targetTo ? span.sentenceTo - group.input.targetFrom : unit.phrase.length;
           // Attribution reuses the retrieval encoder's existing hidden states.
           // It only narrows display within the sentence the reader verified.
-          const focus = inNoteFocusRange(queryVector.focus, byText.get(unit.phrase)?.focus, sentenceFrom, sentenceTo);
+          const suggested = Number.isInteger(span.focusFrom) && Number.isInteger(span.focusTo) && span.focusFrom >= group.input.targetFrom + sentenceFrom && span.focusTo <= group.input.targetFrom + sentenceTo && span.focusTo > span.focusFrom;
+          const focus = suggested ? { from: span.focusFrom - group.input.targetFrom - sentenceFrom, to: span.focusTo - group.input.targetFrom - sentenceFrom } : inNoteFocusRange(this.vectors.get(literal)?.focus || queryVector.focus, this.vectors.get(unit.phrase)?.focus || byText.get(unit.phrase)?.focus, sentenceFrom, sentenceTo);
           if (focus && focus.from >= 0 && focus.to > focus.from && sentenceFrom + focus.to <= sentenceTo) { fromPlain = sentenceFrom + focus.from; toPlain = sentenceFrom + focus.to; }
           if (fromPlain < 0 || toPlain > unit.phrase.length || toPlain <= fromPlain || !unit.displayPositions?.length) continue;
           const wordPart = /[\p{L}\p{N}\p{M}_’'-]/u;

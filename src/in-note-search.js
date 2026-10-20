@@ -59,7 +59,7 @@ export function inNotePhraseHighlight(unit, queryFocus, passageFocus, contextOff
   return { from: unit.from + from, to: unit.from + to, phrase: unit.phrase.slice(range.from, range.to), sourcePhrase: unit.sourcePhrase.slice(from, to) };
 }
 
-export function inNoteUnits(source) {
+export function inNoteUnits(source, { wholeSentences = false } = {}) {
   const text = String(source || ''), units = [], headings = [], lines = [...text.matchAll(/[^\n]*(?:\n|$)/gu)], blocks = [];
   let fence = '', frontmatter = /^---\s*\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/u.test(text), block = null, list = false;
   const flush = () => { if (block) blocks.push(block); block = null; };
@@ -91,9 +91,9 @@ export function inNoteUnits(source) {
       if (!words.length) continue;
       let start = 0;
       while (start < words.length) {
-        if (words[start][0].length > 220) { start++; continue; }
+        if (!wholeSentences && words[start][0].length > 220) { start++; continue; }
         let end = start + 1;
-        while (end < words.length && end - start < 36 && words[end].index + words[end][0].length - words[start].index <= 220) end++;
+        while (end < words.length && (wholeSentences || end - start < 36 && words[end].index + words[end][0].length - words[start].index <= 220)) end++;
         const fromPlain = sentence.index + (record?.[0].length || 0) + words[start].index, toPlain = sentence.index + (record?.[0].length || 0) + words[end - 1].index + words[end - 1][0].length;
         const from = block.from + projection.positions[fromPlain], to = block.from + projection.positions[toPlain - 1] + 1;
         const phrase = projection.text.slice(fromPlain, toPlain).trim().replace(/\s+/gu, ' ');

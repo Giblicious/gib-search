@@ -1,3 +1,13 @@
+Gib Search in-note inference
+===========================
+The sentence verifier adapts mixedbread-ai/mxbai-rerank-xsmall-v1 under Apache-2.0.
+Transformers.js is by Hugging Face under Apache-2.0.
+ONNX Runtime is Copyright (c) Microsoft Corporation, MIT license.
+Windows runtime packages include Microsoft DirectML 1.15.4 under its accompanying
+Microsoft Software License Terms. CPU inference does not select DirectML.
+Full base-model/runtime terms are in licenses/ and included in the built plugin.
+Training-source credits and dataset terms are linked in the model card.
+
 Princeton WordNet 3.1
 =====================
 This software and database is being provided to you, the LICENSEE, by

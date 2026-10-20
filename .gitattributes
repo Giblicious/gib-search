@@ -1,0 +1,3 @@
+model-assets/in-note-reader/*.json text eol=lf
+model-assets/in-note-reader/*.md text eol=lf
+model-assets/in-note-reader/onnx/*.onnx binary

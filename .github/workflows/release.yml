@@ -11,6 +11,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      ONNXRUNTIME_NODE_INSTALL_CUDA: skip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,20 +30,28 @@ jobs:
       - run: npm audit --audit-level=moderate
       - run: npm run check
       - run: npm run audit:in-file
+      - run: node scripts/in-note-native-check.mjs
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           TAG="$GITHUB_REF_NAME"
-          REQUIRED=(main.js manifest.json styles.css)
+          REQUIRED=(main.js manifest.json styles.css build/in-note-runtime/runtime-manifest.json build/in-note-runtime/in-note-notices.txt)
+          REQUIRED+=(build/in-note-runtime/ort-*)
+          cp model-assets/in-note-reader/asset-manifest.json build/in-note-runtime/reader-asset-manifest.json
+          cp model-assets/in-note-reader/onnx/model_quantized.onnx build/in-note-runtime/in-note-reader.onnx
+          REQUIRED+=(build/in-note-runtime/reader-asset-manifest.json build/in-note-runtime/in-note-reader.onnx)
           if gh release view "$TAG" >/dev/null 2>&1; then
             ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+            DRAFT=$(gh release view "$TAG" --json isDraft --jq '.isDraft')
             for FILE in "${REQUIRED[@]}"; do
-              if ! grep -Fxq "$FILE" <<<"$ASSETS"; then
+              if ! grep -Fxq "$(basename "$FILE")" <<<"$ASSETS"; then
+                test "$DRAFT" = true || { echo 'Refusing to change an incomplete published release'; exit 1; }
                 gh release upload "$TAG" "$FILE"
               fi
             done
+            if test "$DRAFT" = true; then gh release edit "$TAG" --draft=false; fi
             exit 0
           fi
           gh release create "$TAG" "${REQUIRED[@]}" --draft --title "$TAG" --generate-notes

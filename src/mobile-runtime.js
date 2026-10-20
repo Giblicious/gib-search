@@ -4,7 +4,7 @@ import { WRITING_PROFILE_SIGNALS, WRITING_PROFILE_VERSION, combineWritingProfile
 import { BoundedMetricWindow, IncrementalBm25, assembleIndexSegments, boundedTopK, centroidSimilarity, diverseCentroids, insertTopK, mergeIndexReplacements } from './search-core.js';
 import { MOBILE_BOOTSTRAP_SEGMENTS, bootstrapBucket, mobileBootstrapFileIndex, readMobileBootstrap, readMobileBootstrapManifest, readMobileBootstrapSegment, writeMobileBootstrap } from './mobile-bootstrap.js';
 import { indexScopeIncludes, indexScopePreview, normalizeIndexScope } from './index-scope.js';
-import { PassageInNoteMatcher } from './in-note-reader.js';
+import { VerifiedInNoteMatcher } from './verified-in-note-search.js';
 import { InNoteVectorStore } from './in-note-cache.js';
 import { embedInNote } from './in-note-embedding.js';
 
@@ -1224,14 +1224,16 @@ export class MobileSearchRuntime {
     return this.noteMatcher().search(query, source, options);
   }
   noteMatcher() {
-    this.inNoteMatcher ||= new PassageInNoteMatcher({ embed: texts => this.embedBatch(texts, false, this.inNoteMatcher?.preparing ? 4 : this.isMobile ? 8 : 24, Boolean(this.inNoteMatcher?.preparing), true), read: pairs => this.readInNote(pairs), batchSize: this.isMobile ? 3 : 6, cache: typeof indexedDB === 'undefined' ? null : new InNoteVectorStore({ open: () => this.openDatabase(), key: this.indexKey, maxEntries: 8192 }) });
+    this.inNoteMatcher ||= new VerifiedInNoteMatcher({ embed: texts => this.embedInNote(texts), read: pairs => this.readInNote(pairs), classify: pairs => this.inNotePairs(pairs, 'classify'), rank: pairs => this.inNotePairs(pairs, 'rank'), guard: pairs => this.inNotePairs(pairs, 'guard'), batchSize: this.isMobile ? 3 : 6, cache: typeof indexedDB === 'undefined' ? null : new InNoteVectorStore({ open: () => this.openDatabase(), key: this.indexKey, maxEntries: 8192 }) });
     return this.inNoteMatcher;
   }
   prepareInNote(source, options = {}) { return this.noteMatcher().prepare(source, options.isCurrent); }
+  embedInNote(texts) { return this.plugin.desktopEmbedder.embedInNote(texts); }
+  inNotePairs(pairs, kind) { return this.plugin.desktopEmbedder.inNotePairs(pairs, kind); }
   readInNote(pairs) {
     if (!pairs.length) return Promise.resolve([]);
     const worker = this.plugin.desktopEmbedder;
-    if (!worker || worker.disabled || typeof worker.readInNote !== 'function') { const error = new Error('In-note search requires the background passage reader'); error.name = 'BackgroundWorkerUnavailableError'; throw error; }
+    if (!worker || typeof worker.readInNote !== 'function') { const error = new Error('In-note search requires the background passage reader'); error.name = 'BackgroundWorkerUnavailableError'; throw error; }
     return worker.readInNote(pairs);
   }
   async queryVector(query, correction = true) {

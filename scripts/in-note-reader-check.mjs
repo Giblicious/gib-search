@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { PassageInNoteMatcher, inNoteReaderWindows } from '../src/in-note-reader.js';
-import { inNoteReaderInput, inNoteReaderTokenPositions, decodeInNoteReader } from '../src/in-note-reader-codec.js';
 
 const sample = '---\nsecret: hidden\n---\n# Journal\n\n> Maya **enjoyed the company** of strangers. She spoke quietly.\n\n```js\nnot searchable\n```\n';
 const windows = inNoteReaderWindows(sample);
@@ -15,9 +14,6 @@ for (const window of windows) for (let i = 0; i < window.phrase.length; i++) {
 }
 const repeatedWords = Array.from({ length: 150 }, (_, i) => `word${i}`).join(' ') + '.';
 assert.ok(inNoteReaderWindows(repeatedWords).every(window => window.phrase === repeatedWords.slice(window.from, window.to)), 'Overlapping sentence units duplicated text inside a reader window');
-assert.deepEqual(inNoteReaderTokenPositions('Target: café 🤖', ['▁Target', ':', '▁café', '▁🤖']), [{ from: 0, to: 6 }, { from: 6, to: 7 }, { from: 8, to: 12 }, { from: 13, to: 15 }]);
-assert.deepEqual(inNoteReaderTokenPositions('Ａ cafe\u0301', ['▁A', '▁café']), [{ from: 0, to: 1 }, { from: 2, to: 7 }]);
-assert.equal(inNoteReaderTokenPositions('word skipped same', ['▁word', '▁same']), null, 'An alignment failure jumped to a later word');
 
 const vector = new Float32Array(384); vector[0] = 1;
 let reads = 0;
@@ -59,24 +55,5 @@ for (let i = 0; i < 3000; i++) { const value = new Float32Array(vector); value.f
 assert.equal(bounded.vectors.size, 3000, 'Optional phrase attribution evicted compact retrieval vectors');
 assert.ok(bounded.vectorBytes <= 16 * 1024 * 1024, 'The note vector cache exceeded its byte budget'); bounded.dispose();
 
-// Verify decoder boundaries independently of a real neural network. This checks
-// worker protocol and UTF-16 mapping, not semantic model quality.
-const pair = inNoteReaderInput('Maya smiled.'), pieces = ['[CLS]', '▁query', '[SEP]', '▁Target', ':', '▁Maya', '▁smiled', '.', '[SEP]'];
-const fakeTokenizer = { sep_token_id: 2, pad_token_id: 99, encode: () => [1], tokenize: () => pieces.slice(3, 8), model: { convert_tokens_to_ids: tokens => tokens.map(piece => pieces.indexOf(piece)) } };
-const ids = [0, 1, 2, 3, 4, 5, 6, 7, 8]; ids[8] = 2;
-const data = new Float32Array(ids.length * 4);
-for (let i = 0; i < ids.length; i++) { data[i * 4] = 8; data[i * 4 + 3] = 8; }
-data[6 * 4] = 0; data[6 * 4 + 1] = 8;
-const decoded = decodeInNoteReader(fakeTokenizer, { input_ids: { data: BigInt64Array.from(ids, BigInt) } }, { dims: [1, ids.length, 4], data }, [pair]);
-assert.equal(decoded.length, 1); assert.equal(pair.passage.slice(decoded[0].spans[0].from, decoded[0].spans[0].to), 'smiled');
-const multiPair = inNoteReaderInput('Maya smiled. Owen waved.'), tokenPositions = [{ from: 8, to: 12 }, { from: 13, to: 19 }, { from: 19, to: 20 }, { from: 21, to: 25 }, { from: 26, to: 31 }], multiData = new Float32Array(6 * 5);
-for (let i = 0; i < 6; i++) { multiData[i * 5 + 2] = 8; multiData[i * 5 + 3] = 8; multiData[i * 5 + 4] = i < 4 ? 8 : -8; }
-multiData[5 + 1] = 10;
-const multiInputs = { input_ids: { data: BigInt64Array.from([1, 3, 4, 5, 6, 7], BigInt) }, readerPositions: [{ start: 1, positions: tokenPositions, sentences: [{ from: 8, to: 20 }, { from: 20, to: 32 }] }] };
-const multiDecoded = decodeInNoteReader(fakeTokenizer, multiInputs, { dims: [1, 6, 5], data: multiData }, [multiPair]);
-assert.equal(multiDecoded[0].spans.length, 2, 'Continuous BIO output crossed a sentence verification boundary');
-assert.ok(multiDecoded[0].spans[0].sentenceProbability > .99 && multiDecoded[0].spans[1].sentenceProbability < .01, 'Neighboring sentence evidence leaked');
-assert.throws(() => decodeInNoteReader(fakeTokenizer, multiInputs, { dims: [1, 6, 5], data: multiData.slice(0, 20) }, [multiPair]), /invalid outputs/);
-multiInputs.readerPositions[0].truncatedTarget = true;
-assert.deepEqual(decodeInNoteReader(fakeTokenizer, multiInputs, { dims: [1, 6, 5], data: multiData }, [multiPair]), [{ probability: 0, spans: [] }], 'A truncated target could verify an unread sentence tail');
-console.log('Passage reader checks passed: Markdown/Unicode spans, overlap removal, occurrence identity, cache invalidation, cancellation, abstention and worker decoding.');
+
+console.log('Passage reader checks passed: Markdown/Unicode source spans, overlap removal, occurrence identity, cache invalidation, cancellation and abstention.');

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.54.67
+
+- Rebuilds in-note factual matching around a locally adapted sentence verifier, independent consistency checks and predicate/participant evidence. Paragraph retrieval, complete-sentence checks and phrase attribution remain separate stages; source text and queries stay on-device.
+- Adds an isolated native CPU worker on supported desktops, with an accurate WebAssembly fallback. Native libraries come from the release, use the locked runtime version and pass embedded size/hash checks. No separate runtime, server or global installation is required.
+- Uses quantization-aware training and per-token int8 activation ranges to prevent unrelated batch members from changing sentence decisions. The packaged graph uses the same optimization profile in native and browser inference.
+- Uses full-precision, independent note embeddings so background preparation and live queries agree. This affects only the separate in-note cache; vault embedding precision and indexing are unchanged.
+- Preserves full sentence qualifiers, source offsets, negation and relationship direction. Over-budget sentences abstain. Contrasts and corrections receive bounded clause corroboration, and negative contractions are expanded only for consistency verification.
+- Shares a bounded note-vector cache between factual matching and question/command ranking, reuses token states for phrase highlights, and cancels stale work before publishing. Exact matching and vault search retain their existing behavior.
+- Checks question answerability and requested locations/times, rather than accepting a related object, a later repair or an unrelated permission statement as an answer.
+- Adds model provenance and licenses, sentence-boundary and shutdown tests, native packaging/batch-parity checks, and workflow publication of the reader, runtime manifest, native libraries and notices alongside BRAT assets.
+
 ## 0.54.66
 
 - Refines in-note Meaning search live from related paragraphs to candidate sentences to verified phrases. Provisional shading stays outside the match count and navigation; refinement preserves the current selection and does not scroll the editor.

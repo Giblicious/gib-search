@@ -1,19 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import zlib from 'node:zlib';
+import { embeddedWasmArtifacts } from './embedded-wasm.mjs';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { buildInNoteWorkers } from './build-in-note-worker.mjs';
+import { createHash } from 'node:crypto';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const wasm = fs.readFileSync(path.join(root, 'node_modules', '@huggingface', 'transformers', 'dist', 'ort-wasm-simd-threaded.jsep.wasm'));
-const embeddedWasm = zlib.gzipSync(wasm, { level: 9 }).toString('base64');
-const wasmModulePath = path.join(root, 'node_modules', '@huggingface', 'transformers', 'dist', 'ort-wasm-simd-threaded.jsep.mjs');
-const wasmModule = fs.readFileSync(wasmModulePath, 'utf8')
-  .replace('n="object"==typeof process&&"object"==typeof process.versions&&"string"==typeof process.versions.node&&"renderer"!=process.type', 'n=false')
-  .replace("var isNode = typeof globalThis.process?.versions?.node == 'string';\nif (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';", 'var isNode = false;')
-  .replace('Xa??=e.locateFile?e.locateFile?e.locateFile("ort-wasm-simd-threaded.jsep.wasm",v):v+"ort-wasm-simd-threaded.jsep.wasm":(new URL("ort-wasm-simd-threaded.jsep.wasm",import.meta.url)).href', 'Xa??="embedded.wasm"');
-if (!wasmModule.includes('n=false') || !wasmModule.includes('var isNode = false;') || !wasmModule.includes('Xa??="embedded.wasm"')) throw new Error('Could not prepare the browser-only WASM module');
-const embeddedWasmModule = zlib.gzipSync(wasmModule, { level: 9 }).toString('base64');
+const readerRoot = path.join(root, 'model-assets/in-note-reader');
+for (const [file, expected] of Object.entries(JSON.parse(fs.readFileSync(path.join(readerRoot, 'asset-manifest.json'), 'utf8')))) {
+  const bytes = fs.readFileSync(path.join(readerRoot, file));
+  if (bytes.length !== expected.bytes || createHash('sha256').update(bytes).digest('hex') !== expected.sha256) throw new Error(`Reader asset hash mismatch: ${file}`);
+}
+const { wasmGzip: embeddedWasm, wasmModuleGzip: embeddedWasmModule } = embeddedWasmArtifacts(root);
 const workerBuild = await build({
   entryPoints: [path.join(root, 'src', 'desktop-embed-worker.js')], bundle: true, write: false,
   platform: 'browser', format: 'iife', target: 'es2020',
@@ -21,13 +20,19 @@ const workerBuild = await build({
   logLevel: 'warning', legalComments: 'none',
 });
 const embeddedDesktopWorker = workerBuild.outputFiles[0].text;
+const inNoteWorkers = await buildInNoteWorkers();
+const readerAssets = JSON.parse(fs.readFileSync(path.join(root, 'model-assets/in-note-reader/asset-manifest.json'), 'utf8'));
 const marker = 'const EMBEDDED_WASM_GZIP = null;';
 const moduleMarker = 'const EMBEDDED_WASM_MODULE_GZIP = null;';
 const workerMarker = 'const EMBEDDED_DESKTOP_WORKER = null;';
 const source = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8')
   .replace(marker, `const EMBEDDED_WASM_GZIP = '${embeddedWasm}';`)
   .replace(moduleMarker, `const EMBEDDED_WASM_MODULE_GZIP = '${embeddedWasmModule}';`)
-  .replace(workerMarker, () => `const EMBEDDED_DESKTOP_WORKER = ${JSON.stringify(embeddedDesktopWorker)};`);
+  .replace(workerMarker, () => `const EMBEDDED_DESKTOP_WORKER = ${JSON.stringify(embeddedDesktopWorker)};`)
+  .replace('const EMBEDDED_IN_NOTE_BROWSER = null;', () => `const EMBEDDED_IN_NOTE_BROWSER = ${JSON.stringify(inNoteWorkers.browser)};`)
+  .replace('const EMBEDDED_IN_NOTE_NATIVE = null;', () => `const EMBEDDED_IN_NOTE_NATIVE = ${JSON.stringify(inNoteWorkers.native)};`)
+  .replace('const IN_NOTE_RUNTIME = null;', () => `const IN_NOTE_RUNTIME = ${JSON.stringify(inNoteWorkers.metadata)};`)
+  .replace('const IN_NOTE_READER_ASSETS = null;', () => `const IN_NOTE_READER_ASSETS = ${JSON.stringify(readerAssets)};`);
 await build({
   stdin: { contents: source, resolveDir: path.join(root, 'src'), sourcefile: 'main.js', loader: 'js' },
   outfile: path.join(root, 'main.js'), bundle: true, platform: 'browser', format: 'cjs', target: 'es2020',
@@ -36,5 +41,6 @@ await build({
   logLevel: 'warning', legalComments: 'none',
 });
 const outputPath = path.join(root, 'main.js');
-const notices = fs.readFileSync(path.join(root, 'THIRD_PARTY_NOTICES.txt'), 'utf8').replace(/[ \t]+$/gm, '');
+const notices = ['THIRD_PARTY_NOTICES.txt', 'licenses/mxbai/LICENSE', 'licenses/onnxruntime/LICENSE', 'licenses/onnxruntime/DirectML-LICENSE.txt', 'licenses/onnxruntime/ThirdPartyNotices.txt'].map(file => `${file}\n${fs.readFileSync(path.join(root, file), 'utf8')}`).join('\n\n').replace(/\r\n?/gu, '\n').replace(/[ \t]+$/gm, '');
+fs.writeFileSync(path.join(root, 'build/in-note-runtime/in-note-notices.txt'), notices + '\n');
 fs.writeFileSync(outputPath, fs.readFileSync(outputPath, 'utf8').replace(/[ \t]+$/gm, '') + `\n/*!\n${notices.replace(/\*\//g, '* /')}\n*/\n`);
