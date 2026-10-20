@@ -166,7 +166,7 @@ class FileModelCache {
   }
 }
 class DesktopEmbedder {
-  constructor(plugin, { relationOnly = false } = {}) { this.plugin = plugin; this.relationOnly = relationOnly; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.disabled = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; this.forceWasmUntil = 0; this.lastWorkerTimeoutAt = 0; this.workerTimeoutCount = 0; }
+  constructor(plugin, { relationOnly = false, readerOnly = false } = {}) { this.plugin = plugin; this.readerOnly = readerOnly; this.relationOnly = relationOnly || readerOnly; this.worker = null; this.workerUrl = null; this.pending = new Map(); this.nextId = 1; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.disabled = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; this.forceWasmUntil = 0; this.lastWorkerTimeoutAt = 0; this.workerTimeoutCount = 0; }
   start() {
     if (this.worker) return true; if (this.disabled || typeof window === 'undefined' || typeof window.Worker !== 'function' || typeof DecompressionStream !== 'function') return false;
     try {
@@ -175,7 +175,7 @@ class DesktopEmbedder {
       worker.onmessage = event => this.receive(event.data);
       worker.onerror = event => this.fail(new Error(event.message || 'Background embedding worker failed'));
       worker.onmessageerror = () => this.fail(new Error('Background embedding worker sent an unreadable message'));
-      const indexing = this.plugin.search?.indexingConfig || {}; worker.postMessage({ type: 'init', relationOnly: this.relationOnly, mobile: this.plugin.isMobile, preferWebGpu: !this.relationOnly && !this.plugin.isMobile && Date.now() >= this.forceWasmUntil, hardwareConcurrency: indexing.cores || Number(navigator?.hardwareConcurrency) || 1, wasmThreads: this.relationOnly ? 1 : indexing.wasmThreads || 1, maximumEmbedBatchSize: indexing.maximumEmbedBatchSize || 2, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP }); return true;
+      const indexing = this.plugin.search?.indexingConfig || {}; worker.postMessage({ type: 'init', relationOnly: this.relationOnly, readerOnly: this.readerOnly, mobile: this.plugin.isMobile, preferWebGpu: !this.relationOnly && !this.plugin.isMobile && Date.now() >= this.forceWasmUntil, hardwareConcurrency: indexing.cores || Number(navigator?.hardwareConcurrency) || 1, wasmThreads: this.relationOnly ? 1 : indexing.wasmThreads || 1, maximumEmbedBatchSize: indexing.maximumEmbedBatchSize || 2, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP }); return true;
     } catch (error) { this.disabled = true; if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; this.plugin.logDiagnostic(`Background embedding worker unavailable: ${error?.message || error}`, true); return false; }
   }
   async receive(message) {
@@ -191,12 +191,12 @@ class DesktopEmbedder {
     if (message.type === 'topic-label-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.topicLabelActivity?.(`Downloading topic labeler: ${percent}%`); return; }
     if (message.type === 'relation-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.relationActivity?.(`Downloading relationship model: ${percent}%`); return; }
     if (message.type === 'reranker-progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.modelActivity?.(`Downloading passage reranker: ${percent}%`); return; }
-    if (message.type === 'in-note-progress') { this.plugin.recordActivity?.('In-note search', `Downloading ${message.kind === 'rank' ? 'relevance' : 'consistency'} model: ${Math.round(Number(message.progress) || 0)}%`, 'working'); return; }
-    if (message.type === 'in-note-ready') { this.plugin.recordActivity?.('In-note search', `${message.kind === 'rank' ? 'Relevance' : 'Consistency'} model ready`, 'success'); return; }
+    if (message.type === 'in-note-progress') { this.plugin.recordActivity?.('In-note search', `Downloading passage reader: ${Math.round(Number(message.progress) || 0)}%`, 'working'); return; }
+    if (message.type === 'in-note-ready') { this.plugin.recordActivity?.('In-note search', 'Passage reader ready', 'success'); return; }
     if (message.type === 'progress') { const percent = Math.round(Number(message.progress) || 0); this.plugin.search?.modelActivity?.(`Downloading ${message.file}: ${percent}%`); return; }
     const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); clearTimeout(pending.timer);
     if (message.type === 'error') pending.reject(new Error(message.message));
-    else if (message.type === 'relation-result') pending.resolve(message.results || []);
+    else if (message.type === 'relation-result' || message.type === 'in-note-reader-result') pending.resolve(message.results || []);
     else if (message.type === 'rerank-result') pending.resolve(message.scores || []);
     else if (message.type === 'topic-label-result') pending.resolve(message.labels || []);
     else pending.resolve((message.buffers || []).map((buffer, index) => { const vector = new Float32Array(buffer); if (message.focus?.[index]) vector.focus = message.focus[index]; return vector; }));
@@ -258,13 +258,13 @@ class DesktopEmbedder {
   }
   releaseInNoteWorker() { this.inNoteWorker?.stop(); this.inNoteWorker = null; }
   rerankPassages(pairs) { return this.request({ type: 'rerank', pairs }, 180000); }
-  inNotePairs(pairs, kind) {
+  readInNote(pairs) {
     if (!pairs.length) return Promise.resolve([]);
-    this.inNoteRelevanceWorker ||= new DesktopEmbedder(this.plugin, { relationOnly: true });
-    return this.inNoteRelevanceWorker.request({ type: kind === 'rank' ? 'in-note-rank' : 'in-note-guard', pairs }, 300000);
+    this.inNoteRelevanceWorker ||= new DesktopEmbedder(this.plugin, { readerOnly: true });
+    return this.inNoteRelevanceWorker.request({ type: 'in-note-read', pairs }, 300000);
   }
   prepareInNoteModels() {
-    this.inNoteRelevanceWorker ||= new DesktopEmbedder(this.plugin, { relationOnly: true });
+    this.inNoteRelevanceWorker ||= new DesktopEmbedder(this.plugin, { readerOnly: true });
     return this.inNoteRelevanceWorker.request({ type: 'in-note-warm' }, 300000);
   }
   generateTopicLabels(prompts) { return this.request({ type: 'topic-labels', prompts }, 600000); }
@@ -1068,12 +1068,13 @@ class SemanticInNoteSearch {
   }
   async refreshMatches(query, results, version, preserveCurrent = false) {
     const source = await this.sourceText(); if (version !== this.queryVersion || !this.el?.isConnected) return;
-    const previousPosition = this.current, previous = preserveCurrent ? this.matches[this.current] : null; this.matches = this.compactPhrases(results, query, source); const previousIndex = previous ? this.matches.findIndex(match => (Number.isFinite(previous.from) && match.from === previous.from && match.to === previous.to) || (match.kind === previous.kind && match.text.toLocaleLowerCase() === previous.text?.toLocaleLowerCase())) : -1; this.current = this.matches.length ? previousIndex >= 0 ? previousIndex : preserveCurrent ? Math.min(Math.max(0, previousPosition), this.matches.length - 1) : 0 : -1; this.paintHighlights(); this.updateCount(); if (!preserveCurrent && this.current >= 0) this.revealCurrent();
+    const previousPosition = this.current, previous = preserveCurrent ? this.matches[this.current] : null; this.matches = this.compactPhrases(results, query, source); const previousIndex = previous ? this.matches.findIndex(match => Number.isFinite(previous.from) && Number.isFinite(previous.to) ? match.from === previous.from && match.to === previous.to : match.kind === previous.kind && match.text.toLocaleLowerCase() === previous.text?.toLocaleLowerCase()) : -1; this.current = this.matches.length ? previousIndex >= 0 ? previousIndex : preserveCurrent ? Math.min(Math.max(0, previousPosition), this.matches.length - 1) : 0 : -1; this.paintHighlights(); this.updateCount(); if (!preserveCurrent && this.current >= 0) this.revealCurrent();
   }
   async searchSemantically(query, version) {
     try {
       const source = await this.sourceText(), results = await this.plugin.search.searchInNote(query, source, { breadth: this.options.breadth, isCurrent: () => version === this.queryVersion && Boolean(this.el?.isConnected), onProgress: async progress => {
         const currentSource = await this.sourceText(); if (version !== this.queryVersion || !this.el?.isConnected || source !== currentSource) return;
+        if (progress.matches) { this.clearRefinement(); await this.refreshMatches(query, progress.matches, version, true); return; }
         this.showRefinement(progress, source);
         // Let this stage paint before a warm cache immediately narrows it.
         await new Promise(resolve => window.requestAnimationFrame(resolve));

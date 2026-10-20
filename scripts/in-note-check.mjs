@@ -89,7 +89,8 @@ assert.ok(Array.isArray(completed.at(-1))); assert.equal(maximumActiveCalls, 1);
 assert.equal(queuedCalls, 2, 'Superseded typing queued redundant source/model work instead of reusing the completed batch');
 
 const plugin = { isMobile: false, settings: {}, manifest: { id: 'gib-search' }, app: { vault: { adapter: {}, getName: () => 'in-note-test' } } }, runtime = new MobileSearchRuntime(plugin);
-runtime.embedBatch = embedding; runtime.classifyRelationPairs = async pairs => pairs.map(() => affirmative); runtime.inNotePairs = async (pairs, kind) => pairs.map(() => kind === 'rank' ? 8 : affirmative);
+runtime.embedBatch = async texts => texts.map(() => { const vector = new Float32Array(384); vector[0] = 1; return vector; });
+runtime.readInNote = async pairs => pairs.map(pair => ({ probability: .99, spans: [{ from: pair.targetFrom, to: pair.targetTo, score: .99 }] }));
 assert.equal(runtime.meta.length, 0);
 assert.equal((await runtime.searchInNote('fix the car', 'Repair the automobile.')).length, 1, 'Current-note matching depends on a ready vault index');
 const unavailableRuntime = new MobileSearchRuntime(plugin);
@@ -124,6 +125,13 @@ const Search = vm.runInNewContext(`${helper('cleanSourceText')}\n${main.slice(ma
 const note = 'We closed the account.\n\nWe closed the account.', from = note.lastIndexOf('We closed'), semantic = [{ from, to: note.length, sourcePhrase: note.slice(from), phrase: note.slice(from), score: 1 }], ui = new Search({ workspace: {} }, {}, { file: { path: 'Example.md' } });
 ui.options = { lexical: false, semantic: true };
 const matches = ui.compactPhrases(semantic, 'bank closure', note);
+const stableUi = new Search({ workspace: {} }, {}, { file: { path: 'Example.md' } });
+stableUi.options = { lexical: false, semantic: true }; stableUi.el = { isConnected: true }; stableUi.queryVersion = 1;
+stableUi.sourceText = async () => note; stableUi.matches = [{ from, to: note.length, text: note.slice(from), kind: 'semantic' }]; stableUi.current = 0;
+stableUi.paintHighlights = () => {}; stableUi.updateCount = () => {}; stableUi.revealCurrent = () => assert.fail('A confirmed update moved the editor');
+const earlier = { ...semantic[0], from: 0, to: semantic[0].sourcePhrase.length };
+await stableUi.refreshMatches('bank closure', [earlier, ...semantic], 1, true);
+assert.equal(stableUi.matches[stableUi.current].from, from, 'Live confirmation selected an earlier identical occurrence');
 const staleUi = new Search({ workspace: {} }, { search: { async searchInNote(query, source, options) { staleUi.queryVersion++; await options.onProgress({ stage: 'paragraph', ranges: semantic }); return []; } } }, { file: { path: 'Example.md' } });
 staleUi.el = { isConnected: true }; staleUi.queryVersion = 1; staleUi.sourceText = async () => note;
 staleUi.showRefinement = () => assert.fail('An obsolete query painted a provisional region');
