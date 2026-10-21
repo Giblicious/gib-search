@@ -1,13 +1,14 @@
 // In-note inference has its own workers and does not change vault inference.
+import { nativeProcess } from './in-note-native-process.js';
 export class InNoteEngine {
-  constructor({ browserSource, nativeSource, runtime, readerAssets, wasmGzip, wasmModuleGzip, modelCache, nativeDirectory, requestAsset, mobile = false, cores = 2, activity = () => {} }) {
-    Object.assign(this, { browserSource, nativeSource, runtime, readerAssets, wasmGzip, wasmModuleGzip, modelCache, nativeDirectory, requestAsset, mobile, cores, activity });
+  constructor({ browserSource, nativeSource, runtime, readerAssets, wasmGzip, wasmModuleGzip, modelCache, modelDirectory, nativeDirectory, requestAsset, mobile = false, cores = 2, activity = () => {}, nativeTransport = 'auto' }) {
+    Object.assign(this, { browserSource, nativeSource, runtime, readerAssets, wasmGzip, wasmModuleGzip, modelCache, modelDirectory, nativeDirectory, requestAsset, mobile, cores, activity, nativeTransport });
     this.pending = new Map(); this.nextId = 0; this.worker = null; this.backend = ''; this.stopped = false;
   }
   async nativeWorker() {
     if (this.mobile || this.nativeFailed || !this.nativeDirectory) return null;
     let node;
-    try { node = { Worker: require('node:worker_threads').Worker, fs: require('node:fs').promises, path: require('node:path'), crypto: require('node:crypto'), platform: process.platform, arch: process.arch }; } catch { return null; }
+    try { node = { Worker: require('node:worker_threads').Worker, fork: require('node:child_process').fork, fs: require('node:fs').promises, path: require('node:path'), crypto: require('node:crypto'), platform: process.platform, arch: process.arch, execPath: process.execPath, env: process.env, electron: Boolean(process.versions.electron) }; } catch { return null; }
     const key = `${node.platform}-${node.arch}`, files = this.runtime.runtimes[key]; if (!files) return null;
     const parent = node.path.resolve(this.nativeDirectory), directory = node.path.resolve(parent, this.runtime.version, key);
     if (!directory.startsWith(parent + node.path.sep)) throw new Error('Invalid local inference directory');
@@ -16,14 +17,25 @@ export class InNoteEngine {
       if (!/^[\w.-]+$/u.test(file.name) || !/^[\w.-]+$/u.test(file.asset)) throw new Error('Invalid local inference asset name');
       const destination = node.path.join(directory, file.name), valid = data => data.byteLength === file.bytes && node.crypto.createHash('sha256').update(data).digest('hex') === file.sha256;
       try { if (valid(await node.fs.readFile(destination))) continue; } catch {}
-      this.activity('Preparing local search engine');
-      const data = new Uint8Array(await this.requestAsset(`https://github.com/Giblicious/gib-search/releases/download/${this.runtime.release}/${file.asset}`));
+      if (this.stopped) throw new Error('In-note inference stopped');
+      this.activity(file.role === 'node' ? 'Downloading local CPU helper' : 'Downloading local inference library');
+      let timer, data;
+      try { data = new Uint8Array(await Promise.race([this.requestAsset(`https://github.com/Giblicious/gib-search/releases/download/${this.runtime.release}/${file.asset}`), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Local inference download timed out')), 180000); })])); }
+      finally { clearTimeout(timer); }
+      if (this.stopped) throw new Error('In-note inference stopped');
+      if (file.compression === 'gzip') {
+        if (data.byteLength !== file.assetBytes || node.crypto.createHash('sha256').update(data).digest('hex') !== file.assetSha256) throw new Error('Compressed native helper failed integrity verification');
+        data = await new Promise((resolve, reject) => require('node:zlib').gunzip(data, (error, bytes) => error ? reject(error) : resolve(bytes)));
+      }
       if (!valid(data)) throw new Error('Local inference asset failed integrity verification');
       const temporary = destination + `.download-${node.crypto.randomUUID()}`;
       try { await node.fs.writeFile(temporary, data, { flag: 'wx' }); await node.fs.rename(temporary, destination); }
       finally { await node.fs.unlink(temporary).catch(() => {}); }
     }
-    const worker = new node.Worker(this.nativeSource, { eval: true, workerData: { bindingPath: node.path.join(directory, 'onnxruntime_binding.node') } });
+    const helper = files.find(file => file.role === 'node');
+    if (helper && node.platform !== 'win32') await node.fs.chmod(node.path.join(directory, helper.name), 0o755);
+    const bindingPath = node.path.join(directory, 'onnxruntime_binding.node');
+    const worker = node.electron || this.nativeTransport === 'process' ? await nativeProcess(node, directory, this.nativeSource, bindingPath, helper && node.path.join(directory, helper.name)) : new node.Worker(this.nativeSource, { eval: true, workerData: { bindingPath } });
     this.backend = 'native-cpu'; return worker;
   }
   async start() {
@@ -31,6 +43,7 @@ export class InNoteEngine {
     if (this.worker) return;
     if (this.starting) return this.starting;
     const run = (async () => {
+      this.activity('Starting local search engine');
       let worker;
       try { worker = await this.nativeWorker(); } catch (error) { this.nativeFailed = true; this.activity(`Native search unavailable; using browser inference (${error.message})`); }
       if (this.stopped) { worker?.terminate(); throw new Error('In-note inference stopped'); }
@@ -39,12 +52,13 @@ export class InNoteEngine {
         worker.on('message', message => { if (this.worker === worker) this.receive(message); }); worker.on('error', error => { if (this.worker === worker) this.fail(error); });
         worker.on('exit', code => { if (this.worker === worker && !this.stopped) this.fail(new Error(`Local inference worker exited (${code})`)); });
       } else {
+        if (typeof this.browserSource !== 'string') throw new Error('No browser fallback is available for local inference');
         this.backend = 'wasm';
         this.workerUrl = URL.createObjectURL(new Blob([this.browserSource], { type: 'text/javascript' }));
         worker = new Worker(this.workerUrl, { name: 'gib-search-in-note' }); this.worker = worker;
         worker.onmessage = event => { if (this.worker === worker) this.receive(event.data); }; worker.onerror = event => { if (this.worker === worker) this.fail(new Error(event.message || 'In-note worker failed')); };
       }
-      await this.send('init', { mobile: this.mobile, cores: this.cores, readerAssets: this.readerAssets, wasmGzip: this.wasmGzip, wasmModuleGzip: this.wasmModuleGzip });
+      await this.send('init', { mobile: this.mobile, cores: this.cores, readerAssets: this.readerAssets, modelDirectory: this.backend === 'native-cpu' ? this.modelDirectory : undefined, wasmGzip: this.wasmGzip, wasmModuleGzip: this.wasmModuleGzip });
       this.activity('Local search engine ready');
     })();
     this.starting = run;
@@ -52,7 +66,7 @@ export class InNoteEngine {
   }
   async receive(message) {
     for (const pending of this.pending.values()) pending.lastActivity = Date.now();
-    if (message.type === 'progress') { this.activity(`Preparing local search model: ${Math.round(message.progress)}%`); return; }
+    if (message.type === 'progress') { const name = { embed: 'retrieval', read: 'sentence', guard: 'consistency', classify: 'meaning', rank: 'relevance' }[message.kind] || 'search'; this.activity(message.phase === 'loading' ? `Loading local ${name} model` : `Preparing local ${name} model: ${Math.round(message.progress)}%`); return; }
     if (message.type === 'cache') {
       const worker = this.worker;
       try {

@@ -1,7 +1,7 @@
 import { PassageInNoteMatcher } from './in-note-reader.js';
 import { RankedInNoteMatcher } from './ranked-in-note-search.js';
 import { inNoteUnits } from './in-note-search.js';
-import { inNoteParagraphs } from './in-note-hierarchy.js';
+import { inNoteParagraphs, inNoteRetrievalBlocks, inNoteCandidateUnits } from './in-note-hierarchy.js';
 import { inNoteReaderInput } from './in-note-reader-codec.js';
 import { inNoteQuery, inNoteGrammar, inNoteActionGrounded, inNoteConflict, inNoteRoleMatch, inNoteInverseRelation } from './in-note-logic.js';
 import { inNoteWordAlignment, inNoteEvidence } from './in-note-focus.js';
@@ -94,11 +94,18 @@ export class VerifiedInNoteMatcher extends PassageInNoteMatcher {
     this.answers.snapshot = source => {
       let prepared = this.answers.sources.get(source);
       if (!prepared) {
-        const units = inNoteUnits(source, { wholeSentences: true }), paragraphs = inNoteParagraphs(units, source);
+        const units = inNoteUnits(source, { wholeSentences: true }), paragraphs = units.length > 48 ? inNoteRetrievalBlocks(units, source) : inNoteParagraphs(units, source);
         prepared = { units, unitsByRange: new Map(units.map(unit => [`${unit.from}:${unit.to}`, unit])), paragraphs, representations: [...new Set([...paragraphs.map(paragraph => paragraph.phrase), ...units.flatMap(unit => [unit.phrase, ...unit.topics])])], vectors: new Map(), grammars: new Map() };
         this.answers.sources.set(source, prepared); while (this.answers.sources.size > 2) this.answers.sources.delete(this.answers.sources.keys().next().value);
       }
       return prepared;
+    };
+    this.answers.selectParagraphs = (paragraphs, prepared, query) => {
+      if (prepared.units.length <= 48) return null;
+      // Answer ranking already expands its sentence queue adaptively. Retain
+      // every qualifying block here rather than capping possible findings.
+      const indices = inNoteCandidateUnits(paragraphs, prepared.units, query, Infinity, .3);
+      return paragraphs.filter(paragraph => paragraph.indices.some(index => indices.has(index)));
     };
     this.read = (pairs, check) => this.verify(pairs, check);
   }
@@ -109,7 +116,7 @@ export class VerifiedInNoteMatcher extends PassageInNoteMatcher {
   prepare(source, check) {
     return this.enqueue(async () => {
       const valid = () => !this.disposed && (!check || check());
-      try { await super.prepare(source, valid); await this.answers.prepare(source, valid); }
+      try { await super.prepare(source, valid); if (!this.snapshot(String(source || '')).lazy) await this.answers.prepare(source, valid); }
       finally { this.releasePreparedVectors(); }
     });
   }
@@ -189,11 +196,11 @@ export class VerifiedInNoteMatcher extends PassageInNoteMatcher {
   snapshot(source) {
     if (this.sources.has(source)) return this.sources.get(source);
     const units = inNoteUnits(source, { wholeSentences: true });
-    const paragraphs = inNoteParagraphs(units, source).map(paragraph => ({ ...paragraph, retrievalTexts: paragraph.indices.map(index => units[index].phrase) }));
+    const lazy = units.length > 48, paragraphs = (lazy ? inNoteRetrievalBlocks(units, source) : inNoteParagraphs(units, source)).map(paragraph => ({ ...paragraph, retrievalTexts: paragraph.indices.map(index => units[index].phrase) }));
     const paragraphOf = new Map(); paragraphs.forEach((paragraph, index) => paragraph.indices.forEach(unit => paragraphOf.set(unit, index)));
     const pairs = units.map((unit, index) => inNoteReaderInput(unit.phrase, [unit.heading, paragraphs[paragraphOf.get(index)].phrase].filter(Boolean).join('\n')));
     const representations = [...new Set([...paragraphs.map(paragraph => paragraph.phrase), ...units.map(unit => unit.phrase)])];
-    const snapshot = { units, paragraphs, paragraphOf, pairs, representations };
+    const snapshot = { units, paragraphs, paragraphOf, pairs, representations, lazy, preparationTexts: lazy ? paragraphs.map(paragraph => paragraph.phrase) : representations };
     this.sources.set(source, snapshot); while (this.sources.size > 2) this.sources.delete(this.sources.keys().next().value);
     return snapshot;
   }

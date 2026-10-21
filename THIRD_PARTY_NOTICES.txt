@@ -3,6 +3,10 @@ Gib Search in-note inference
 The sentence verifier adapts mixedbread-ai/mxbai-rerank-xsmall-v1 under Apache-2.0.
 Transformers.js is by Hugging Face under Apache-2.0.
 ONNX Runtime is Copyright (c) Microsoft Corporation, MIT license.
+The standalone desktop helper includes the pinned Node.js runtime, Copyright
+Node.js contributors, under its MIT license and bundled third-party terms.
+The complete upstream Node.js LICENSE is in licenses/node/LICENSE and included
+in the plugin and release notices.
 Windows runtime packages include Microsoft DirectML 1.15.4 under its accompanying
 Microsoft Software License Terms. CPU inference does not select DirectML.
 Full base-model/runtime terms are in licenses/ and included in the built plugin.

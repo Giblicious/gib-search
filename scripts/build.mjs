@@ -41,6 +41,6 @@ await build({
   logLevel: 'warning', legalComments: 'none',
 });
 const outputPath = path.join(root, 'main.js');
-const notices = ['THIRD_PARTY_NOTICES.txt', 'licenses/mxbai/LICENSE', 'licenses/onnxruntime/LICENSE', 'licenses/onnxruntime/DirectML-LICENSE.txt', 'licenses/onnxruntime/ThirdPartyNotices.txt'].map(file => `${file}\n${fs.readFileSync(path.join(root, file), 'utf8')}`).join('\n\n').replace(/\r\n?/gu, '\n').replace(/[ \t]+$/gm, '');
+const notices = ['THIRD_PARTY_NOTICES.txt', 'licenses/mxbai/LICENSE', 'licenses/node/LICENSE', 'licenses/onnxruntime/LICENSE', 'licenses/onnxruntime/DirectML-LICENSE.txt', 'licenses/onnxruntime/ThirdPartyNotices.txt'].map(file => `${file}\n${fs.readFileSync(path.join(root, file), 'utf8')}`).join('\n\n').replace(/\r\n?/gu, '\n').replace(/\t/gu, '    ').replace(/[ \t]+$/gm, '');
 fs.writeFileSync(path.join(root, 'build/in-note-runtime/in-note-notices.txt'), notices + '\n');
 fs.writeFileSync(outputPath, fs.readFileSync(outputPath, 'utf8').replace(/[ \t]+$/gm, '') + `\n/*!\n${notices.replace(/\*\//g, '* /')}\n*/\n`);

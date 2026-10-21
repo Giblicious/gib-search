@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { builtinModules } from 'node:module';
+import { buildNodeRuntimes } from './build-node-runtime.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export async function buildInNoteWorkers() {
   const entry = path.join(root, 'src/in-note-inference-worker.js');
@@ -11,7 +12,7 @@ export async function buildInNoteWorkers() {
   const native = await build({
     entryPoints: [entry], bundle: true, write: false, metafile: true, platform: 'node', format: 'cjs', target: 'node18',
     define: { __GIB_NATIVE_IN_NOTE__: 'true', 'import.meta.url': '__gibWorkerUrl' },
-    banner: { js: 'const __gibWorkerUrl=require("node:url").pathToFileURL(require("node:path").resolve(__filename)).href; const {parentPort}=require("node:worker_threads"); const self={postMessage:(message,transfers)=>parentPort.postMessage(message,transfers||[]),onmessage:null}; parentPort.on("message",data=>self.onmessage?.({data})); globalThis.crypto ||= require("node:crypto").webcrypto;' },
+    banner: { js: 'const __gibWorkerUrl=require("node:url").pathToFileURL(require("node:path").resolve(__filename)).href; const {parentPort}=require("node:worker_threads"); const self={postMessage:(message,transfers)=>parentPort?parentPort.postMessage(message,transfers||[]):process.send(globalThis.__gibInNoteIpc.encode(message)),onmessage:null}; (parentPort||process).on("message",data=>self.onmessage?.({data:parentPort?data:globalThis.__gibInNoteIpc.decode(data)})); if(!parentPort)process.on("disconnect",()=>process.exit(0)); globalThis.crypto ||= require("node:crypto").webcrypto;' },
     plugins: [{ name: 'self-contained-text-runtime', setup(builder) {
       // Text-only pipelines never process images. Sharp would otherwise look
       // for machine-installed native image packages after a BRAT installation.
@@ -20,7 +21,7 @@ export async function buildInNoteWorkers() {
       builder.onLoad({ filter: /onnxruntime-node[\\/]dist[\\/]binding\.js$/ }, args => {
         const source = fs.readFileSync(args.path, 'utf8'), marker = 'require(`../bin/napi-v3/${process.platform}/${process.arch}/onnxruntime_binding.node`)';
         if (!source.includes(marker)) throw new Error('Native binding loader changed; review packaging');
-        return { contents: source.replace(marker, 'require(require("node:worker_threads").workerData.bindingPath)'), loader: 'js', resolveDir: path.dirname(args.path) };
+        return { contents: source.replace(marker, 'require(require("node:worker_threads").workerData?.bindingPath || process.env.GIB_IN_NOTE_BINDING_PATH)'), loader: 'js', resolveDir: path.dirname(args.path) };
       });
     } }], logLevel: 'silent', legalComments: 'none',
   });
@@ -38,7 +39,8 @@ export async function buildInNoteWorkers() {
     }
     if (files.some(file => file.name === 'onnxruntime_binding.node')) runtimes[`${platform}-${architecture}`] = files;
   }
-  const metadata = { version: packageInfo.version, release, runtimes };
+  const nodeVersion = await buildNodeRuntimes(root, output, runtimes);
+  const metadata = { version: packageInfo.version, nodeVersion, release, runtimes };
   fs.writeFileSync(path.join(output, 'runtime-manifest.json'), JSON.stringify(metadata, null, 2) + '\n');
   return { browser: browser.outputFiles[0].text, native: native.outputFiles[0].text, metadata };
 }

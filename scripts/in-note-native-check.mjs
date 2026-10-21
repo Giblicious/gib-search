@@ -30,7 +30,10 @@ const modelCache = {
 };
 const engine = new InNoteEngine({ nativeSource: await fs.readFile(path.join(output, 'worker-native.cjs'), 'utf8'), runtime, readerAssets: JSON.parse(await fs.readFile(path.join(root, 'model-assets/in-note-reader/asset-manifest.json'))), modelCache, nativeDirectory: temporary, cores: 2, requestAsset: async url => { downloads++; return fs.readFile(path.join(output, new URL(url).pathname.split('/').at(-1))); } });
 try {
+  engine.nativeTransport = 'process';
   await engine.request('warm'); assert.equal(engine.backend, 'native-cpu');
+  assert.ok(engine.worker.pid, 'Native packaging check must exercise the standalone CPU helper');
+  assert.ok(engine.worker.spawnfile.includes(`node-${runtime.nodeVersion}`), 'Helper used the host executable');
   assert.equal(downloads, runtime.runtimes[`${process.platform}-${process.arch}`].length);
   const vectors = await engine.embed(['liked people', 'Maya enjoyed the company of strangers.']);
   assert.ok(vectors.every(vector => vector.length === 384 && vector.every(Number.isFinite) && vector.focus?.words?.length));

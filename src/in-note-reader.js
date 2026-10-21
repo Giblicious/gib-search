@@ -1,5 +1,5 @@
 import { inNoteUnits } from './in-note-search.js';
-import { inNoteParagraphs, inNoteDot } from './in-note-hierarchy.js';
+import { inNoteParagraphs, inNoteDot, inNoteCandidateUnits } from './in-note-hierarchy.js';
 import { inNoteReaderInput } from './in-note-reader-codec.js';
 import { inNoteFocusRange } from './in-note-focus.js';
 
@@ -29,10 +29,13 @@ export function inNoteReaderWindows(source) {
 }
 
 export class PassageInNoteMatcher {
-  constructor({ embed, read, cache, batchSize = 6, yieldControl = () => new Promise(resolve => setTimeout(resolve, 0)) }) {
+  constructor({ embed, read, cache, batchSize = 6, cacheTimeoutMs = 750, yieldControl = () => new Promise(resolve => setTimeout(resolve, 0)) }) {
     this.embed = embed; this.read = read; this.cache = cache; this.batchSize = batchSize; this.yieldControl = yieldControl;
     this.sources = new Map(); this.vectors = new Map(); this.readings = new Map(); this.results = new Map(); this.vectorBytes = 0;
-    this.cacheReady = cache ? cache.load().then(entries => { if (this.disposed) return; for (const [text, vector] of entries) { const copy = new Float32Array(vector); copy.focus = vector.focus || null; this.rememberVector(text, copy); } }).catch(() => {}) : Promise.resolve();
+    // A blocked WebView database must not prevent inference. Ignore a late
+    // optional cache read rather than inserting stale vectors during a query.
+    let cacheTimer;
+    this.cacheReady = cache ? Promise.race([Promise.resolve().then(() => cache.load()), new Promise(resolve => { cacheTimer = setTimeout(() => resolve([]), cacheTimeoutMs); })]).then(entries => { if (this.disposed) return; for (const [text, vector] of entries) { const copy = new Float32Array(vector); copy.focus = vector.focus || null; this.rememberVector(text, copy); } }).catch(() => {}).finally(() => clearTimeout(cacheTimer)) : Promise.resolve();
   }
   rememberVector(text, vector) {
     const old = this.vectors.get(text); if (old) this.vectorBytes -= vectorBytes(text, old);
@@ -76,7 +79,7 @@ export class PassageInNoteMatcher {
   async prepare(source, check) {
     const valid = () => !this.disposed && (!check || check());
     await this.cacheReady; current(valid); const note = this.snapshot(String(source || '')); this.preparing = true;
-    try { await this.embeddings(note.representations, valid); }
+    try { await this.embeddings(note.preparationTexts || note.representations, valid); }
     finally { this.preparing = false; this.save(); }
   }
   search(query, source, options = {}) {
@@ -89,25 +92,33 @@ export class PassageInNoteMatcher {
     const text = String(source || ''), literal = String(query || '').trim(); if (literal.length < 2 || !text.trim()) return diagnostics ? { matches: [], candidates: [] } : [];
     const resultKey = JSON.stringify([literal, text, breadth, exhaustive]); if (!diagnostics && this.results.has(resultKey)) return this.results.get(resultKey);
     const note = this.snapshot(text), queryWords = new Set(words(literal)), threshold = IN_NOTE_READER_THRESHOLDS[breadth] ?? IN_NOTE_READER_THRESHOLDS.balanced;
-    const [queryVector] = await this.embeddings([literal], isCurrent), vectors = await this.embeddings(note.representations, isCurrent), byText = new Map(note.representations.map((text, index) => [text, vectors[index]]));
-    const paragraphs = note.paragraphs.map(paragraph => ({ ...paragraph, similarity: Math.max(inNoteDot(queryVector, byText.get(paragraph.phrase)), ...paragraph.retrievalTexts.map(text => inNoteDot(queryVector, byText.get(text)))) }));
+    const retrievalTexts = note.lazy ? note.preparationTexts : note.representations;
+    const [queryVector] = await this.embeddings([literal], isCurrent), vectors = await this.embeddings(retrievalTexts, isCurrent), byText = new Map(retrievalTexts.map((text, index) => [text, vectors[index]]));
+    const paragraphs = note.paragraphs.map(paragraph => ({ ...paragraph, similarity: note.lazy ? inNoteDot(queryVector, byText.get(paragraph.phrase)) : Math.max(inNoteDot(queryVector, byText.get(paragraph.phrase)), ...paragraph.retrievalTexts.map(text => inNoteDot(queryVector, byText.get(text)))) }));
+    const publish = async (stage, ranges, confirmed) => { current(isCurrent); await onProgress?.({ stage, ranges, ...(confirmed ? { matches: [...confirmed] } : {}) }); current(isCurrent); await this.yieldControl(); };
+    await publish('paragraph', paragraphs.filter(paragraph => paragraph.similarity >= .35).slice().sort((a, b) => b.similarity - a.similarity).slice(0, 3));
+    const eligible = note.lazy && !exhaustive ? inNoteCandidateUnits(paragraphs, note.units, literal) : null;
+    if (note.lazy) {
+      const texts = [...new Set(note.units.filter((unit, index) => !eligible || eligible.has(index)).map(unit => unit.phrase))], values = await this.embeddings(texts, isCurrent);
+      texts.forEach((text, index) => byText.set(text, values[index]));
+    }
     const groups = new Map();
     note.units.forEach((unit, index) => {
       const input = note.pairs[index], key = `${literal}\0${input.passage}`;
       const lexical = words(unit.phrase).filter(word => queryWords.has(word)).length / Math.max(1, queryWords.size);
-      const similarity = paragraphs[note.paragraphOf.get(index)].similarity;
-      if (!groups.has(key)) groups.set(key, { key, input: { ...input, query: literal }, similarity, lexical, priority: similarity + .04 * lexical, units: [] });
+      const paragraphScore = paragraphs[note.paragraphOf.get(index)].similarity;
+      const sentenceVector = byText.get(unit.phrase), similarity = note.lazy && sentenceVector ? .75 * inNoteDot(queryVector, sentenceVector) + .25 * paragraphScore : paragraphScore;
+      if (!groups.has(key)) groups.set(key, { key, input: { ...input, query: literal }, similarity, paragraphScore, lexical, priority: similarity + .04 * lexical, initial: !eligible || eligible.has(index), units: [] });
+      if (eligible?.has(index)) groups.get(key).initial = true;
       groups.get(key).units.push(unit);
     });
-    const ordered = [...groups.values()].sort((a, b) => b.priority - a.priority), matches = [], candidates = [];
+    const all = [...groups.values()], ordered = all.filter(group => group.initial).sort((a, b) => b.priority - a.priority), matches = [], candidates = [];
     const selected = new Set(ordered.length <= 12 || exhaustive ? ordered : [...ordered.slice(0, 8), ...ordered.slice().sort((a, b) => b.lexical - a.lexical || b.similarity - a.similarity).slice(0, 4)]);
-    const queue = [...selected].sort((a, b) => a.input.passage.length - b.input.passage.length), remaining = ordered.filter(group => !selected.has(group));
-    const publish = async (stage, ranges, confirmed) => { current(isCurrent); await onProgress?.({ stage, ranges, ...(confirmed ? { matches: [...confirmed] } : {}) }); current(isCurrent); await this.yieldControl(); };
-    await publish('paragraph', paragraphs.slice().sort((a, b) => b.similarity - a.similarity).slice(0, 3));
+    const queue = [...selected].sort((a, b) => a.input.passage.length - b.input.passage.length), remaining = all.filter(group => !selected.has(group)).sort((a, b) => note.lazy ? b.paragraphScore - a.paragraphScore || b.lexical - a.lexical : b.priority - a.priority);
     // Dense paragraph and sentence evidence is unioned with lexical candidates.
     // Expand answer-rich/tied tails; find-all is not capped at the first batch.
     // Audits can run exhaustively to measure the shortlist's lost occurrences.
-    let acceptedInRound = 0, acceptedFloor = Infinity, roundStart = 0, sentencesPublished = false;
+    let acceptedInRound = 0, acceptedFloor = Infinity, acceptedParagraphFloor = Infinity, roundStart = 0, sentencesPublished = false;
     for (let offset = 0; offset < queue.length;) {
       current(isCurrent); const batch = queue.slice(offset, offset + this.batchSize), resolved = new Map(batch.filter(group => this.readings.has(group.key)).map(group => [group.key, this.readings.get(group.key)])), missing = batch.filter(group => !resolved.has(group.key));
       if (missing.length) {
@@ -138,7 +149,7 @@ export class PassageInNoteMatcher {
           if (!Number.isInteger(checkedFrom) || !Number.isInteger(checkedTo) || checkedFrom > from || checkedTo < to || checkedTo > unit.to || checkedFrom < unit.from) continue;
           matches.push({ from: checkedFrom, to: checkedTo, phrase: unit.phrase.slice(sentenceFrom, sentenceTo), sourcePhrase: text.slice(checkedFrom, checkedTo), score: Math.min(reading.probability, span.sentenceProbability ?? 1), similarity: group.similarity, kind: 'semantic', highlight });
         }
-        if (matches.length > matchesBeforeGroup) { acceptedInRound++; acceptedFloor = Math.min(acceptedFloor, group.similarity); }
+        if (matches.length > matchesBeforeGroup) { acceptedInRound++; acceptedFloor = Math.min(acceptedFloor, group.similarity); acceptedParagraphFloor = Math.min(acceptedParagraphFloor, group.paragraphScore); }
       }
       if (matches.length) {
         if (!sentencesPublished) { await publish('sentence', matches.map(match => ({ from: match.from, to: match.to, sourcePhrase: match.sourcePhrase }))); sentencesPublished = true; }
@@ -147,7 +158,7 @@ export class PassageInNoteMatcher {
       await this.yieldControl();
       offset += batch.length;
       if (offset >= queue.length && remaining.length) {
-        const denseTail = remaining[0].similarity >= acceptedFloor - .035;
+        const denseTail = note.lazy ? remaining[0].paragraphScore >= acceptedParagraphFloor - .035 : remaining[0].similarity >= acceptedFloor - .035;
         if (exhaustive || acceptedInRound >= Math.max(2, (queue.length - roundStart) / 3) && denseTail || !matches.length && queue.length < 32) {
           roundStart = queue.length; queue.push(...remaining.splice(0, 12).sort((a, b) => a.input.passage.length - b.input.passage.length)); acceptedInRound = 0;
         }
@@ -155,7 +166,7 @@ export class PassageInNoteMatcher {
     }
     if (!sentencesPublished) await publish('sentence', []);
     matches.sort((a, b) => a.highlight.from - b.highlight.from); current(isCurrent); remember(this.results, resultKey, matches, 8); this.save();
-    return diagnostics ? { matches, candidates, totalCandidates: ordered.length, readCandidates: candidates.length } : matches;
+    return diagnostics ? { matches, candidates, totalCandidates: note.units.length, retrievalCandidates: ordered.length, readCandidates: candidates.length } : matches;
   }
   dispose() { this.disposed = true; clearTimeout(this.saveTimer); this.saveTimer = null; this.sources.clear(); this.vectors.clear(); this.vectorBytes = 0; this.readings.clear(); this.results.clear(); }
 }

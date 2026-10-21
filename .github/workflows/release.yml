@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.23.4
       - name: Verify tag and manifest
         shell: bash
         run: |
@@ -31,6 +31,7 @@ jobs:
       - run: npm run check
       - run: npm run audit:in-file
       - run: node scripts/in-note-native-check.mjs
+      - run: xvfb-run -a node scripts/in-note-electron-check.mjs
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -39,6 +40,7 @@ jobs:
           TAG="$GITHUB_REF_NAME"
           REQUIRED=(main.js manifest.json styles.css build/in-note-runtime/runtime-manifest.json build/in-note-runtime/in-note-notices.txt)
           REQUIRED+=(build/in-note-runtime/ort-*)
+          REQUIRED+=(build/in-note-runtime/node-*.gz)
           cp model-assets/in-note-reader/asset-manifest.json build/in-note-runtime/reader-asset-manifest.json
           cp model-assets/in-note-reader/onnx/model_quantized.onnx build/in-note-runtime/in-note-reader.onnx
           REQUIRED+=(build/in-note-runtime/reader-asset-manifest.json build/in-note-runtime/in-note-reader.onnx)

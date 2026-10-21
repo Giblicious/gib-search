@@ -95,7 +95,8 @@ export class RankedInNoteMatcher extends InNoteMatcher {
     await this.embeddings(prepared.paragraphs.map(paragraph => paragraph.phrase), isCurrent, prepared.vectors);
     const paragraphs = prepared.paragraphs.map(paragraph => ({ ...paragraph, similarity: Math.max(inNoteDot(queryVector, prepared.vectors.get(paragraph.phrase)), ...paragraph.indices.map(index => prepared.vectors.has(prepared.units[index].phrase) ? inNoteDot(queryVector, prepared.vectors.get(prepared.units[index].phrase)) : 0)) })).sort((a, b) => b.similarity - a.similarity);
     const paragraphPeak = Math.max(0, ...paragraphs.filter(paragraph => !paragraph.isHeading).map(paragraph => paragraph.similarity)), paragraphFloor = Math.max(.30, paragraphPeak - .30);
-    const selectedParagraphs = paragraphs.filter(paragraph => paragraph.isHeading || paragraph.similarity >= paragraphFloor);
+    const eligibleParagraphs = paragraphs.filter(paragraph => paragraph.isHeading || paragraph.similarity >= paragraphFloor);
+    const selectedParagraphs = this.selectParagraphs?.(paragraphs, prepared, literal) ?? eligibleParagraphs;
     const unitIndices = new Set(selectedParagraphs.flatMap(paragraph => paragraph.indices));
     await publish('paragraph', selectedParagraphs.filter(paragraph => !paragraph.isHeading && paragraph.similarity >= paragraphPeak - .1));
     const verified = await super.searchCurrent(literal, text, { breadth, isCurrent, diagnostics: true, retrievalOnly: intent.lookup, unitIndices, scoreCandidates: (units, query, check) => this.sentenceMeaning(units, query, check), onCandidates: async candidates => {

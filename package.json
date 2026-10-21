@@ -1,6 +1,6 @@
 {
   "name": "gib-search",
-  "version": "0.54.67",
+  "version": "0.54.68",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,6 +14,7 @@
   "devDependencies": {
     "@huggingface/transformers": "3.8.1",
     "compromise": "14.14.4",
+    "electron": "45.0.0",
     "esbuild": "0.25.12",
     "fake-indexeddb": "6.2.6"
   },

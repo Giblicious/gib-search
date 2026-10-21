@@ -1,6 +1,8 @@
 import { pipeline, env } from '@huggingface/transformers';
 import { embedInNote } from './in-note-embedding.js';
 import { sentenceReaderInputs, sentenceReaderResults } from './in-note-sentence-codec.js';
+import { encodeInNoteIpc, decodeInNoteIpc } from './in-note-ipc.js';
+if (__GIB_NATIVE_IN_NOTE__) globalThis.__gibInNoteIpc = { encode: encodeInNoteIpc, decode: decodeInNoteIpc };
 
 const native = __GIB_NATIVE_IN_NOTE__;
 const READER_REVISION = '0.54.67';
@@ -11,7 +13,7 @@ const definitions = {
   guard: ['text-classification', 'Xenova/nli-deberta-v3-xsmall', '2a4f614a701367a02d51389039afc998faeda637'],
   read: ['text-classification', 'Giblicious/gib-search', READER_REVISION],
 };
-let configuration, nextCacheId = 0, queue = Promise.resolve();
+let configuration, nativeCache, nextCacheId = 0, queue = Promise.resolve();
 const pendingCache = new Map(), models = new Map();
 const post = (message, transfers) => self.postMessage(message, transfers || []);
 const keyOf = request => typeof request === 'string' ? request : request.url;
@@ -33,6 +35,24 @@ async function gunzip(encoded, text = false) {
 }
 async function initialize(message) {
   configuration = message;
+  if (__GIB_NATIVE_IN_NOTE__ && message.modelDirectory) {
+    const fs = require('node:fs').promises, path = require('node:path'), root = path.resolve(message.modelDirectory);
+    const cachePath = request => {
+      let key = keyOf(request);
+      try { key = decodeURIComponent(new URL(key).pathname.replace(/^\//u, '').replace('/resolve/main/', '/')); } catch { key = key.replace(/^\/?models\//u, '').replace(/^\//u, ''); }
+      const safe = key.replaceAll('\\', '/').split('/').filter(part => part && part !== '.' && part !== '..').join(path.sep), target = path.resolve(root, safe);
+      return target.startsWith(root + path.sep) ? target : null;
+    };
+    nativeCache = {
+      async match(url) { const file = cachePath(url); if (!file) return null; try { return await fs.readFile(file); } catch { return null; } },
+      async put(url, bytes) {
+        const file = cachePath(url); if (!file) throw new Error('Invalid native model cache key');
+        await fs.mkdir(path.dirname(file), { recursive: true }); const temporary = file + `.download-${crypto.randomUUID()}`;
+        try { await fs.writeFile(temporary, new Uint8Array(bytes), { flag: 'wx' }); await fs.rename(temporary, file); }
+        finally { await fs.unlink(temporary).catch(() => {}); }
+      },
+    };
+  }
   const fetchModel = globalThis.fetch.bind(globalThis);
   globalThis.fetch = async (request, options) => {
     const response = await fetchModel(request, options), url = keyOf(request);
@@ -53,12 +73,12 @@ async function initialize(message) {
   env.allowRemoteModels = true; env.allowLocalModels = false; env.useFSCache = false; env.useBrowserCache = false; env.useCustomCache = true;
   env.customCache = {
     async match(request) {
-      const url = keyOf(request), buffer = await cache('match', url);
+      const url = keyOf(request), buffer = nativeCache ? await nativeCache.match(url) : await cache('match', url);
       if (!buffer) return undefined;
       try { await validateReaderFile(url, buffer); } catch { return undefined; }
       return new Response(buffer, { headers: { 'Content-Length': String(buffer.byteLength) } });
     },
-    async put(request, response) { const url = keyOf(request), buffer = await response.arrayBuffer(); await validateReaderFile(url, buffer); await cache('put', url, buffer); },
+    async put(request, response) { const url = keyOf(request), buffer = await response.arrayBuffer(); await validateReaderFile(url, buffer); if (nativeCache) await nativeCache.put(url, buffer); else await cache('put', url, buffer); },
   };
   if (!native) {
     env.backends.onnx.wasm.numThreads = 1; env.backends.onnx.wasm.proxy = false;
@@ -70,6 +90,7 @@ async function initialize(message) {
 async function model(kind) {
   if (models.has(kind)) return models.get(kind);
   const definition = definitions[kind]; if (!definition) throw new Error('Unknown in-note model');
+  post({ type: 'progress', kind, phase: 'loading' });
   const options = { dtype: kind === 'embed' ? 'fp32' : 'q8', device: native ? 'cpu' : 'wasm', ...(definition[2] ? { revision: definition[2] } : {}), session_options: { intraOpNumThreads: native ? Math.max(1, Math.min(2, configuration.cores || 2)) : 1, interOpNumThreads: 1, ...(kind === 'read' ? { graphOptimizationLevel: 'basic' } : {}) }, progress_callback: progress => { if (progress.status === 'progress') post({ type: 'progress', kind, progress: Number(progress.progress) || 0 }); } };
   const host = env.remoteHost, template = env.remotePathTemplate;
   try {
@@ -90,7 +111,7 @@ async function classify(kind, pairs) {
 }
 async function handle(message) {
   if (message.type === 'init') return initialize(message);
-  if (message.type === 'warm') { for (const kind of ['embed', 'read', 'guard', 'classify', 'rank']) await model(kind); return true; }
+  if (message.type === 'warm') { for (const kind of message.kinds || ['embed', 'read', 'guard', 'classify', 'rank']) await model(kind); return true; }
   if (message.type === 'embed') { const loaded = await model('embed'), vectors = []; for (const text of message.texts) vectors.push(...await embedInNote(loaded, [text])); const buffers = vectors.map(vector => vector.buffer); post({ type: 'result', id: message.id, value: { buffers, focus: vectors.map(vector => vector.focus) } }, buffers); return undefined; }
   if (message.type === 'classify' || message.type === 'guard') return classify(message.type, message.pairs || []);
   if (message.type === 'rank') { if (!message.pairs?.length) return []; const loaded = await model('rank'), inputs = loaded.tokenizer(message.pairs.map(pair => pair.query), { text_pair: message.pairs.map(pair => pair.passage), padding: true, truncation: true, max_length: 512 }); return Array.from((await loaded.model(inputs)).logits.to('float32').data); }

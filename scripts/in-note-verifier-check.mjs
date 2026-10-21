@@ -58,6 +58,16 @@ await assert.rejects(matcher.search('liked people', 'Maya enjoyed company.', { i
 matcher.dispose(); assert.equal(matcher.vectors.size, 0);
 await assert.rejects(matcher.search('query', 'Source.'), { name: 'AbortError' });
 
+let encoded = [], largeCurrent = true;
+const lazy = new VerifiedInNoteMatcher({ embed: async texts => { encoded.push(...texts); return texts.map(vector); }, read: async () => assert.fail('Cancelled retrieval started sentence inference'), yieldControl: async () => {} });
+const largeSource = Array.from({ length: 90 }, (_, index) => `Inventory entry ${index + 1} lists the shelf number.`).join('\n\n');
+await lazy.prepare(largeSource);
+assert.ok(lazy.snapshot(largeSource).lazy);
+assert.ok(encoded.length < 30, 'Large-note preparation encoded every sentence');
+const preparedCount = encoded.length;
+await assert.rejects(lazy.search('liked people', largeSource, { isCurrent: () => largeCurrent, onProgress: progress => { assert.equal(progress.stage, 'paragraph'); largeCurrent = false; } }), { name: 'AbortError' });
+assert.equal(encoded.length, preparedCount + 1, 'Sentence encoding blocked the initial paragraph stage'); lazy.dispose();
+
 let recovered = 0;
 const focused = () => Object.assign(vector(), { focus: { vectors: new Int8Array(384), words: [{ text: 'word', from: 0, to: 4 }] } });
 const focusMatcher = new VerifiedInNoteMatcher({ embed: async texts => { recovered += texts.length; return texts.map(focused); }, read: async () => [] });

@@ -10,5 +10,6 @@ export function embeddedWasmArtifacts(root) {
     .replace("var isNode = typeof globalThis.process?.versions?.node == 'string';\nif (isNode) isPthread = (await import('worker_threads')).workerData === 'em-pthread';", 'var isNode = false;')
     .replace('Xa??=e.locateFile?e.locateFile?e.locateFile("ort-wasm-simd-threaded.jsep.wasm",v):v+"ort-wasm-simd-threaded.jsep.wasm":(new URL("ort-wasm-simd-threaded.jsep.wasm",import.meta.url)).href', 'Xa??="embedded.wasm"');
   if (!source.includes('n=false') || !source.includes('var isNode = false;') || !source.includes('Xa??="embedded.wasm"')) throw new Error('Could not prepare the browser-only WASM module');
-  return { wasmGzip: zlib.gzipSync(wasm, { level: 9 }).toString('base64'), wasmModuleGzip: zlib.gzipSync(source, { level: 9 }).toString('base64') };
+  const gzip = value => { const bytes = zlib.gzipSync(value, { level: 9 }); bytes[9] = 255; return bytes.toString('base64'); };
+  return { wasmGzip: gzip(wasm), wasmModuleGzip: gzip(source) };
 }

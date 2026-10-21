@@ -13,7 +13,7 @@ const { DesktopIndexStore: SegmentedDesktopIndexStore } = require('./desktop-ind
 const { normalizeIndexScope } = require('./index-scope');
 const { inNoteProjection } = require('./in-note-search');
 const { InNoteEngine } = require('./in-note-engine');
-const BUILD_VERSION = '0.54.67';
+const BUILD_VERSION = '0.54.68';
 const EMBEDDED_WASM_GZIP = null;
 const EMBEDDED_WASM_MODULE_GZIP = null;
 const EMBEDDED_DESKTOP_WORKER = null;
@@ -274,14 +274,14 @@ class DesktopEmbedder {
         async match(key) { return typeof caches === 'undefined' ? undefined : (await caches.open('gib-search-in-note-models')).match(key); },
         async put(key, response) { if (typeof caches !== 'undefined') await (await caches.open('gib-search-in-note-models')).put(key, response); },
       };
-      this.inNoteEngine = new InNoteEngine({ browserSource: EMBEDDED_IN_NOTE_BROWSER, nativeSource: EMBEDDED_IN_NOTE_NATIVE, runtime: IN_NOTE_RUNTIME, readerAssets: IN_NOTE_READER_ASSETS, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP, mobile: plugin.isMobile, cores: plugin.search?.indexingConfig?.cores || globalThis.navigator?.hardwareConcurrency || 2, nativeDirectory: plugin.isMobile ? null : path.join(plugin.pluginDir, 'in-note-runtime'), modelCache, requestAsset: async url => (await require('obsidian').requestUrl({ url, method: 'GET' })).arrayBuffer, activity: message => plugin.recordActivity('In-file search', message) });
+      this.inNoteEngine = new InNoteEngine({ browserSource: EMBEDDED_IN_NOTE_BROWSER, nativeSource: EMBEDDED_IN_NOTE_NATIVE, runtime: IN_NOTE_RUNTIME, readerAssets: IN_NOTE_READER_ASSETS, wasmGzip: EMBEDDED_WASM_GZIP, wasmModuleGzip: EMBEDDED_WASM_MODULE_GZIP, mobile: plugin.isMobile, cores: plugin.search?.indexingConfig?.cores || globalThis.navigator?.hardwareConcurrency || 2, nativeDirectory: plugin.isMobile ? null : path.join(plugin.pluginDir, 'in-note-runtime'), modelDirectory: plugin.isMobile ? null : plugin.modelDir, modelCache, requestAsset: async url => (await require('obsidian').requestUrl({ url, method: 'GET' })).arrayBuffer, activity: message => { plugin.recordActivity('In-file search', message); plugin.activeInNoteSearch?.setSemanticStatus(message); } });
     }
     return this.inNoteEngine;
   }
   embedInNote(texts) { return this.noteEngine().embed(texts); }
   inNotePairs(pairs, kind) { return this.noteEngine().request(kind, { pairs }); }
   prepareInNoteModels() {
-    return this.noteEngine().request('warm');
+    return this.noteEngine().request('warm', { kinds: ['embed'] });
   }
   generateTopicLabels(prompts) { return this.request({ type: 'topic-labels', prompts }, 600000); }
   stop() { this.inNoteEngine?.stop(); this.inNoteEngine = null; this.inNoteWorker?.stop(); this.inNoteWorker = null; const worker = this.worker; this.worker = null; this.disabled = false; this.ready = false; this.relationReady = false; this.rerankerReady = false; this.topicLabelReady = false; this.backend = 'starting'; this.dtype = ''; this.relationBackend = 'starting'; this.relationDtype = ''; for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error('Desktop embedding worker stopped')); } this.pending.clear(); worker?.terminate(); if (this.workerUrl) URL.revokeObjectURL(this.workerUrl); this.workerUrl = null; }
@@ -1075,7 +1075,8 @@ class SemanticInNoteSearch {
     return new RegExp(`${prefix}${body}${suffix}`, `gu${candidate.kind === 'semantic' || !this.options.caseSensitive ? 'i' : ''}`);
   }
   async sourceText() { return this.isButter || typeof this.editor?.getValue !== 'function' ? await this.app.vault.cachedRead(this.file) : this.editor.getValue(); }
-  setSemanticLoading(loading) { const active = Boolean(loading), loadingTitle = 'Finding related wording by meaning'; if (this.loading) this.loading.hidden = !active; if (this.searchIcon) this.searchIcon.hidden = active; this.count?.toggleClass('is-searching', active); this.input?.setAttribute('aria-busy', String(active)); if (active) this.count?.setAttribute('title', loadingTitle); else if (this.count?.getAttribute('title') === loadingTitle) this.count.removeAttribute('title'); }
+  setSemanticStatus(message) { if (!this.semanticLoading) return; this.loadingTitle = message; this.loading?.setAttribute('aria-label', message); this.loading?.setAttribute('title', message); this.count?.setAttribute('title', message); }
+  setSemanticLoading(loading) { const active = Boolean(loading); this.semanticLoading = active; if (this.loading) this.loading.hidden = !active; if (this.searchIcon) this.searchIcon.hidden = active; this.count?.toggleClass('is-searching', active); this.input?.setAttribute('aria-busy', String(active)); if (active) this.setSemanticStatus('Preparing this note for meaning search'); else if (this.count?.getAttribute('title') === this.loadingTitle) this.count.removeAttribute('title'); }
   updateQuery(query) {
     const version = ++this.queryVersion; clearTimeout(this.timer); this.setSemanticLoading(false); this.clearRefinement();
     if (!query) { this.matches = []; this.current = -1; this.highlightPhrases = []; this.updateCount(); this.clearHighlights(); return; }
@@ -1112,7 +1113,7 @@ class SemanticInNoteSearch {
       candidate.occurrence = positions.get(key).filter(position => position < item.from).length;
       this.previewPhrases.push(candidate);
     }
-    this.el?.setAttribute('data-refinement', stage); this.loading?.setAttribute('aria-label', stage === 'paragraph' ? 'Finding relevant sentences in related paragraphs' : 'Narrowing verified sentences to relevant phrases'); this.paintHighlights();
+    this.el?.setAttribute('data-refinement', stage); this.setSemanticStatus(stage === 'paragraph' ? 'Checking sentences in related paragraphs' : 'Finding relevant phrases in verified sentences'); this.paintHighlights();
   }
   clearRefinement() { this.previewPhrases = []; this.el?.removeAttribute?.('data-refinement'); globalThis.CSS?.highlights?.delete(this.highlightNames.preview); }
   offsetToPos(offset) {

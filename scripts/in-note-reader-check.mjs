@@ -51,6 +51,8 @@ await embeddingStarted; interruptedPreparation.dispose(); finishEmbedding();
 await assert.rejects(preparing, { name: 'AbortError' });
 assert.equal(interruptedPreparation.vectors.size, 0, 'Disposed preparation repopulated its cache');
 const bounded = new PassageInNoteMatcher(options);
+const blockedCache = new PassageInNoteMatcher({ ...options, cacheTimeoutMs: 10, cache: { load: () => new Promise(() => {}), save: async () => {} } });
+assert.equal((await blockedCache.search('liked people', sample)).length, 1, 'Blocked optional storage prevented search'); blockedCache.dispose();
 for (let i = 0; i < 3000; i++) { const value = new Float32Array(vector); value.focus = { vectors: new Int8Array(30 * 384), words: Array.from({ length: 30 }, () => ({ from: 0, to: 1, text: 'x' })), dimension: 384 }; bounded.rememberVector(`Representation ${i}`, value); }
 assert.equal(bounded.vectors.size, 3000, 'Optional phrase attribution evicted compact retrieval vectors');
 assert.ok(bounded.vectorBytes <= 16 * 1024 * 1024, 'The note vector cache exceeded its byte budget'); bounded.dispose();

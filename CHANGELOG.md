@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.54.68
+
+- Fixes desktop in-note startup: Electron can reject Node worker threads, silently sending the previous native path back to slower WebAssembly. Desktop Meaning now uses an isolated CPU process with a pinned, integrity-checked Node runtime shipped in the release; no external runtime installation is needed.
+- Loads only the retrieval model on opening Find. Sentence and consistency models load when needed; unused answer-ranking models no longer delay a factual first query. Native models are read directly from the local cache instead of copying their weights through the renderer.
+- Prepares coarse retrieval blocks for large notes and encodes shortlisted sentences on demand. Sentence verification, phrase attribution, negation and participant checks remain intact, with adaptive expansion for many independent findings.
+- Bounds optional note-vector cache startup, reports model/preparation phases, and adds release-blocking Electron tests covering an unprepared large note, realistic short queries, IndexedDB, cancellation and helper shutdown. Vault search is unchanged.
+
 ## 0.54.67
 
 - Rebuilds in-note factual matching around a locally adapted sentence verifier, independent consistency checks and predicate/participant evidence. Paragraph retrieval, complete-sentence checks and phrase attribution remain separate stages; source text and queries stay on-device.
